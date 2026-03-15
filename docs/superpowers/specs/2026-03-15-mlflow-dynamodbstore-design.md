@@ -79,6 +79,7 @@ All store-generated IDs use ULIDs with the entity's logical timestamp. This make
 |----|-------------|-----------------|--------|
 | `experiment_id` | Store | creation time | ULID |
 | `run_id` | Store | creation time (MLflow calls this `start_time`) | ULID |
+| `registered_model_id` | Store | creation time | ULID |
 | `dataset_uuid` | Store | creation time | ULID |
 | `model_id` (LoggedModel) | Store | creation time | ULID |
 | `assessment_id` | Store | creation time | ULID |
@@ -98,7 +99,7 @@ Using the entity's creation timestamp as the ULID timestamp means:
 
 One DynamoDB table, pay-per-request billing, 4 partition families, 20 entity types + 4 materialized types.
 
-All workspace-scoped entities carry a `workspace` attribute. Experiment IDs are globally unique (ULIDs), so `EXP#<experiment_id>` remains the PK — workspace is an attribute, not part of the experiment PK. Model names are unique per workspace, so workspace IS part of the model PK: `RM#<workspace>#<model_name>`. When workspaces are disabled, all operations use workspace `"default"`.
+All workspace-scoped entities carry a `workspace` attribute. Both experiments and registered models use globally unique ULIDs as partition keys (`EXP#<experiment_id>`, `RM#<registered_model_id>`), with names resolved via GSI3. This makes renames trivial (single `UpdateItem`) and keeps the design consistent across entity types. When workspaces are disabled, all operations use workspace `"default"`.
 
 LSI attributes are only populated on META-level items. Sub-items (tags, params, metrics, etc.) omit them and are automatically excluded from LSI projections.
 
@@ -138,9 +139,11 @@ RANK metric items use inverted values (`9999999999.9999 - value`, zero-padded) s
 
 FTS items carry `field` (assessment/tag/metadata) and `key` attributes for filtering by source.
 
-### Model Partition: `PK = RM#<workspace>#<model_name>`
+### Model Partition: `PK = RM#<registered_model_id>`
 
-Model names are unique per workspace, so the workspace is part of the partition key.
+Registered models use globally unique ULIDs as partition keys, same as experiments. Model names are resolved via GSI3 (`MODEL_NAME#<workspace>#<name>` → `<model_ulid>`). The store caches `model_name → model_ulid` mappings in the same LRU cache as `run_id → experiment_id`.
+
+Model META items carry `workspace` and `name` attributes.
 
 | Entity | SK | lsi1sk | lsi2sk | lsi3sk | lsi4sk | lsi5sk |
 |--------|-----|--------|--------|--------|--------|--------|
@@ -195,7 +198,7 @@ Attributes: `name`, `description`, `default_artifact_root`. A `default` workspac
 | Entity | gsi1pk | gsi1sk | Query |
 |--------|--------|--------|-------|
 | Run META | `RUN#<run_id>` | `EXP#<exp_id>` | Get run by ID → find experiment |
-| Model Version | `RUN#<run_id>` | `MV#<workspace>#<model>#<ver>` | Model versions by run_id |
+| Model Version | `RUN#<run_id>` | `MV#<model_ulid>#<ver>` | Model versions by run_id |
 | Trace META | `TRACE#<trace_id>` | `EXP#<exp_id>` | Get trace by request ID |
 | Trace Client Req Ptr *(materialized)* | `CLIENT#<client_req_id>` | `TRACE#<trace_id>` | Trace by client request ID |
 | Input Link | `DS#<ds_uuid>` | `R#<run_id>` | Find runs using a dataset |
@@ -220,7 +223,8 @@ When workspaces are disabled, all queries use `workspace = "default"` (e.g., `EX
 | Entity | gsi3pk | gsi3sk | Query |
 |--------|--------|--------|-------|
 | Experiment META | `EXP_NAME#<workspace>#<name>` | `<exp_id>` | `get_experiment_by_name()`, uniqueness check within workspace |
-| Model Alias | `ALIAS#<workspace>#<model>#<alias>` | `<version>` | `get_model_version_by_alias()` within workspace |
+| Model META | `MODEL_NAME#<workspace>#<name>` | `<model_ulid>` | `get_registered_model(name)`, uniqueness check within workspace |
+| Model Alias | `ALIAS#<workspace>#<model_name>#<alias>` | `<version>` | `get_model_version_by_alias()` within workspace |
 
 #### GSI4 — Auth Inverted Queries
 
@@ -578,9 +582,14 @@ When `xray.enabled = false`, `span.*` filters raise `MlflowException("Span filte
 
 ## Implementation Notes
 
-### Run-ID Resolution Cache
+### Name/ID Resolution Cache
 
-Many tracking store methods accept `run_id` but the data lives under `PK=EXP#<experiment_id>`. The store maintains an in-memory LRU cache of `run_id → experiment_id` mappings (populated from GSI1 lookups). After the first resolution, subsequent operations on the same run (log metrics, set tags, etc.) are single-call operations with no GSI round trip.
+Many store methods accept names or IDs that must be resolved to partition keys:
+- `run_id → experiment_id` (via GSI1)
+- `model_name → registered_model_id` (via GSI3)
+- `experiment_name → experiment_id` (via GSI3)
+
+The store maintains an in-memory LRU cache for all three mappings. After the first resolution, subsequent operations on the same entity are single-call operations with no GSI round trip. Cache entries are invalidated on renames and deletes.
 
 ### LSI 10GB Partition Limit
 
@@ -723,46 +732,27 @@ rename_experiment(id, new_name):
      (DynamoDB auto-updates GSI5 reverse entry)
 ```
 
-### Rename Registered Model (partition migration)
+### Rename Registered Model
 
-This is the most complex update. The model PK is `RM#<ws>#<model_name>`, so renaming requires migrating all items to a new partition. DynamoDB does not support changing partition keys.
+Since the model PK is `RM#<registered_model_id>` (a ULID, not the name), renaming is identical to renaming an experiment — a single `UpdateItem` on the META item plus the NAME_REV item. No partition migration needed.
 
 ```
 rename_registered_model(old_name, new_name):
-  1. Uniqueness check: Query GSI3 gsi3pk=EXP_NAME#<ws>#<new_name> must be empty
-  2. UpdateItem old META: SET rename_target = new_name
-     (marks rename in progress for crash recovery)
-  3. Query all items in PK=RM#<ws>#<old_name> (paginated)
-  4. For each item, write to new partition PK=RM#<ws>#<new_name>:
-     - Model META: update name, lsi3sk, lsi4sk, gsi2sk, gsi3pk, gsi5sk
-     - Model tags: rewrite with new PK
-     - Model aliases: rewrite with new PK, update gsi3pk to ALIAS#<ws>#<new_name>#<alias>
-     - NAME_REV: rewrite with new PK, update gsi5sk
-     - Version META: rewrite with new PK, update gsi1sk to MV#<ws>#<new_name>#<ver>
-     - Version tags: rewrite with new PK
-  5. Delete all items from old partition PK=RM#<ws>#<old_name>
-  6. Remove rename_target flag from new META item
+  1. Resolve old_name → model_ulid via GSI3 (MODEL_NAME#<ws>#<old_name>)
+  2. Uniqueness check: Query GSI3 gsi3pk=MODEL_NAME#<ws>#<new_name> must be empty
+  3. UpdateItem on model META (PK=RM#<model_ulid>):
+     SET name = new_name,
+         lsi3sk = lower(new_name),
+         lsi4sk = rev(lower(new_name)),
+         gsi3pk = MODEL_NAME#<ws>#<new_name>,
+         gsi5sk = FWD#<lower(new_name)>
+     (DynamoDB auto-removes old GSI3/GSI5 entries, creates new ones)
+  4. UpdateItem on NAME_REV item:
+     SET gsi5sk = REV#<rev(lower(new_name))>
+  5. Invalidate cache entry for old_name
 ```
 
-**Crash recovery:** If the process fails mid-rename, both partitions may exist. On next access to the old model name, the store detects `rename_target` on the META item and resumes the migration:
-
-```
-get_registered_model(name):
-  1. GetItem PK=RM#<ws>#<name>, SK=M#META
-  2. If item has rename_target attribute:
-     Resume rename: copy remaining items, delete old partition
-     Redirect to new name
-  3. If item not found:
-     Check if name is a rename target of another model (scan or GSI lookup)
-```
-
-**Atomicity:** This operation is not atomic. The `rename_target` flag serves as a write-ahead log — it's set before any copies begin and cleared after all deletes complete. At any point during the migration:
-
-- Old partition has `rename_target` set → signals incomplete rename
-- New partition may have partial data → completing the rename is idempotent (PutItem overwrites)
-- Queries during rename may return results from old or new partition depending on timing
-
-For a small team, the rename window is milliseconds. If stronger guarantees are needed, the store can hold a lock (e.g., a DynamoDB conditional write on a lock item) during the rename.
+This is the payoff of using ULIDs as partition keys with name indirection via GSI3 — renames are trivial for all entity types.
 
 ## Deletion Strategy
 
@@ -791,12 +781,14 @@ delete_experiment_tag(experiment_id, key):
   2. UpdateItem on experiment META: REMOVE tags.<key>
 
 delete_registered_model_tag(name, key):
-  1. DeleteItem: PK=RM#<ws>#<name>, SK=M#TAG#<key>
-  2. UpdateItem on model META: REMOVE tags.<key>
+  1. Resolve name → model_ulid via GSI3
+  2. DeleteItem: PK=RM#<model_ulid>, SK=M#TAG#<key>
+  3. UpdateItem on model META: REMOVE tags.<key>
 
 delete_model_version_tag(name, version, key):
-  1. DeleteItem: PK=RM#<ws>#<name>, SK=V#<ver>#TAG#<key>
-  2. UpdateItem on version META: REMOVE tags.<key>
+  1. Resolve name → model_ulid via GSI3
+  2. DeleteItem: PK=RM#<model_ulid>, SK=V#<ver>#TAG#<key>
+  3. UpdateItem on version META: REMOVE tags.<key>
 
 delete_trace_tag(trace_id, key):
   1. GetItem old tag → tokenize old value → compute FTS tokens to delete
@@ -827,9 +819,10 @@ update_assessment(trace_id, assessment_id, new_value):
 
 ```
 delete_model_version(name, version):
-  1. Query PK=RM#<ws>#<name>, SK begins_with("V#<padded_ver>") → version META + version tags
-  2. BatchWriteItem: delete all matched items
-  3. GSI1 entries (model version by run_id) cleaned up automatically by DynamoDB
+  1. Resolve name → model_ulid via GSI3
+  2. Query PK=RM#<model_ulid>, SK begins_with("V#<padded_ver>") → version META + version tags
+  3. BatchWriteItem: delete all matched items
+  4. GSI1 entries (model version by run_id) cleaned up automatically by DynamoDB
 ```
 
 ### Physical Deletes — Registered Models (partition wipe)
@@ -838,9 +831,10 @@ Deleting a registered model removes the entire model partition:
 
 ```
 delete_registered_model(name):
-  1. Query PK=RM#<ws>#<name> (paginated) → all items (META, tags, aliases, NAME_REV, all versions + version tags)
-  2. For each page: BatchWriteItem deletes (25 items per call)
-  3. GSI entries (GSI2, GSI3, GSI5) cleaned up automatically by DynamoDB when base items are deleted
+  1. Resolve name → model_ulid via GSI3 (MODEL_NAME#<ws>#<name>)
+  2. Query PK=RM#<model_ulid> (paginated) → all items (META, tags, aliases, NAME_REV, all versions + version tags)
+  3. For each page: BatchWriteItem deletes (25 items per call)
+  4. GSI entries (GSI2, GSI3, GSI5) cleaned up automatically by DynamoDB when base items are deleted
 ```
 
 ### Physical Deletes — Traces
@@ -887,8 +881,8 @@ delete_workspace(name, mode):
     1. Query GSI2: gsi2pk=EXPERIMENTS#<name>#active → all experiment ULIDs
        Query GSI2: gsi2pk=EXPERIMENTS#<name>#deleted → all deleted experiment ULIDs
     2. For each experiment: run delete_experiment_permanent(id)
-    3. Query GSI2: gsi2pk=MODELS#<name> → all model names
-    4. For each model: run delete_registered_model(model_name)
+    3. Query GSI2: gsi2pk=MODELS#<name> → all model ULIDs
+    4. For each model: run delete_registered_model(model_name) (resolves via GSI3)
     5. DeleteItem: PK=WORKSPACE#<name>, SK=META
 
   # "default" workspace cannot be deleted
@@ -1053,7 +1047,7 @@ Our DynamoDB store follows this pattern: the base `DynamoDBTrackingStore` always
 Workspace is baked into the key structure from day one:
 
 - **Experiment partition** (`PK = EXP#<experiment_id>`): Experiment IDs are globally unique ULIDs, so workspace is an **attribute** on the META item, not part of the PK. Cross-partition queries (GSI2, GSI3, GSI5) include workspace in the GSI partition key.
-- **Model partition** (`PK = RM#<workspace>#<model_name>`): Model names are unique per workspace, so workspace is part of the **PK**.
+- **Model partition** (`PK = RM#<registered_model_id>`): Uses globally unique ULIDs, same as experiments. Model names resolved via GSI3 (`MODEL_NAME#<workspace>#<name>` → ULID). Workspace is an **attribute** on the META item.
 - **Auth partition** (`PK = USER#<username>`): Workspace-independent.
 - **Workspace partition** (`PK = WORKSPACE#<workspace_name>`): Workspace metadata.
 
@@ -1066,7 +1060,8 @@ When workspaces are disabled, all operations use `workspace = "default"`. No mig
 | GSI2 (listings) | `EXPERIMENTS#<lifecycle>` | `EXPERIMENTS#<workspace>#<lifecycle>` |
 | GSI2 (listings) | `MODELS` | `MODELS#<workspace>` |
 | GSI3 (uniqueness) | `EXP_NAME#<name>` | `EXP_NAME#<workspace>#<name>` |
-| GSI3 (uniqueness) | `ALIAS#<model>#<alias>` | `ALIAS#<workspace>#<model>#<alias>` |
+| GSI3 (uniqueness) | `MODEL_NAME#<name>` | `MODEL_NAME#<workspace>#<name>` |
+| GSI3 (uniqueness) | `ALIAS#<model>#<alias>` | `ALIAS#<workspace>#<model_name>#<alias>` |
 | GSI5 (name search) | `EXP_NAMES` | `EXP_NAMES#<workspace>` |
 | GSI5 (name search) | `MODEL_NAMES` | `MODEL_NAMES#<workspace>` |
 
