@@ -627,6 +627,143 @@ Scorer, gateway secret, gateway endpoint, and gateway model definition permissio
 
 MLflow 3.x Prompts are built on top of registered models via default method implementations (`create_prompt`, `get_prompt`, etc.) that delegate to registered model CRUD with special `mlflow.prompt.*` tags. Our registered model implementation handles this automatically — no special prompt code needed.
 
+## Update Strategy
+
+Updates range from simple single-item `UpdateItem` calls (where LSI/GSI attributes auto-propagate) to complex multi-item operations requiring materialized view maintenance.
+
+### Simple Updates (single UpdateItem)
+
+These require no materialized view cleanup — DynamoDB automatically propagates attribute changes to LSIs and GSIs:
+
+| Operation | Fields Changed | Auto-Updated Indexes |
+|-----------|---------------|---------------------|
+| `update_run_info(run_id, status, end_time, run_name)` | status, end_time, run_name on run META | LSI2 (`end_time`), LSI3 (`<status>#<ulid>`), LSI4 (`lower(run_name)`), LSI5 (`duration_ms` = end_time - start_time) |
+| `update_registered_model(name, description)` | description on model META | None (description not indexed) |
+| `update_model_version(name, version, description)` | description on version META | None |
+| `transition_model_version_stage(name, version, stage)` | stage on version META | LSI3 (`<stage>#<padded_ver>`) |
+| `set_registered_model_alias(name, alias, version)` | PutItem on alias item | GSI3 (`ALIAS#<ws>#<model>#<alias>`) |
+| `delete_registered_model_alias(name, alias)` | DeleteItem on alias item | GSI3 auto-cleaned |
+| `update_workspace(workspace)` | description, default_artifact_root | None |
+
+### Tag Overwrites
+
+`set_tag` can overwrite an existing tag value. This must update both the tag item and the denormalized `tags` map:
+
+```
+set_tag(run_id, key, value):
+  1. PutItem: PK=EXP#<id>, SK=R#<ulid>#TAG#<key>  (overwrites old value)
+  2. If key matches denormalize pattern:
+     UpdateItem on run META: SET tags.<key> = new_value
+```
+
+Same pattern for `set_experiment_tag`, `set_registered_model_tag`, `set_model_version_tag`.
+
+For trace tags, FTS tokens must also be maintained:
+
+```
+set_trace_tag(trace_id, key, value):
+  1. GetItem old tag → tokenize old value (if exists)
+  2. Tokenize new value
+  3. Compute diff: tokens_to_delete = old - new, tokens_to_add = new - old
+  4. PutItem tag (overwrite)
+  5. If key matches denormalize pattern:
+     UpdateItem on trace META: SET tags.<key> = new_value
+  6. BatchWriteItem: delete old FTS + FTS_REV items, write new FTS + FTS_REV items
+```
+
+### Metric Updates (log_batch)
+
+`log_batch` writes metric latest values and history. When the latest value changes, the RANK item must be updated.
+
+To efficiently find the old RANK SK for deletion, store `rank_sk` as an attribute on the Metric Latest item:
+
+```
+log_batch(run_id, metrics, params, tags):
+  For each metric:
+    1. GetItem metric latest: R#<ulid>#METRIC#<key> → read old rank_sk (if exists)
+    2. PutItem metric latest with new value + new rank_sk attribute
+    3. PutItem metric history: R#<ulid>#MHIST#<key>#<step>#<ts>
+    4. If rank_sk changed:
+       DeleteItem: old RANK item (using stored rank_sk)
+       PutItem: new RANK item
+       (Skip if value unchanged — same rank_sk means same RANK item)
+
+  For each param:
+    1. GetItem param: R#<ulid>#PARAM#<key> → read old rank_sk (if exists)
+    2. PutItem param with new value + new rank_sk attribute
+    3. If rank_sk changed:
+       DeleteItem: old RANK item
+       PutItem: new RANK item
+
+  For each tag:
+    1. PutItem tag: R#<ulid>#TAG#<key>
+    2. If key matches denormalize pattern:
+       UpdateItem on run META: SET tags.<key> = new_value
+```
+
+The `rank_sk` attribute on Metric Latest / Param items avoids recomputing the inverted value and ensures we always know the exact old RANK SK to delete.
+
+### Rename Experiment
+
+Experiment renames update the META item and the NAME_REV materialized item. Since the experiment PK (`EXP#<experiment_id>`) doesn't contain the name, no partition migration is needed:
+
+```
+rename_experiment(id, new_name):
+  1. Uniqueness check: Query GSI3 gsi3pk=EXP_NAME#<ws>#<new_name>
+     ConditionExpression: must return empty
+  2. UpdateItem on experiment META:
+     SET name = new_name,
+         lsi3sk = lower(new_name),
+         lsi4sk = rev(lower(new_name)),
+         gsi3pk = EXP_NAME#<ws>#<new_name>,
+         gsi5sk = FWD#<lower(new_name)>#<id>
+     (DynamoDB auto-removes old GSI3/GSI5 entries, creates new ones)
+  3. UpdateItem on NAME_REV item:
+     SET gsi5sk = REV#<rev(lower(new_name))>#<id>
+     (DynamoDB auto-updates GSI5 reverse entry)
+```
+
+### Rename Registered Model (partition migration)
+
+This is the most complex update. The model PK is `RM#<ws>#<model_name>`, so renaming requires migrating all items to a new partition. DynamoDB does not support changing partition keys.
+
+```
+rename_registered_model(old_name, new_name):
+  1. Uniqueness check: Query GSI3 gsi3pk=EXP_NAME#<ws>#<new_name> must be empty
+  2. UpdateItem old META: SET rename_target = new_name
+     (marks rename in progress for crash recovery)
+  3. Query all items in PK=RM#<ws>#<old_name> (paginated)
+  4. For each item, write to new partition PK=RM#<ws>#<new_name>:
+     - Model META: update name, lsi3sk, lsi4sk, gsi2sk, gsi3pk, gsi5sk
+     - Model tags: rewrite with new PK
+     - Model aliases: rewrite with new PK, update gsi3pk to ALIAS#<ws>#<new_name>#<alias>
+     - NAME_REV: rewrite with new PK, update gsi5sk
+     - Version META: rewrite with new PK, update gsi1sk to MV#<ws>#<new_name>#<ver>
+     - Version tags: rewrite with new PK
+  5. Delete all items from old partition PK=RM#<ws>#<old_name>
+  6. Remove rename_target flag from new META item
+```
+
+**Crash recovery:** If the process fails mid-rename, both partitions may exist. On next access to the old model name, the store detects `rename_target` on the META item and resumes the migration:
+
+```
+get_registered_model(name):
+  1. GetItem PK=RM#<ws>#<name>, SK=M#META
+  2. If item has rename_target attribute:
+     Resume rename: copy remaining items, delete old partition
+     Redirect to new name
+  3. If item not found:
+     Check if name is a rename target of another model (scan or GSI lookup)
+```
+
+**Atomicity:** This operation is not atomic. The `rename_target` flag serves as a write-ahead log — it's set before any copies begin and cleared after all deletes complete. At any point during the migration:
+
+- Old partition has `rename_target` set → signals incomplete rename
+- New partition may have partial data → completing the rename is idempotent (PutItem overwrites)
+- Queries during rename may return results from old or new partition depending on timing
+
+For a small team, the rename window is milliseconds. If stronger guarantees are needed, the store can hold a lock (e.g., a DynamoDB conditional write on a lock item) during the rename.
+
 ## Deletion Strategy
 
 MLflow uses both soft deletes (lifecycle_stage change) and physical deletes (item removal). Each deletion type requires cleanup of associated materialized views.
