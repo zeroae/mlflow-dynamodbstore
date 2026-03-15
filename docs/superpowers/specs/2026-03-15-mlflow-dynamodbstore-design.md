@@ -122,7 +122,7 @@ Experiment META items carry a `workspace` attribute (default: `"default"`).
 | Input Tag | `R#<ulid>#INPUT#<ds_uuid>#ITAG#<name>` | — | — | — | — | — |
 | Logged Model | `R#<ulid>#LM#<model_id>` | — | — | — | — | — |
 | Logged Model Tag | `R#<ulid>#LM#<model_id>#TAG#<key>` | — | — | — | — | — |
-| Trace META | `T#<trace_id>` | — | `end_time_ms` | `<status>#<timestamp_ms>` | — | `execution_time_ms` |
+| Trace META | `T#<trace_id>` | `timestamp_ms` | `end_time_ms` | `<status>#<timestamp_ms>` | `lower(trace_name)` | `execution_time_ms` |
 | Trace Tag | `T#<trace_id>#TAG#<key>` | — | — | — | — | — |
 | Trace Req Metadata | `T#<trace_id>#RMETA#<key>` | — | — | — | — | — |
 | Assessment | `T#<trace_id>#ASSESS#<id>` | — | — | — | — | — |
@@ -152,7 +152,7 @@ Model META items carry `workspace` and `name` attributes.
 | Model Tag | `M#TAG#<key>` | — | — | — | — | — |
 | Model Alias | `M#ALIAS#<alias>` | — | — | — | — | — |
 | Model NAME_REV *(materialized)* | `M#NAME_REV` | — | — | — | — | — |
-| Version META | `V#<padded_ver>` | — | `last_update_time` | `<stage>#<padded_ver>` | `lower(source_path)` | — |
+| Version META | `V#<padded_ver>` | `creation_time` | `last_update_time` | `<stage>#<padded_ver>` | `lower(source_path)` | `<run_id>#<padded_ver>` |
 | Version Tag | `V#<padded_ver>#TAG#<key>` | — | — | — | — | — |
 
 ### Workspace Partition: `PK = WORKSPACE#<workspace_name>`
@@ -189,21 +189,21 @@ Gateway secret, endpoint, and model definition permissions are out of scope (Dat
 
 | LSI | Attribute | Experiments | Runs | Traces | Reg Models | Model Versions |
 |-----|-----------|-------------|------|--------|------------|----------------|
-| LSI1 | `lsi1sk` | `<lifecycle>#<ulid>` | `<lifecycle>#<ulid>` | — | — | — |
+| LSI1 | `lsi1sk` | `<lifecycle>#<ulid>` | `<lifecycle>#<ulid>` | `timestamp_ms` | — | `creation_time` |
 | LSI2 | `lsi2sk` | `last_update_time` | `end_time` | `end_time_ms` | `last_update_time` | `last_update_time` |
 | LSI3 | `lsi3sk` | `lower(name)` | `<status>#<ulid>` | `<status>#<timestamp_ms>` | `lower(name)` | `<stage>#<padded_ver>` |
-| LSI4 | `lsi4sk` | `rev(lower(name))` | `lower(run_name)` | — | `rev(lower(name))` | `lower(source_path)` |
-| LSI5 | `lsi5sk` | — | `duration_ms` | `execution_time_ms` | — | — |
+| LSI4 | `lsi4sk` | `rev(lower(name))` | `lower(run_name)` | `lower(trace_name)` | `rev(lower(name))` | `lower(source_path)` |
+| LSI5 | `lsi5sk` | — | `duration_ms` | `execution_time_ms` | — | `<run_id>#<padded_ver>` |
 
-**LSI1 — Lifecycle + time:** `begins_with("active#")` returns only active runs/experiments sorted by time (ULID). `begins_with("deleted#")` returns only soft-deleted. Eliminates post-filtering deleted items.
+**LSI1 — Lifecycle/time/creation:** Experiments/runs: `<lifecycle>#<ulid>` for active/deleted filtering with time sort. Traces: `timestamp_ms` for default time-ordered listing. Model versions: `creation_time` for `ORDER BY creation_timestamp`.
 
 **LSI2 — End/update time:** Sort runs by completion, experiments/models by last modification, traces by end time.
 
 **LSI3 — Name or status composite:** Experiments/models: `lower(name)` for prefix ILIKE via `begins_with`. Runs/traces: `<status>#<ulid>` for status filter + time sort in one key condition. Model versions: `<stage>#<padded_ver>` for `get_latest_versions` per stage.
 
-**LSI4 — Reversed name or secondary name:** Experiments/models: `rev(lower(name))` for suffix ILIKE. Runs: `lower(run_name)` for prefix ILIKE. Model versions: `lower(source_path)` for prefix ILIKE.
+**LSI4 — Reversed name or secondary name:** Experiments/models: `rev(lower(name))` for suffix ILIKE. Runs: `lower(run_name)` for prefix ILIKE. Traces: `lower(trace_name)` for prefix ILIKE on trace name. Model versions: `lower(source_path)` for prefix ILIKE.
 
-**LSI5 — Duration:** Runs: `duration_ms` (set on completion). Traces: `execution_time_ms`. In-progress runs without duration are auto-excluded from the index.
+**LSI5 — Duration/run linkage:** Runs: `duration_ms` (set on completion). Traces: `execution_time_ms`. Model versions: `<run_id>#<padded_ver>` for finding versions from a specific run within a model (`begins_with("<run_id>#")`).
 
 ### GSIs (5 overloaded)
 
@@ -497,11 +497,13 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `search_registered_models` default sort | GSI2 `MODELS#<workspace>` |
 | `search_registered_models` name ILIKE prefix/suffix | GSI5 `MODEL_NAMES#<workspace>` |
 | `search_model_versions` ORDER BY `version` | Base SK |
-| `search_model_versions` filter `run_id` | GSI1 |
+| `search_model_versions` ORDER BY `creation_timestamp` | LSI1 |
+| `search_model_versions` filter `run_id` | GSI1 (cross-model) or LSI5 `begins_with("<run_id>#")` (within model) |
 | `get_latest_versions(name, stages)` | LSI3 reverse limit 1 |
-| `search_traces` ORDER BY `timestamp` | LSI2 (`end_time_ms`) or LSI3 (`<status>#<timestamp_ms>`). Note: `trace_id` is OTel-provided and not time-sortable, so base SK cannot be used for trace time-ordering |
+| `search_traces` ORDER BY `timestamp` | LSI1 (`timestamp_ms`) — direct time-ordered query |
 | `search_traces` filter `status` + time sort | LSI3 composite |
 | `search_traces` ORDER BY `execution_time` | LSI5 |
+| `search_traces` filter `name LIKE 'prefix%'` | LSI4 `begins_with(lower("prefix"))` |
 | `search_traces` FTS keyword | FTS items |
 | `create_experiment` uniqueness check | GSI3 `EXP_NAME#<workspace>#<name>` condition |
 | `list_workspaces` | GSI2 `WORKSPACES` |
