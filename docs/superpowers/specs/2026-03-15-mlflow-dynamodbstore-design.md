@@ -131,8 +131,8 @@ Experiment META items carry a `workspace` attribute (default: `"default"`).
 | DLINK *(materialized)* | `DLINK#<ds_name>#<ds_digest>#R#<ulid>` | — | — | — | — | — |
 | RANK metric *(materialized)* | `RANK#m#<key>#<inv_value>#<ulid>` | — | — | — | — | — |
 | RANK param *(materialized)* | `RANK#p#<key>#<value>#<ulid>` | — | — | — | — | — |
-| FTS token *(materialized)* | `FTS#<token>#<entity_type>#<entity_id>[#<field>]` | — | — | — | — | — |
-| FTS reverse *(materialized)* | `FTS_REV#<entity_type>#<entity_id>[#<field>]#<token>` | — | — | — | — | — |
+| FTS token *(materialized)* | `FTS#<level>#<token>#<entity_type>#<entity_id>[#<field>]` | — | — | — | — | — |
+| FTS reverse *(materialized)* | `FTS_REV#<entity_type>#<entity_id>[#<field>]#<level>#<token>` | — | — | — | — | — |
 
 DLINK items carry a `context` attribute (denormalized from input tags) for dataset context filtering.
 
@@ -231,8 +231,8 @@ Note: The `CLIENT#<client_req_id>` entry is a separate materialized pointer item
 | Model META | `MODELS#<workspace>` | `<last_update_time>#<name>` | List registered models in workspace |
 | Auth User META | `AUTH_USERS` | `<username>` | List all auth users (workspace-independent) |
 | Workspace META | `WORKSPACES` | `<workspace_name>` | List all workspaces |
-| Experiment name FTS | `FTS_NAMES#<workspace>` | `<token>#EXP#<exp_id>` | Cross-partition experiment name LIKE '%word%' |
-| Model name FTS | `FTS_NAMES#<workspace>` | `<token>#RM#<model_id>` | Cross-partition model name LIKE '%word%' |
+| Experiment name FTS | `FTS_NAMES#<workspace>` | `<level>#<token>#EXP#<exp_id>` | Cross-partition experiment name LIKE (word-level `W#` and trigram `3#`) |
+| Model name FTS | `FTS_NAMES#<workspace>` | `<level>#<token>#RM#<model_id>` | Cross-partition model name LIKE (word-level `W#` and trigram `3#`) |
 
 When workspaces are disabled, all queries use `workspace = "default"` (e.g., `EXPERIMENTS#default#active`).
 
@@ -307,33 +307,67 @@ PK: RM#<model_name>        SK: M#NAME_REV    gsi5pk: MODEL_NAMES  gsi5sk: REV#<r
 
 ### FTS Items (full-text search)
 
-Written for all text fields within an experiment partition that support `LIKE '%word%'` queries. Each token is written as two items — a forward index for search and a reverse index for cleanup.
+Written for all text fields within an experiment partition that support `LIKE '%...%'` queries. FTS uses two index levels:
+
+- **`W#` (word-level)** — stemmed whole-word tokens. Handles `LIKE '%pipeline%'` (complete word matches).
+- **`3#` (trigram-level)** — 3-character sliding window. Handles `LIKE '%pipe%'` (partial word matches).
+
+Each token is written as two items — a forward index for search and a reverse index for cleanup.
 
 **Indexed fields and SK patterns:**
 
-| Field | Forward SK | Reverse SK | Written When |
-|-------|-----------|------------|-------------|
-| Experiment name | `FTS#<token>#E#<exp_id>` + `gsi2pk/gsi2sk` | `FTS_REV#E#<exp_id>#<token>` | Experiment create/rename |
-| Run name | `FTS#<token>#R#<run_id>` | `FTS_REV#R#<run_id>#<token>` | Run create / `update_run_info` |
-| Run param value | `FTS#<token>#R#<run_id>#P#<key>` | `FTS_REV#R#<run_id>#P#<key>#<token>` | `log_batch` param write |
-| Run tag value | `FTS#<token>#R#<run_id>#TAG#<key>` | `FTS_REV#R#<run_id>#TAG#<key>#<token>` | `set_tag` |
-| Trace tag value | `FTS#<token>#T#<trace_id>#TAG#<key>` | `FTS_REV#T#<trace_id>#TAG#<key>#<token>` | `set_trace_tag` |
-| Trace req metadata value | `FTS#<token>#T#<trace_id>#RMETA#<key>` | `FTS_REV#T#<trace_id>#RMETA#<key>#<token>` | Trace metadata write |
-| Assessment value | `FTS#<token>#T#<trace_id>#ASSESS#<id>` | `FTS_REV#T#<trace_id>#ASSESS#<id>#<token>` | Assessment create/update |
+| Field | Forward SK | Reverse SK | Index Levels | Written When |
+|-------|-----------|------------|-------------|-------------|
+| Experiment name | `FTS#<level>#<token>#E#<exp_id>` + `gsi2pk/gsi2sk` | `FTS_REV#E#<exp_id>#<level>#<token>` | W + 3 (always) | Experiment create/rename |
+| Run name | `FTS#<level>#<token>#R#<run_id>` | `FTS_REV#R#<run_id>#<level>#<token>` | W + 3 (always) | Run create / `update_run_info` |
+| Run param value | `FTS#<level>#<token>#R#<run_id>#P#<key>` | `FTS_REV#R#<run_id>#P#<key>#<level>#<token>` | W (always) + 3 (configurable) | `log_batch` param write |
+| Run tag value | `FTS#<level>#<token>#R#<run_id>#TAG#<key>` | `FTS_REV#R#<run_id>#TAG#<key>#<level>#<token>` | W (always) + 3 (configurable) | `set_tag` |
+| Trace tag value | `FTS#<level>#<token>#T#<trace_id>#TAG#<key>` | `FTS_REV#T#<trace_id>#TAG#<key>#<level>#<token>` | W (always) + 3 (configurable) | `set_trace_tag` |
+| Trace req metadata value | `FTS#<level>#<token>#T#<trace_id>#RMETA#<key>` | `FTS_REV#T#<trace_id>#RMETA#<key>#<level>#<token>` | W (always) + 3 (configurable) | Trace metadata write |
+| Assessment value | `FTS#<level>#<token>#T#<trace_id>#ASSESS#<id>` | `FTS_REV#T#<trace_id>#ASSESS#<id>#<level>#<token>` | W (always) + 3 (configurable) | Assessment create/update |
+
+Where `<level>` is `W` (word) or `3` (trigram).
 
 All FTS items share `PK = EXP#<experiment_id>`.
 
-**Forward index** enables search: `SK begins_with("FTS#<stemmed_token>#R#")` → all runs matching that token.
+**Forward index** enables search: `SK begins_with("FTS#W#<stemmed_token>#R#")` for word match, `SK begins_with("FTS#3#<trigram>#R#")` for partial match.
 
-**Reverse index** enables cleanup: `SK begins_with("FTS_REV#R#<run_id>#")` → all tokens for that run (for deletion). Same pattern for traces, experiments, etc.
+**Reverse index** enables cleanup: `SK begins_with("FTS_REV#R#<run_id>#")` → all tokens (both levels) for that run.
 
-**Cross-partition LIKE** (experiment/model names): Experiment and model name FTS items carry `gsi2pk = FTS_NAMES#<workspace>` and `gsi2sk = <token>#EXP#<exp_id>` (or `#RM#<model_id>`), enabling cross-partition name search via GSI2. Model name FTS items live in the model partition (`PK = RM#<model_id>`) with the same GSI2 projection.
+**Cross-partition LIKE** (experiment/model names): Experiment and model name FTS items carry `gsi2pk = FTS_NAMES#<workspace>` and `gsi2sk = <level>#<token>#EXP#<exp_id>` (or `#RM#<model_id>`), enabling cross-partition name search via GSI2. Model name FTS items live in the model partition (`PK = RM#<model_id>`) with the same GSI2 projection.
+
+**Trigram configuration** — stored in the CONFIG partition:
+
+```
+PK: CONFIG    SK: FTS_TRIGRAM_FIELDS
+attrs: fields = ["run_param_value", "run_tag_value", "trace_tag_value",
+                  "trace_metadata_value", "assessment_value"]
+```
+
+Entity names (experiment, run, model) always have trigram indexing enabled — not configurable. Additional fields are opt-in via the config above, seeded from environment variable on first table creation:
+
+```bash
+MLFLOW_DYNAMODB_FTS_TRIGRAM_FIELDS=run_param_value,run_tag_value
+```
+
+Admin CLI:
+
+```bash
+# View trigram-enabled fields
+mlflow-dynamodbstore fts-trigrams list --table my-table
+
+# Add fields
+mlflow-dynamodbstore fts-trigrams add run_param_value run_tag_value --table my-table
+
+# Backfill trigrams on existing data
+mlflow-dynamodbstore fts-trigrams backfill --table my-table
+```
 
 ## Full-Text Search
 
-Token-level inverted index with stemming via `snowballstemmer` (pure Python, 100KB, zero data files).
+Dual-level inverted index: word-level (stemmed) for whole-word matches and trigram-level for partial-word matches.
 
-### Tokenizer
+### Tokenizers
 
 ```python
 import re
@@ -347,27 +381,65 @@ STOP_WORDS = frozenset({
 })
 _stemmer = snowballstemmer.stemmer("english")
 
-def tokenize(text: str) -> set[str]:
+def tokenize_words(text: str) -> set[str]:
+    """Stemmed whole-word tokens for LIKE '%complete_word%' matches."""
     words = re.findall(r'[a-z0-9]+', text.lower())
     words = [w for w in words if w not in STOP_WORDS and len(w) > 1]
     return set(_stemmer.stemWords(words))
+
+def tokenize_trigrams(text: str) -> set[str]:
+    """Character trigrams for LIKE '%partial%' matches."""
+    words = re.findall(r'[a-z0-9]+', text.lower())
+    grams = set()
+    for word in words:
+        for i in range(len(word) - 2):
+            grams.add(word[i:i+3])
+    return grams
 ```
 
-**Indexed fields:** experiment names, run names, run param values, run tag values (non-denormalized), trace tag values, trace request metadata values, assessment values. Span content is NOT indexed (lives in X-Ray).
+**Indexed fields:** experiment names, run names, run param values, run tag values, trace tag values, trace request metadata values, assessment values. Span content is NOT indexed (lives in X-Ray).
 
-Search queries apply the same tokenizer+stemmer, so `error`, `errors`, `errored` all resolve to the same stem.
+**Index levels per field:**
 
-**What FTS handles vs what it doesn't:**
+| Field | Word (W) | Trigram (3) |
+|-------|----------|------------|
+| Experiment name | Always | Always |
+| Run name | Always | Always |
+| Model name | Always | Always |
+| Run param value | Always | Configurable |
+| Run tag value | Always | Configurable |
+| Trace tag value | Always | Configurable |
+| Trace req metadata value | Always | Configurable |
+| Assessment value | Always | Configurable |
 
-| Search | Works? | Why |
-|--------|--------|-----|
-| `run_name LIKE '%pipeline%'` | Yes | "pipeline" → stem "pipelin" matches token |
-| `param.model LIKE '%transformer%'` | Yes | "transformer" → stem matches |
-| `experiment.name LIKE '%pipeline%'` (cross-partition) | Yes | FTS via GSI2 `FTS_NAMES#<ws>` → `begins_with("pipelin#EXP#")` |
-| `model.name LIKE '%transformer%'` (cross-partition) | Yes | FTS via GSI2 `FTS_NAMES#<ws>` → `begins_with("transform#RM#")` |
-| `run_name LIKE '%pipe%'` | No | "pipe" stems differently than "pipelin" (partial word) |
+### Search Strategy
 
-Word-boundary matches work. Arbitrary substring matches (partial words) don't — this is the standard tradeoff for token-based search.
+The query planner selects the index level based on the search term:
+
+| LIKE Pattern | Strategy |
+|-------------|----------|
+| `'%pipeline%'` (complete word) | Word-level FTS: stem → single `FTS#W#` query |
+| `'%pipe%'` (partial word, ≥ 3 chars) | Trigram FTS: trigrams of "pipe" → `FTS#3#pip` ∩ `FTS#3#ipe` → intersect → verify |
+| `'%pi%'` (< 3 chars) | Too short for trigrams — `contains()` FilterExpression fallback |
+| `'%foo bar%'` (multi-word phrase) | Word-level: stem each word → intersect → verify phrase order |
+| `'%foo ba%'` (phrase with partial word) | Trigram on partial word + word on complete words → intersect → verify |
+
+**How to determine "complete word" vs "partial word":** Stem the search term. If the stem matches a token in the word-level index, it's a complete word match. If not, fall back to trigrams. In practice, the query planner tries word-level first (cheaper), falls back to trigrams if no results.
+
+### Cross-Partition FTS
+
+Experiment and model name FTS items carry GSI2 attributes for cross-partition queries:
+
+```
+gsi2pk: FTS_NAMES#<workspace>    gsi2sk: <level>#<token>#EXP#<exp_id>
+gsi2pk: FTS_NAMES#<workspace>    gsi2sk: <level>#<token>#RM#<model_id>
+```
+
+| Search | Mechanism |
+|--------|-----------|
+| `experiment.name LIKE '%pipeline%'` | GSI2 `FTS_NAMES#<ws>`, SK `begins_with("W#pipelin#EXP#")` |
+| `experiment.name LIKE '%pipe%'` | GSI2 `FTS_NAMES#<ws>`, SK `begins_with("3#pip#EXP#")` ∩ `begins_with("3#ipe#EXP#")` → verify |
+| `model.name LIKE '%transformer%'` | GSI2 `FTS_NAMES#<ws>`, SK `begins_with("W#transform#RM#")` |
 
 ### Multi-Word Phrase Search
 
@@ -382,6 +454,18 @@ The FTS intersection eliminates most non-matching entities (e.g., narrows 10,000
 Edge cases:
 - All search words are stop words or < 2 chars (e.g., `'%a%'`): no FTS tokens produced, falls back to full scan + `contains()` FilterExpression
 - Single search word: no intersection needed, standard single-token FTS query + client-side verify
+- Mixed partial + complete words (e.g., `'%pipe bar%'`): trigram FTS on "pipe" ∩ word FTS on "bar" → intersect → verify
+
+### Write Amplification
+
+| Entity | Word Tokens | Trigrams | Total Items (fwd + rev) |
+|--------|------------|----------|------------------------|
+| Experiment name "my-data-pipeline-v2" | ~4 | ~17 | (4 + 17) × 2 = 42 |
+| Run name "training-run-42" | ~3 | ~11 | (3 + 11) × 2 = 28 |
+| Param value "gpt-4-turbo" (trigrams enabled) | ~3 | ~8 | (3 + 8) × 2 = 22 |
+| Param value "gpt-4-turbo" (trigrams disabled) | ~3 | 0 | 3 × 2 = 6 |
+
+Entity names (experiment, run, model) are written infrequently. Params/tags can be high-volume, hence trigrams are configurable for those fields.
 
 ### Upgrade Path
 
@@ -533,10 +617,12 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `search_runs` filter `dataset.name = X` | DLINK items |
 | `search_experiments` default sort | GSI2 `EXPERIMENTS#<workspace>#<lifecycle>` (ULID) |
 | `search_experiments` name ILIKE prefix/suffix | GSI5 `EXP_NAMES#<workspace>` |
-| `search_experiments` name LIKE '%word%' (cross-partition) | GSI2 `FTS_NAMES#<workspace>`, SK `begins_with("<token>#EXP#")` |
+| `search_experiments` name LIKE '%word%' (cross-partition, word) | GSI2 `FTS_NAMES#<ws>`, SK `begins_with("W#<stem>#EXP#")` |
+| `search_experiments` name LIKE '%part%' (cross-partition, partial) | GSI2 `FTS_NAMES#<ws>`, trigram intersect on `3#<trigram>#EXP#` |
 | `search_registered_models` default sort | GSI2 `MODELS#<workspace>` |
 | `search_registered_models` name ILIKE prefix/suffix | GSI5 `MODEL_NAMES#<workspace>` |
-| `search_registered_models` name LIKE '%word%' (cross-partition) | GSI2 `FTS_NAMES#<workspace>`, SK `begins_with("<token>#RM#")` |
+| `search_registered_models` name LIKE '%word%' (cross-partition, word) | GSI2 `FTS_NAMES#<ws>`, SK `begins_with("W#<stem>#RM#")` |
+| `search_registered_models` name LIKE '%part%' (cross-partition, partial) | GSI2 `FTS_NAMES#<ws>`, trigram intersect on `3#<trigram>#RM#` |
 | `search_model_versions` ORDER BY `version` | Base SK |
 | `search_model_versions` ORDER BY `creation_timestamp` | LSI1 |
 | `search_model_versions` filter `run_id` | GSI1 (cross-model) or LSI5 `begins_with("<run_id>#")` (within model) |
@@ -546,9 +632,10 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `search_traces` ORDER BY `execution_time` | LSI5 |
 | `search_traces` filter `name LIKE 'prefix%'` | LSI4 `begins_with(lower("prefix"))` |
 | `search_traces` FTS keyword | FTS items |
-| `search_runs` filter `run_name LIKE '%word%'` | FTS `begins_with("FTS#<stem>#R#")` — word-boundary match |
-| `search_runs` filter `param.<key> LIKE '%word%'` | FTS `begins_with("FTS#<stem>#R#")` with field filter |
-| `search_runs` filter `tag.<key> LIKE '%word%'` (non-denormalized) | FTS `begins_with("FTS#<stem>#R#")` with field filter |
+| `search_runs` filter `run_name LIKE '%word%'` | FTS word: `begins_with("FTS#W#<stem>#R#")` |
+| `search_runs` filter `run_name LIKE '%part%'` (partial) | FTS trigram: intersect `FTS#3#<trigram>#R#` queries |
+| `search_runs` filter `param.<key> LIKE '%word%'` | FTS word: `begins_with("FTS#W#<stem>#R#")` with field filter |
+| `search_runs` filter `tag.<key> LIKE '%word%'` (non-denormalized) | FTS word: `begins_with("FTS#W#<stem>#R#")` with field filter |
 | `create_experiment` uniqueness check | GSI3 `EXP_NAME#<workspace>#<name>` condition |
 | `list_workspaces` | GSI2 `WORKSPACES` |
 | `get_workspace(name)` | PK point read `WORKSPACE#<name>` |
@@ -573,7 +660,7 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 
 | Pattern | Why | How |
 |---------|-----|-----|
-| `LIKE '%foo%'` (partial word substring) | FTS handles whole-word matches; partial words (e.g., `'%pipe%'` matching "pipeline") need substring check | FTS query for closest stem first, then Python `"foo" in value.lower()` on candidates. Cross-partition partial words: `contains()` FilterExpression on GSI2 |
+| `LIKE '%ab%'` (< 3 chars, too short for trigrams) | Minimum trigram length is 3 characters | `contains()` FilterExpression fallback |
 | `IS NULL` / `IS NOT NULL` on tags | Proving absence requires checking item existence | Denormalized tags: `attribute_not_exists` FilterExpression. Non-denormalized: BatchGetItem check |
 | Assessment filters (`feedback.<key>`) | Dynamic keys, child items | Query traces → query assessments per trace → filter |
 | `RLIKE` (regex, traces only) | No regex engine in DynamoDB | BatchGetItem → `re.match()` in Python |
