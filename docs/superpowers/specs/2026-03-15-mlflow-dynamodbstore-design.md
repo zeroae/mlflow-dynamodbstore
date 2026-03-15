@@ -341,7 +341,7 @@ All FTS items share `PK = EXP#<experiment_id>`.
 ```
 PK: CONFIG    SK: FTS_TRIGRAM_FIELDS
 attrs: fields = ["run_param_value", "run_tag_value", "trace_tag_value",
-                  "trace_metadata_value", "assessment_value"]
+                  "trace_metadata_value", "assessment_value", "span_content"]
 ```
 
 Entity names (experiment, run, model) always have trigram indexing enabled — not configurable. Additional fields are opt-in via the config above, seeded from environment variable on first table creation:
@@ -491,20 +491,25 @@ Mapping is configurable — users can add more attributes within X-Ray's 50 anno
 
 ### Search Flow
 
+`search_traces` with `span.*` filters uses a **hybrid strategy**: DynamoDB for cached traces, X-Ray for uncached traces.
+
 ```
 search_traces(filter_string="status = 'OK' AND tag.env = 'prod' AND span.type = 'LLM'")
 ```
 
-1. Partition filters: DynamoDB (`status`, `tag.env`), X-Ray (`span.type`)
-2. Execute DynamoDB query and X-Ray `GetTraceSummaries` in parallel
-3. Intersect trace ID sets
-4. Return full trace metadata from DynamoDB for intersected IDs
+1. Partition filters: DynamoDB (`status`, `tag.env`), span filters (`span.type`)
+2. For span filters, check both sources:
+   a. **DynamoDB (cached traces):** FilterExpression `contains(span_types, 'LLM')` on trace META — instant, covers all previously viewed traces
+   b. **X-Ray (uncached traces):** `GetTraceSummaries` with `annotation.mlflow_spanType = 'LLM'` — covers traces not yet cached
+3. Union DynamoDB + X-Ray results, deduplicate
+4. Intersect with non-span filters (status, tags)
+5. Return full trace metadata
 
-If only DynamoDB filters exist, skip X-Ray. If only span filters exist, query X-Ray first then BatchGetItem from DynamoDB.
+Over time, as more traces are viewed (or pre-cached), more data lives in DynamoDB and fewer X-Ray calls are needed. After X-Ray's 30-day retention, only DynamoDB-indexed data remains.
 
-### Trace Detail View (get_trace with spans)
+### Trace Detail View (get_trace with spans + span indexing)
 
-MLflow's UI calls `get_trace(request_id)` to render the span tree / flamegraph. Since spans live in X-Ray, our store fetches them on demand and caches them to DynamoDB for persistence beyond X-Ray's 30-day retention:
+MLflow's UI calls `get_trace(request_id)` to render the span tree / flamegraph. On first view, our store fetches spans from X-Ray, caches them, and **indexes span attributes** for future search queries:
 
 ```
 get_trace(request_id):
@@ -515,7 +520,19 @@ get_trace(request_id):
      a. Call X-Ray BatchGetTraces(trace_id)
      b. Convert X-Ray segments → MLflow Span objects (via span_converter.py)
      c. Cache to DynamoDB: PutItem T#<trace_id>#SPANS (JSON blob, same TTL as trace)
-     d. If X-Ray returns nothing (expired, > 30 days) → return trace without spans
+     d. Index span attributes on trace META:
+        UpdateItem trace META: SET
+          span_types = {'LLM', 'CHAIN', 'TOOL', ...},    (set of all span types)
+          span_statuses = {'OK', 'ERROR', ...},            (set of all span statuses)
+          span_models = {'gpt-4', ...},                    (set of all mlflow.llm.model values)
+          span_names = {'ChatModel', 'retrieve', ...}      (set of all span names)
+     e. Write FTS items for span names:
+        FTS#W#<stem>#T#<trace_id>#SPAN_NAME   (word-level, per unique span name)
+        FTS#3#<trigram>#T#<trace_id>#SPAN_NAME (trigram-level, per unique span name)
+     f. Write FTS items for span content (inputs/outputs, if trigrams enabled for span_content):
+        FTS#W#<stem>#T#<trace_id>#SPAN_CONTENT
+     g. Write FTS_REV items for all of the above (for cleanup)
+     h. If X-Ray returns nothing (expired, > 30 days) → return trace without spans
   5. Return complete Trace (metadata + spans)
 ```
 
@@ -527,7 +544,43 @@ SK: T#<trace_id>#SPANS
 attrs: spans (JSON), cached_at (timestamp), ttl (same as trace META)
 ```
 
-This is **lazy caching** — spans are only fetched and cached when someone views a specific trace. Most traces are never viewed individually, so we don't pay X-Ray API or DynamoDB storage costs for unused span data.
+Denormalized span attributes on trace META:
+
+```
+PK: EXP#<experiment_id>
+SK: T#<trace_id>
+attrs (added on cache): span_types (string set), span_statuses (string set),
+                        span_models (string set), span_names (string set)
+```
+
+This is **lazy caching with progressive indexing** — spans are fetched, cached, and indexed when someone views a specific trace. Each view enriches the DynamoDB data, making future `span.*` searches faster.
+
+### Span Search After Caching
+
+| Filter | Before Cache (X-Ray only) | After Cache (DynamoDB) |
+|--------|--------------------------|----------------------|
+| `span.type = 'LLM'` | X-Ray `GetTraceSummaries` | FilterExpression: `contains(span_types, 'LLM')` |
+| `span.name = 'ChatModel'` | X-Ray annotation query | FilterExpression: `contains(span_names, 'ChatModel')` |
+| `span.name LIKE '%chat%'` | X-Ray + client-side | FTS: `FTS#W#chat#T#` or trigram `FTS#3#cha#T#` |
+| `span.status = 'ERROR'` | X-Ray annotation query | FilterExpression: `contains(span_statuses, 'ERROR')` |
+| `span.content LIKE '%error%'` | X-Ray `BatchGetTraces` + client-side | FTS: `FTS#W#error#T#...#SPAN_CONTENT` |
+
+### Pre-Cache CLI
+
+For teams that want all span data indexed without manually viewing each trace:
+
+```bash
+# Pre-cache all traces in an experiment from X-Ray → DynamoDB
+mlflow-dynamodbstore cache-spans --table my-table --experiment-id 01JQXYZ
+
+# Pre-cache all traces within last N days
+mlflow-dynamodbstore cache-spans --table my-table --days 30
+
+# Pre-cache + index spans for all experiments
+mlflow-dynamodbstore cache-spans --table my-table --all
+```
+
+This fetches spans from X-Ray for all uncached traces, writes the SPANS item, indexes span attributes on trace META, and writes FTS items. Idempotent — safe to re-run. Run before X-Ray retention expires to ensure no span data loss.
 
 ### X-Ray → MLflow Span Conversion
 
@@ -557,11 +610,11 @@ If a team sets `trace_retention_days > 30`:
 
 ### Limitations
 
-- X-Ray annotations support `=` only — `span.name LIKE 'Chat%'` requires `BatchGetTraces` + client-side filter
+- X-Ray annotations support `=` only — `span.name LIKE 'Chat%'` requires `BatchGetTraces` + client-side filter (until trace is cached, then FTS handles it)
 - X-Ray requires a time window (max 6 hours per query) — derived from timestamp filters or chunked
-- `span.*` filters on traces older than 30 days: X-Ray data expired, filter silently skipped (DynamoDB-only filters still work)
-- `span.content LIKE '%error%'` requires `BatchGetTraces` + client-side string match
+- `span.*` filters on uncached traces older than 30 days: X-Ray data expired, only DynamoDB-indexed data available (traces must have been viewed or pre-cached within the 30-day window)
 - Span cache item could be large for traces with many spans — 400KB DynamoDB item limit applies. For traces with > ~1000 spans, split across multiple items or compress
+- Span FTS items (names, content) only exist for cached traces — `span.name LIKE '%chat%'` searches only return previously viewed/pre-cached traces. Use `cache-spans` CLI to ensure comprehensive coverage
 
 ## One-Sided LIKE/ILIKE Support
 
@@ -652,8 +705,10 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `search_experiments` filter `tag.<key> = X` | GSI2 → BatchGetItem tags → filter |
 | `search_model_versions` filter `tag.<key>` | Query versions → BatchGetItem tags → filter |
 | `search_traces` filter `tag.<key>` / `metadata.<key>` | LSI query → BatchGetItem items → filter |
-| `search_traces` filter `span.type = 'LLM'` | X-Ray `GetTraceSummaries` → intersect |
-| `search_traces` filter `span.name = 'X'` | X-Ray annotation query → intersect |
+| `search_traces` filter `span.type = 'LLM'` | Cached: FilterExpression `contains(span_types, 'LLM')`. Uncached: X-Ray `GetTraceSummaries`. Union results |
+| `search_traces` filter `span.name = 'X'` | Cached: FilterExpression `contains(span_names, 'X')`. Uncached: X-Ray annotation query. Union results |
+| `search_traces` filter `span.name LIKE '%chat%'` (cached) | FTS: `FTS#W#chat#T#...#SPAN_NAME` or trigram `FTS#3#` |
+| `search_traces` filter `span.content LIKE '%error%'` (cached) | FTS: `FTS#W#error#T#...#SPAN_CONTENT` |
 | Multi-experiment `search_runs` | Parallel queries per experiment, merge |
 
 ### Client-Side Filter (~5 patterns)
@@ -664,7 +719,7 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `IS NULL` / `IS NOT NULL` on tags | Proving absence requires checking item existence | Denormalized tags: `attribute_not_exists` FilterExpression. Non-denormalized: BatchGetItem check |
 | Assessment filters (`feedback.<key>`) | Dynamic keys, child items | Query traces → query assessments per trace → filter |
 | `RLIKE` (regex, traces only) | No regex engine in DynamoDB | BatchGetItem → `re.match()` in Python |
-| `span.*` with LIKE/ILIKE | X-Ray only supports `=` on annotations | `BatchGetTraces` → client-side match |
+| `span.*` on uncached traces > 30 days | X-Ray data expired, no DynamoDB index | No results for these traces — use `cache-spans` CLI proactively |
 
 All client-side filters are bounded by partition scope (experiment) or page size. Sub-second for small teams.
 
