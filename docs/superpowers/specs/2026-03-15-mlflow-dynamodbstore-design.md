@@ -130,6 +130,7 @@ Experiment META items carry a `workspace` attribute (default: `"default"`).
 | RANK metric *(materialized)* | `RANK#m#<key>#<inv_value>#<ulid>` | — | — | — | — | — |
 | RANK param *(materialized)* | `RANK#p#<key>#<value>#<ulid>` | — | — | — | — | — |
 | FTS token *(materialized)* | `FTS#<stemmed_token>#T#<trace_id>` | — | — | — | — | — |
+| FTS reverse *(materialized)* | `FTS_REV#T#<trace_id>#<stemmed_token>` | — | — | — | — | — |
 
 DLINK items carry a `context` attribute (denormalized from input tags) for dataset context filtering.
 
@@ -282,13 +283,20 @@ PK: RM#<model_name>        SK: M#NAME_REV    gsi5pk: MODEL_NAMES  gsi5sk: REV#<r
 
 ### FTS Items (full-text search)
 
-Written when assessments, trace tags, or trace request metadata are created/updated.
+Written when assessments, trace tags, or trace request metadata are created/updated. Each token is written as two items — a forward index for search and a reverse index for cleanup:
 
 ```
+# Forward index (for search queries):
 PK: EXP#<experiment_id>
 SK: FTS#<stemmed_token>#T#<trace_id>
 Attrs: field, key, trace_id
+
+# Reverse index (for deletion cleanup):
+PK: EXP#<experiment_id>
+SK: FTS_REV#T#<trace_id>#<stemmed_token>
 ```
+
+The reverse index enables efficient cleanup when a trace is deleted: `Query SK begins_with("FTS_REV#T#<trace_id>#")` returns all tokens to delete.
 
 ## Full-Text Search
 
@@ -618,6 +626,159 @@ Scorer, gateway secret, gateway endpoint, and gateway model definition permissio
 ### Prompts
 
 MLflow 3.x Prompts are built on top of registered models via default method implementations (`create_prompt`, `get_prompt`, etc.) that delegate to registered model CRUD with special `mlflow.prompt.*` tags. Our registered model implementation handles this automatically — no special prompt code needed.
+
+## Deletion Strategy
+
+MLflow uses both soft deletes (lifecycle_stage change) and physical deletes (item removal). Each deletion type requires cleanup of associated materialized views.
+
+### Soft Deletes (lifecycle_stage change)
+
+| Operation | Store Action | Materialized View Cleanup |
+|-----------|-------------|--------------------------|
+| `delete_run` | Update run META: set `lifecycle_stage = 'deleted'`. LSI1 moves from `active#<ulid>` to `deleted#<ulid>`. GSI2 experiment listing moves from `EXPERIMENTS#<ws>#active` to `EXPERIMENTS#<ws>#deleted` | Delete all RANK items for this run. Enumerate run's Metric Latest (`R#<ulid>#METRIC#*`) and Param (`R#<ulid>#PARAM#*`) items to construct exact RANK SKs, then BatchWriteItem deletes |
+| `restore_run` | Reverse the above. Set `lifecycle_stage = 'active'` | Re-create RANK items by enumerating Metric Latest + Param items |
+| `delete_experiment` | Update experiment META: set `lifecycle_stage = 'deleted'`. GSI2 moves from `EXPERIMENTS#<ws>#active` to `EXPERIMENTS#<ws>#deleted` | No materialized view cleanup — runs remain accessible via `DELETED_ONLY` view |
+| `restore_experiment` | Reverse the above | None |
+
+### Physical Deletes — Tags
+
+Tag deletion must clean up both the tag item and the denormalized `tags` map attribute on the META item:
+
+```
+delete_tag(run_id, key):
+  1. DeleteItem: PK=EXP#<id>, SK=R#<ulid>#TAG#<key>
+  2. UpdateItem on run META: REMOVE tags.<key>
+
+delete_experiment_tag(experiment_id, key):
+  1. DeleteItem: PK=EXP#<id>, SK=E#TAG#<key>
+  2. UpdateItem on experiment META: REMOVE tags.<key>
+
+delete_registered_model_tag(name, key):
+  1. DeleteItem: PK=RM#<ws>#<name>, SK=M#TAG#<key>
+  2. UpdateItem on model META: REMOVE tags.<key>
+
+delete_model_version_tag(name, version, key):
+  1. DeleteItem: PK=RM#<ws>#<name>, SK=V#<ver>#TAG#<key>
+  2. UpdateItem on version META: REMOVE tags.<key>
+
+delete_trace_tag(trace_id, key):
+  1. GetItem old tag → tokenize old value → compute FTS tokens to delete
+  2. DeleteItem: PK=EXP#<id>, SK=T#<trace_id>#TAG#<key>
+  3. UpdateItem on trace META: REMOVE tags.<key>
+  4. BatchWriteItem: delete FTS#<token>#T#<trace_id> and FTS_REV#T#<trace_id>#<token> for each old token
+```
+
+### Physical Deletes — Assessments
+
+Assessment updates and deletes must maintain the FTS index:
+
+```
+delete_assessment(trace_id, assessment_id):
+  1. GetItem old assessment → tokenize old value
+  2. DeleteItem: PK=EXP#<id>, SK=T#<trace_id>#ASSESS#<id>
+  3. BatchWriteItem: delete FTS#<token>#T#<trace_id> and FTS_REV#T#<trace_id>#<token> for each old token
+
+update_assessment(trace_id, assessment_id, new_value):
+  1. GetItem old assessment → tokenize old value
+  2. Tokenize new value
+  3. Compute diff: tokens_to_delete = old - new, tokens_to_add = new - old
+  4. UpdateItem assessment with new value
+  5. BatchWriteItem: delete old FTS + FTS_REV items, write new FTS + FTS_REV items
+```
+
+### Physical Deletes — Model Versions
+
+```
+delete_model_version(name, version):
+  1. Query PK=RM#<ws>#<name>, SK begins_with("V#<padded_ver>") → version META + version tags
+  2. BatchWriteItem: delete all matched items
+  3. GSI1 entries (model version by run_id) cleaned up automatically by DynamoDB
+```
+
+### Physical Deletes — Registered Models (partition wipe)
+
+Deleting a registered model removes the entire model partition:
+
+```
+delete_registered_model(name):
+  1. Query PK=RM#<ws>#<name> (paginated) → all items (META, tags, aliases, NAME_REV, all versions + version tags)
+  2. For each page: BatchWriteItem deletes (25 items per call)
+  3. GSI entries (GSI2, GSI3, GSI5) cleaned up automatically by DynamoDB when base items are deleted
+```
+
+### Physical Deletes — Traces
+
+```
+delete_traces(experiment_id, trace_ids):
+  For each trace_id:
+    1. Query PK=EXP#<id>, SK begins_with("T#<trace_id>")
+       → trace META, tags, req metadata, assessments, client req ptr
+    2. Query PK=EXP#<id>, SK begins_with("FTS_REV#T#<trace_id>#")
+       → all FTS reverse index items for this trace
+    3. For each FTS_REV item, derive the forward FTS SK:
+       FTS_REV#T#<trace_id>#<token> → FTS#<token>#T#<trace_id>
+    4. BatchWriteItem: delete all items from steps 1-3 (trace items + FTS forward + FTS reverse)
+```
+
+The FTS reverse index (`FTS_REV#T#<trace_id>#<token>`) enables this — without it, finding FTS tokens for a specific trace would require a full partition scan.
+
+### Physical Deletes — Experiments (partition wipe)
+
+Rarely needed (soft-delete is the norm), but for permanent cleanup:
+
+```
+delete_experiment_permanent(experiment_id):
+  1. Query PK=EXP#<id> (paginated) → all items in partition
+     (experiment META, tags, runs, run sub-items, traces, trace sub-items,
+      datasets, inputs, logged models, DLINK, RANK, FTS, FTS_REV, NAME_REV,
+      denormalize config)
+  2. For each page: BatchWriteItem deletes (25 items per call)
+  3. GSI entries cleaned up automatically by DynamoDB
+```
+
+For large experiments this could be millions of items. Implement as a background task with progress reporting.
+
+### Workspace Deletion
+
+```
+delete_workspace(name, mode):
+  if mode == SOFT_DELETE:
+    UpdateItem: PK=WORKSPACE#<name>, SK=META → set status='deleted'
+    # Data preserved, workspace hidden from list_workspaces
+
+  if mode == CASCADE:
+    1. Query GSI2: gsi2pk=EXPERIMENTS#<name>#active → all experiment ULIDs
+       Query GSI2: gsi2pk=EXPERIMENTS#<name>#deleted → all deleted experiment ULIDs
+    2. For each experiment: run delete_experiment_permanent(id)
+    3. Query GSI2: gsi2pk=MODELS#<name> → all model names
+    4. For each model: run delete_registered_model(model_name)
+    5. DeleteItem: PK=WORKSPACE#<name>, SK=META
+
+  # "default" workspace cannot be deleted
+```
+
+Cascade deletion is a long-running operation (potentially millions of items across many experiments and models). Implement as an async CLI command with progress reporting:
+
+```bash
+mlflow-dynamodbstore delete-workspace team-ml --mode cascade --table my-table
+# Progress: deleting 12 experiments, 3 models...
+# Experiment 01JQXYZ: 45,000 items deleted
+# Experiment 01JQABC: 12,000 items deleted
+# ...
+# Workspace team-ml deleted.
+```
+
+### Materialized View Cleanup Summary
+
+| Materialized Item | Cleaned Up By |
+|-------------------|--------------|
+| RANK items | `delete_run` (soft), `delete_experiment_permanent`, `delete_workspace` (cascade) |
+| DLINK items | `delete_experiment_permanent`, `delete_workspace` (cascade) |
+| NAME_REV items | `delete_registered_model`, `rename_experiment`, `rename_registered_model`, `delete_experiment_permanent`, `delete_workspace` (cascade) |
+| FTS + FTS_REV items | `delete_trace_tag`, `delete_assessment`, `update_assessment`, `delete_traces`, `delete_experiment_permanent`, `delete_workspace` (cascade) |
+| Denormalized `tags` map | `delete_tag` (all entity types) — REMOVE attribute from META item |
+| Client Req Ptr | `delete_traces`, `delete_experiment_permanent`, `delete_workspace` (cascade) |
+| GSI projections | Automatic — DynamoDB removes GSI entries when base item is deleted |
 
 ## Tag Denormalization
 
