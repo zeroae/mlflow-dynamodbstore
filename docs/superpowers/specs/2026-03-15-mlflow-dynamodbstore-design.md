@@ -596,10 +596,126 @@ Scorer, gateway secret, gateway endpoint, and gateway model definition permissio
 
 MLflow 3.x Prompts are built on top of registered models via default method implementations (`create_prompt`, `get_prompt`, etc.) that delegate to registered model CRUD with special `mlflow.prompt.*` tags. Our registered model implementation handles this automatically — no special prompt code needed.
 
+## Tag Denormalization
+
+Tags are stored as separate items (`R#<ulid>#TAG#<key>`) and also denormalized onto META items as a `tags` map attribute for query-time optimization. The tag item remains the source of truth.
+
+### How It Works
+
+Every tag write (`set_tag`, `log_batch`) does two things:
+
+1. Writes the tag item: `PK=EXP#<id>, SK=R#<ulid>#TAG#<key>`
+2. If the key matches a denormalize pattern, also updates the META item: `tags.<key> = value`
+
+### Denormalize Patterns
+
+Glob patterns (standard `fnmatch`) control which tags are denormalized:
+
+| Pattern | Matches |
+|---------|---------|
+| `mlflow.*` | All system tags (always present, re-added if removed) |
+| `env` | Exact key `env` |
+| `team.*` | `team.name`, `team.org`, ... |
+| `*` | Everything |
+
+### Pattern Storage (global + per-experiment)
+
+```
+PK: CONFIG              SK: DENORMALIZE_TAGS              patterns: ["mlflow.*"]
+PK: EXP#<experiment_id> SK: E#DENORMALIZE_TAGS            patterns: ["team.*", "dataset.*"]
+```
+
+**Merge logic:** effective patterns = global ∪ experiment-specific (additive). `mlflow.*` is always in the global config — if removed, re-added on server startup. Experiments can only add patterns, not override or remove global ones.
+
+Patterns are cached in memory per experiment at first access. The `CONFIG#DENORMALIZE_TAGS` item is read once at store initialization. Experiment-specific patterns are read on first access to that experiment.
+
+On first table creation, the global config is seeded from `MLFLOW_DYNAMODB_DENORMALIZE_TAGS` env var (if set), with `mlflow.*` always included.
+
+### META Item Structure
+
+```json
+{
+  "PK": "EXP#01JQXYZ",
+  "SK": "R#01JRABC",
+  "status": "FINISHED",
+  "start_time": 1709251200000,
+  "tags": {
+    "mlflow.user": "alice",
+    "mlflow.runName": "training-v3",
+    "mlflow.source.type": "NOTEBOOK",
+    "env": "production",
+    "team.name": "ml-platform"
+  }
+}
+```
+
+`tags` is a DynamoDB Map attribute. Tag keys with dots (e.g., `mlflow.user`) require expression attribute names in queries:
+
+```
+FilterExpression: #tags.#user = :val
+ExpressionAttributeNames: {"#tags": "tags", "#user": "mlflow.user"}
+```
+
+### Applies To All Entity Types
+
+| Entity | META Item | Denormalized Tags Attribute |
+|--------|-----------|---------------------------|
+| Experiment | `E#META` | `tags` map |
+| Run | `R#<ulid>` | `tags` map |
+| Registered Model | `M#META` | `tags` map |
+| Model Version | `V#<padded_ver>` | `tags` map |
+| Trace | `T#<trace_id>` | `tags` map (trace tags only, not request metadata) |
+
+### Access Pattern Impact
+
+| Pattern | Before | After (if tag matches denormalize pattern) |
+|---------|--------|-------------------------------------------|
+| `tag.<key> = 'X'` | Query + BatchGetItem (2 calls) | Query with FilterExpression (1 call) |
+| `tag.<key> != 'X'` | Query + BatchGetItem (2 calls) | Query with FilterExpression (1 call) |
+| `tag.<key> LIKE 'X%'` | Query + BatchGetItem + Python | FilterExpression: `begins_with` |
+| `tag.<key> LIKE '%X%'` | Client-side Python | FilterExpression: `contains` (server-side) |
+| `tag.<key> IS NULL` | Client-side existence check | FilterExpression: `attribute_not_exists` |
+| `tag.<key> IS NOT NULL` | Client-side existence check | FilterExpression: `attribute_exists` |
+| Compound: `tag.a = 'X' AND tag.b = 'Y'` | Query + 2× BatchGetItem | Single FilterExpression with AND |
+| `ORDER BY tag.<key>` | Fetch all + batch-get + in-memory sort | Fetch all (tags included) + in-memory sort (eliminates batch-get) |
+| `tag.<key>` (not matching any pattern) | Query + BatchGetItem | Unchanged — still BatchGetItem |
+
+### 400KB Item Size Safety
+
+MLflow system tags: ~15 keys × ~50 bytes = ~750 bytes. Typical user tags are similarly small. With `*` (denormalize everything) and 200 tags × 100 bytes avg = 20KB — well within 400KB.
+
+Soft limit: if adding a denormalized tag would push the META item above 350KB, skip denormalization for that tag and log a warning. The tag item is still written.
+
+### Admin CLI
+
+```bash
+# View current patterns
+mlflow-dynamodbstore denormalize-tags list --table my-table --region us-east-1
+
+# View patterns for a specific experiment
+mlflow-dynamodbstore denormalize-tags list --table my-table --experiment-id 01JQXYZ
+
+# Add global patterns
+mlflow-dynamodbstore denormalize-tags add "env" "team.*" --table my-table
+
+# Add per-experiment patterns
+mlflow-dynamodbstore denormalize-tags add "dataset.*" --table my-table --experiment-id 01JQXYZ
+
+# Remove patterns (mlflow.* is re-added on next server start)
+mlflow-dynamodbstore denormalize-tags remove "env" --table my-table
+
+# Backfill: denormalize tags on existing META items (all experiments)
+mlflow-dynamodbstore denormalize-tags backfill --table my-table
+
+# Backfill: single experiment
+mlflow-dynamodbstore denormalize-tags backfill --table my-table --experiment-id 01JQXYZ
+```
+
+The `backfill` command scans tag items, checks against current effective patterns, and updates META items. Reports progress. Idempotent.
+
 ## Open Decisions
 
 1. **Compute layer** — Lambda + API Gateway vs ECS Fargate (deferred to zae-mlflow CDK)
 2. **IaC tool for zae-mlflow** — CDK vs Terraform
-3. **Tag denormalization** — v2 optimization: stream-copy frequently filtered tags onto META items
-4. **OpenSearch upgrade** — v2: replace token-level FTS with Zero-ETL → OpenSearch Serverless
-5. **Async materialization** — v2 via zae-mlflow CDK: DynamoDB Streams + Lambda replaces sync writes
+3. **OpenSearch upgrade** — v2: replace token-level FTS with Zero-ETL → OpenSearch Serverless
+4. **Async materialization** — v2 via zae-mlflow CDK: DynamoDB Streams + Lambda replaces sync writes
