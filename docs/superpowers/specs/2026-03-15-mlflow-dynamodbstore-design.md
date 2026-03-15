@@ -262,7 +262,7 @@ Query: `ORDER BY metric.accuracy DESC` → `PK=EXP#1, SK begins_with("RANK#m#acc
 
 Only the **latest value** per (metric_key, run) is materialized as a RANK item. When a metric is logged at a new step, the previous RANK item for that (key, run) is deleted and replaced with the new value. This avoids write amplification from high-frequency metric logging (e.g., loss per training step).
 
-On run deletion (lifecycle → deleted): all RANK items for that run are deleted. Deletion strategy: enumerate the run's Metric Latest (`R#<ulid>#METRIC#*`) and Param (`R#<ulid>#PARAM#*`) items to construct exact RANK SKs, then BatchWriteItem deletes. This avoids scanning all RANK items in the partition. On restore: same enumeration, re-create RANK items.
+On run soft-deletion: RANK items are NOT immediately deleted. They receive TTL along with all other run children (see TTL and Data Lifecycle). RANK items are excluded from `search_runs` results by the LSI1 lifecycle filter — deleted runs never appear in active queries. On restore: TTL is removed from RANK items along with all other children.
 
 ### DLINK Items (dataset→run linkage)
 
@@ -754,18 +754,181 @@ rename_registered_model(old_name, new_name):
 
 This is the payoff of using ULIDs as partition keys with name indirection via GSI3 — renames are trivial for all entity types.
 
+## TTL and Data Lifecycle
+
+DynamoDB TTL automatically deletes items after a configured retention period. TTL deletes are free (no WCU cost).
+
+### TTL Configuration
+
+Stored in the CONFIG partition:
+
+```
+PK: CONFIG    SK: TTL_POLICY
+attrs: {
+  soft_deleted_retention_days: 90,
+  trace_retention_days: 30,
+  metric_history_retention_days: 365
+}
+```
+
+Seeded from environment variables on first table creation:
+
+```bash
+MLFLOW_DYNAMODB_SOFT_DELETED_RETENTION_DAYS=90
+MLFLOW_DYNAMODB_TRACE_RETENTION_DAYS=30
+MLFLOW_DYNAMODB_METRIC_HISTORY_RETENTION_DAYS=365
+```
+
+Set to `0` to disable TTL for that entity type (keep forever).
+
+### TTL by Entity Type
+
+| Entity | TTL Set When | TTL Removed When | Retention Config |
+|--------|-------------|-----------------|-----------------|
+| Run META + all children (tags, params, metrics latest, RANK, DLINK) | `delete_run` | `restore_run` | `soft_deleted_retention_days` |
+| Experiment META | `delete_experiment` | `restore_experiment` | `soft_deleted_retention_days` |
+| Experiment children (orphaned after META TTL) | Background cleanup | N/A | Same as experiment META |
+| Trace META + all children (tags, req metadata, assessments, FTS, FTS_REV) | `start_trace` (creation time) | Never | `trace_retention_days` |
+| Metric history items | `log_batch` (creation time) | Never | `metric_history_retention_days` |
+| Registered models / versions | Never | N/A | Kept forever |
+| Auth / Workspace / Config | Never | N/A | Kept forever |
+
+### Soft Deletes with TTL
+
+The key principle: **no immediate deletes on soft-delete**. TTL is set on all items, and DynamoDB handles expiration. This keeps `restore_run` / `restore_experiment` safe — nothing is lost until TTL expires.
+
+#### delete_run
+
+```
+delete_run(run_id):
+  ttl = now + soft_deleted_retention
+  1. Update run META: SET lifecycle_stage='deleted', ttl=<ttl>
+     LSI1 moves from active#<ulid> to deleted#<ulid>
+  2. Query all child items: SK begins_with("R#<ulid>#") → tags, params, metrics, RANK, DLINK
+  3. BatchWriteItem: SET ttl=<ttl> on each child item
+  # RANK items are NOT deleted — they get TTL like everything else
+  # Deleted runs are excluded from search_runs by LSI1 lifecycle filter
+```
+
+RANK items remain queryable during the soft-deleted period, but `search_runs` with `ACTIVE_ONLY` (the default) filters by LSI1 (`active#<ulid>`), so deleted runs never appear in results.
+
+#### restore_run
+
+```
+restore_run(run_id):
+  1. Update run META: SET lifecycle_stage='active', REMOVE ttl
+     LSI1 moves from deleted#<ulid> back to active#<ulid>
+  2. Query all child items: SK begins_with("R#<ulid>#")
+  3. BatchWriteItem: REMOVE ttl from each child item
+  # Everything is intact — nothing was deleted
+```
+
+#### delete_experiment
+
+```
+delete_experiment(experiment_id):
+  ttl = now + soft_deleted_retention
+  1. Update experiment META: SET lifecycle_stage='deleted', ttl=<ttl>
+     GSI2 moves from EXPERIMENTS#<ws>#active to EXPERIMENTS#<ws>#deleted
+  # Children NOT touched — runs are still individually restorable
+  # Too many items to walk synchronously (could be millions)
+```
+
+#### restore_experiment
+
+```
+restore_experiment(experiment_id):
+  1. Update experiment META: SET lifecycle_stage='active', REMOVE ttl
+  # Children were never modified — nothing to undo
+```
+
+#### Background Cleanup (experiment children)
+
+When an experiment META's TTL expires (DynamoDB auto-deletes it), the experiment's child items become orphans. A background cleanup job propagates TTL to them:
+
+```bash
+# CLI command — run periodically via cron or EventBridge
+mlflow-dynamodbstore cleanup-expired --table my-table --region us-east-1
+
+# Dry run
+mlflow-dynamodbstore cleanup-expired --table my-table --dry-run
+```
+
+The cleanup job:
+1. Scans for experiment partitions where `E#META` has been TTL-deleted (query each known experiment, check if META exists)
+2. For each orphaned partition: set `ttl = now` on all remaining items
+3. DynamoDB TTL auto-deletes them within ~48 hours
+4. Reports progress
+
+In v2 (zae-mlflow CDK), this becomes an EventBridge-scheduled Lambda.
+
+### Trace TTL (set at creation time)
+
+Traces have TTL set when they're created, not when they're deleted:
+
+```
+start_trace(trace_info):
+  ttl = now + trace_retention
+  1. Write trace META with ttl attribute
+  # All subsequent child writes also get same ttl:
+
+set_trace_tag(trace_id, key, value):
+  1. Write tag item with ttl from trace META
+
+create_assessment(trace_id, ...):
+  1. Write assessment item with ttl from trace META
+  2. Write FTS + FTS_REV items with same ttl
+```
+
+All items for a trace share the same TTL and expire together. No cleanup needed.
+
+### Metric History TTL
+
+Separate from run TTL — old step-by-step history can expire while the run and its latest metric values persist:
+
+```
+log_batch(run_id, metrics):
+  For each metric history item:
+    ttl = now + metric_history_retention
+    PutItem: R#<ulid>#MHIST#<key>#<step>#<ts> with ttl attribute
+  # Metric latest item does NOT get TTL — lives as long as the run
+  # RANK items do NOT get TTL — live as long as the run
+```
+
+### Admin CLI
+
+```bash
+# View current TTL policy
+mlflow-dynamodbstore ttl-policy show --table my-table
+
+# Update TTL policy
+mlflow-dynamodbstore ttl-policy set \
+  --soft-deleted-retention-days 90 \
+  --trace-retention-days 30 \
+  --metric-history-retention-days 365 \
+  --table my-table
+
+# Clean up orphaned items from TTL-expired experiment METAs
+mlflow-dynamodbstore cleanup-expired --table my-table
+
+# Dry run
+mlflow-dynamodbstore cleanup-expired --table my-table --dry-run
+```
+
 ## Deletion Strategy
 
-MLflow uses both soft deletes (lifecycle_stage change) and physical deletes (item removal). Each deletion type requires cleanup of associated materialized views.
+MLflow uses both soft deletes (lifecycle_stage change, handled by TTL above) and physical deletes (immediate item removal). Physical deletes require cleanup of associated materialized views.
 
-### Soft Deletes (lifecycle_stage change)
+### Soft Deletes
+
+Handled entirely by TTL (see TTL and Data Lifecycle section above):
 
 | Operation | Store Action | Materialized View Cleanup |
 |-----------|-------------|--------------------------|
-| `delete_run` | Update run META: set `lifecycle_stage = 'deleted'`. LSI1 moves from `active#<ulid>` to `deleted#<ulid>`. GSI2 experiment listing moves from `EXPERIMENTS#<ws>#active` to `EXPERIMENTS#<ws>#deleted` | Delete all RANK items for this run. Enumerate run's Metric Latest (`R#<ulid>#METRIC#*`) and Param (`R#<ulid>#PARAM#*`) items to construct exact RANK SKs, then BatchWriteItem deletes |
-| `restore_run` | Reverse the above. Set `lifecycle_stage = 'active'` | Re-create RANK items by enumerating Metric Latest + Param items |
-| `delete_experiment` | Update experiment META: set `lifecycle_stage = 'deleted'`. GSI2 moves from `EXPERIMENTS#<ws>#active` to `EXPERIMENTS#<ws>#deleted` | No materialized view cleanup — runs remain accessible via `DELETED_ONLY` view |
-| `restore_experiment` | Reverse the above | None |
+| `delete_run` | Set lifecycle='deleted' + TTL on META + all children | None immediate — RANK/DLINK items get TTL, excluded from queries by LSI1 lifecycle filter |
+| `restore_run` | Set lifecycle='active' + remove TTL from META + all children | None — everything is intact |
+| `delete_experiment` | Set lifecycle='deleted' + TTL on experiment META only | None immediate — children untouched, cleaned up by background job after META TTL expires |
+| `restore_experiment` | Set lifecycle='active' + remove TTL on experiment META | None — children were never modified |
 
 ### Physical Deletes — Tags
 
@@ -901,15 +1064,15 @@ mlflow-dynamodbstore delete-workspace team-ml --mode cascade --table my-table
 
 ### Materialized View Cleanup Summary
 
-| Materialized Item | Cleaned Up By |
-|-------------------|--------------|
-| RANK items | `delete_run` (soft), `delete_experiment_permanent`, `delete_workspace` (cascade) |
-| DLINK items | `delete_experiment_permanent`, `delete_workspace` (cascade) |
-| NAME_REV items | `delete_registered_model`, `rename_experiment`, `rename_registered_model`, `delete_experiment_permanent`, `delete_workspace` (cascade) |
-| FTS + FTS_REV items | `delete_trace_tag`, `delete_assessment`, `update_assessment`, `delete_traces`, `delete_experiment_permanent`, `delete_workspace` (cascade) |
-| Denormalized `tags` map | `delete_tag` (all entity types) — REMOVE attribute from META item |
-| Client Req Ptr | `delete_traces`, `delete_experiment_permanent`, `delete_workspace` (cascade) |
-| GSI projections | Automatic — DynamoDB removes GSI entries when base item is deleted |
+| Materialized Item | Soft Delete | Physical Delete | TTL |
+|-------------------|------------|----------------|-----|
+| RANK items | TTL set with parent run — excluded from queries by LSI1 lifecycle filter | `delete_experiment_permanent`, `delete_workspace` (cascade) | Expires with parent run |
+| DLINK items | TTL set with parent run | `delete_experiment_permanent`, `delete_workspace` (cascade) | Expires with parent run |
+| NAME_REV items | N/A (experiments/models don't soft-delete NAME_REV) | `delete_registered_model`, `rename_experiment`, `rename_registered_model`, `delete_experiment_permanent`, `delete_workspace` (cascade) | Expires with parent entity |
+| FTS + FTS_REV items | N/A | `delete_trace_tag`, `delete_assessment`, `update_assessment`, `delete_traces`, `delete_experiment_permanent`, `delete_workspace` (cascade) | Expires with parent trace (`trace_retention`) |
+| Denormalized `tags` map | N/A (lives on META item) | `delete_tag` (all entity types) — REMOVE attribute from META item | Expires with META item |
+| Client Req Ptr | TTL set with parent trace | `delete_traces`, `delete_experiment_permanent`, `delete_workspace` (cascade) | Expires with parent trace |
+| GSI projections | Automatic — DynamoDB handles | Automatic — DynamoDB removes GSI entries when base item is deleted | Automatic — DynamoDB removes GSI entries when TTL deletes base item |
 
 ## Tag Denormalization
 
