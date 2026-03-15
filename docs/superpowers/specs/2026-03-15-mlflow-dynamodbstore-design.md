@@ -152,6 +152,8 @@ Model META items carry `workspace` and `name` attributes.
 | Model Tag | `M#TAG#<key>` | — | — | — | — | — |
 | Model Alias | `M#ALIAS#<alias>` | — | — | — | — | — |
 | Model NAME_REV *(materialized)* | `M#NAME_REV` | — | — | — | — | — |
+| Model Name FTS *(materialized)* | `FTS#<token>#M#<model_id>` | — | — | — | — | — |
+| Model Name FTS_REV *(materialized)* | `FTS_REV#M#<model_id>#<token>` | — | — | — | — | — |
 | Version META | `V#<padded_ver>` | `creation_time` | `last_update_time` | `<stage>#<padded_ver>` | `lower(source_path)` | `<run_id>#<padded_ver>` |
 | Version Tag | `V#<padded_ver>#TAG#<key>` | — | — | — | — | — |
 
@@ -229,8 +231,12 @@ Note: The `CLIENT#<client_req_id>` entry is a separate materialized pointer item
 | Model META | `MODELS#<workspace>` | `<last_update_time>#<name>` | List registered models in workspace |
 | Auth User META | `AUTH_USERS` | `<username>` | List all auth users (workspace-independent) |
 | Workspace META | `WORKSPACES` | `<workspace_name>` | List all workspaces |
+| Experiment name FTS | `FTS_NAMES#<workspace>` | `<token>#EXP#<exp_id>` | Cross-partition experiment name LIKE '%word%' |
+| Model name FTS | `FTS_NAMES#<workspace>` | `<token>#RM#<model_id>` | Cross-partition model name LIKE '%word%' |
 
 When workspaces are disabled, all queries use `workspace = "default"` (e.g., `EXPERIMENTS#default#active`).
+
+Experiment and model name FTS tokens share the `FTS_NAMES#<workspace>` partition, differentiated by `EXP#` vs `RM#` prefix in the sort key. These are not extra items — the existing experiment/model name FTS items gain `gsi2pk` and `gsi2sk` attributes for cross-partition projection.
 
 #### GSI3 — Uniqueness & Named Lookups (workspace-scoped)
 
@@ -307,7 +313,7 @@ Written for all text fields within an experiment partition that support `LIKE '%
 
 | Field | Forward SK | Reverse SK | Written When |
 |-------|-----------|------------|-------------|
-| Experiment name | `FTS#<token>#E#<exp_id>` | `FTS_REV#E#<exp_id>#<token>` | Experiment create/rename |
+| Experiment name | `FTS#<token>#E#<exp_id>` + `gsi2pk/gsi2sk` | `FTS_REV#E#<exp_id>#<token>` | Experiment create/rename |
 | Run name | `FTS#<token>#R#<run_id>` | `FTS_REV#R#<run_id>#<token>` | Run create / `update_run_info` |
 | Run param value | `FTS#<token>#R#<run_id>#P#<key>` | `FTS_REV#R#<run_id>#P#<key>#<token>` | `log_batch` param write |
 | Run tag value | `FTS#<token>#R#<run_id>#TAG#<key>` | `FTS_REV#R#<run_id>#TAG#<key>#<token>` | `set_tag` |
@@ -321,7 +327,7 @@ All FTS items share `PK = EXP#<experiment_id>`.
 
 **Reverse index** enables cleanup: `SK begins_with("FTS_REV#R#<run_id>#")` → all tokens for that run (for deletion). Same pattern for traces, experiments, etc.
 
-**Cross-partition LIKE** (experiment/model names across all experiments): FTS can't help since items are scoped to a single experiment partition. Cross-partition `LIKE '%word%'` uses `contains()` FilterExpression on GSI2 — server-side filter, not index-native, but avoids client-side scanning.
+**Cross-partition LIKE** (experiment/model names): Experiment and model name FTS items carry `gsi2pk = FTS_NAMES#<workspace>` and `gsi2sk = <token>#EXP#<exp_id>` (or `#RM#<model_id>`), enabling cross-partition name search via GSI2. Model name FTS items live in the model partition (`PK = RM#<model_id>`) with the same GSI2 projection.
 
 ## Full-Text Search
 
@@ -357,8 +363,9 @@ Search queries apply the same tokenizer+stemmer, so `error`, `errors`, `errored`
 |--------|--------|-----|
 | `run_name LIKE '%pipeline%'` | Yes | "pipeline" → stem "pipelin" matches token |
 | `param.model LIKE '%transformer%'` | Yes | "transformer" → stem matches |
-| `run_name LIKE '%pipe%'` | No | "pipe" stems differently than "pipelin" |
-| Cross-partition `name LIKE '%pipeline%'` | No | FTS is within-partition; use `contains()` FilterExpression on GSI2 |
+| `experiment.name LIKE '%pipeline%'` (cross-partition) | Yes | FTS via GSI2 `FTS_NAMES#<ws>` → `begins_with("pipelin#EXP#")` |
+| `model.name LIKE '%transformer%'` (cross-partition) | Yes | FTS via GSI2 `FTS_NAMES#<ws>` → `begins_with("transform#RM#")` |
+| `run_name LIKE '%pipe%'` | No | "pipe" stems differently than "pipelin" (partial word) |
 
 Word-boundary matches work. Arbitrary substring matches (partial words) don't — this is the standard tradeoff for token-based search.
 
@@ -526,8 +533,10 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `search_runs` filter `dataset.name = X` | DLINK items |
 | `search_experiments` default sort | GSI2 `EXPERIMENTS#<workspace>#<lifecycle>` (ULID) |
 | `search_experiments` name ILIKE prefix/suffix | GSI5 `EXP_NAMES#<workspace>` |
+| `search_experiments` name LIKE '%word%' (cross-partition) | GSI2 `FTS_NAMES#<workspace>`, SK `begins_with("<token>#EXP#")` |
 | `search_registered_models` default sort | GSI2 `MODELS#<workspace>` |
 | `search_registered_models` name ILIKE prefix/suffix | GSI5 `MODEL_NAMES#<workspace>` |
+| `search_registered_models` name LIKE '%word%' (cross-partition) | GSI2 `FTS_NAMES#<workspace>`, SK `begins_with("<token>#RM#")` |
 | `search_model_versions` ORDER BY `version` | Base SK |
 | `search_model_versions` ORDER BY `creation_timestamp` | LSI1 |
 | `search_model_versions` filter `run_id` | GSI1 (cross-model) or LSI5 `begins_with("<run_id>#")` (within model) |
@@ -564,8 +573,7 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 
 | Pattern | Why | How |
 |---------|-----|-----|
-| `LIKE '%foo%'` (partial word substring) | FTS handles whole-word matches; partial words (e.g., `'%pipe%'` matching "pipeline") need substring check | FTS query for closest stem first, then Python `"foo" in value.lower()` on candidates |
-| `LIKE '%foo%'` (cross-partition: experiment/model names) | FTS is within-partition only | `contains()` FilterExpression on GSI2 — server-side filter |
+| `LIKE '%foo%'` (partial word substring) | FTS handles whole-word matches; partial words (e.g., `'%pipe%'` matching "pipeline") need substring check | FTS query for closest stem first, then Python `"foo" in value.lower()` on candidates. Cross-partition partial words: `contains()` FilterExpression on GSI2 |
 | `IS NULL` / `IS NOT NULL` on tags | Proving absence requires checking item existence | Denormalized tags: `attribute_not_exists` FilterExpression. Non-denormalized: BatchGetItem check |
 | Assessment filters (`feedback.<key>`) | Dynamic keys, child items | Query traces → query assessments per trace → filter |
 | `RLIKE` (regex, traces only) | No regex engine in DynamoDB | BatchGetItem → `re.match()` in Python |
