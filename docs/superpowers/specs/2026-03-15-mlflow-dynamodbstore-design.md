@@ -362,6 +362,20 @@ Search queries apply the same tokenizer+stemmer, so `error`, `errors`, `errored`
 
 Word-boundary matches work. Arbitrary substring matches (partial words) don't — this is the standard tradeoff for token-based search.
 
+### Multi-Word Phrase Search
+
+`LIKE '%foo bar%'` is a phrase search — both words must appear adjacent and in order. FTS handles this via intersect + client-side verify:
+
+1. Tokenize the search phrase: `"foo bar"` → stem → `{"foo", "bar"}`
+2. Query FTS for each token independently, intersect result sets (runs containing ALL words)
+3. Client-side verify the exact phrase on the intersected candidates: `"foo bar" in value.lower()`
+
+The FTS intersection eliminates most non-matching entities (e.g., narrows 10,000 runs to ~50 candidates containing both words). The client-side phrase check runs only on this small set.
+
+Edge cases:
+- All search words are stop words or < 2 chars (e.g., `'%a%'`): no FTS tokens produced, falls back to full scan + `contains()` FilterExpression
+- Single search word: no intersection needed, standard single-token FTS query + client-side verify
+
 ### Upgrade Path
 
 v2: Replace token-level FTS with DynamoDB Zero-ETL → OpenSearch Serverless when full-text search demands grow. Same query interface, different backend.
