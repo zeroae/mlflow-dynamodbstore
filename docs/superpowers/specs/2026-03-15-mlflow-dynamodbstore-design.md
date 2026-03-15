@@ -126,6 +126,7 @@ Experiment META items carry a `workspace` attribute (default: `"default"`).
 | Trace Tag | `T#<trace_id>#TAG#<key>` | — | — | — | — | — |
 | Trace Req Metadata | `T#<trace_id>#RMETA#<key>` | — | — | — | — | — |
 | Assessment | `T#<trace_id>#ASSESS#<id>` | — | — | — | — | — |
+| Trace Span Cache *(lazy)* | `T#<trace_id>#SPANS` | — | — | — | — | — |
 | Trace Client Req Ptr *(materialized)* | `T#<trace_id>#CLIENTPTR` | — | — | — | — | — |
 | DLINK *(materialized)* | `DLINK#<ds_name>#<ds_digest>#R#<ulid>` | — | — | — | — | — |
 | RANK metric *(materialized)* | `RANK#m#<key>#<inv_value>#<ulid>` | — | — | — | — | — |
@@ -365,12 +366,66 @@ search_traces(filter_string="status = 'OK' AND tag.env = 'prod' AND span.type = 
 
 If only DynamoDB filters exist, skip X-Ray. If only span filters exist, query X-Ray first then BatchGetItem from DynamoDB.
 
+### Trace Detail View (get_trace with spans)
+
+MLflow's UI calls `get_trace(request_id)` to render the span tree / flamegraph. Since spans live in X-Ray, our store fetches them on demand and caches them to DynamoDB for persistence beyond X-Ray's 30-day retention:
+
+```
+get_trace(request_id):
+  1. Read from DynamoDB: trace META, tags, request metadata, assessments
+  2. Check DynamoDB for cached spans: T#<trace_id>#SPANS
+  3. If cached spans exist → use them
+  4. If not cached:
+     a. Call X-Ray BatchGetTraces(trace_id)
+     b. Convert X-Ray segments → MLflow Span objects (via span_converter.py)
+     c. Cache to DynamoDB: PutItem T#<trace_id>#SPANS (JSON blob, same TTL as trace)
+     d. If X-Ray returns nothing (expired, > 30 days) → return trace without spans
+  5. Return complete Trace (metadata + spans)
+```
+
+The span cache item:
+
+```
+PK: EXP#<experiment_id>
+SK: T#<trace_id>#SPANS
+attrs: spans (JSON), cached_at (timestamp), ttl (same as trace META)
+```
+
+This is **lazy caching** — spans are only fetched and cached when someone views a specific trace. Most traces are never viewed individually, so we don't pay X-Ray API or DynamoDB storage costs for unused span data.
+
+### X-Ray → MLflow Span Conversion
+
+The OTel exporter preserves MLflow span attributes as X-Ray annotations/metadata. The reverse mapping in `span_converter.py`:
+
+| X-Ray Segment Field | MLflow Span Field |
+|---------------------|------------------|
+| Segment/subsegment ID | `span_id` |
+| Parent ID | `parent_span_id` |
+| Start/end time | `start_time_ns`, `end_time_ns` |
+| Annotation `mlflow_spanType` | `span_type` |
+| Annotation `mlflow_spanName` | `name` |
+| Annotation `mlflow_spanStatus` | `status` |
+| Metadata `mlflow.spanInputs` | `inputs` |
+| Metadata `mlflow.spanOutputs` | `outputs` |
+| Metadata `mlflow.chat.tokenUsage` | `token_usage` |
+| Metadata `mlflow.llm.cost` | `cost` |
+
+### Retention
+
+X-Ray trace retention is **fixed at 30 days** (AWS hard limit, not configurable). Our default `trace_retention_days` matches at 30 days so both expire together.
+
+If a team sets `trace_retention_days > 30`:
+- Traces < 30 days: spans served from X-Ray (cached on first view)
+- Traces 30-N days: spans served from DynamoDB cache (if previously viewed) or unavailable
+- The lazy caching ensures that any trace viewed within the 30-day X-Ray window has its spans preserved in DynamoDB for the full `trace_retention_days` period
+
 ### Limitations
 
 - X-Ray annotations support `=` only — `span.name LIKE 'Chat%'` requires `BatchGetTraces` + client-side filter
 - X-Ray requires a time window (max 6 hours per query) — derived from timestamp filters or chunked
-- X-Ray trace retention is 30 days — `span.*` filters on older traces are silently excluded
+- `span.*` filters on traces older than 30 days: X-Ray data expired, filter silently skipped (DynamoDB-only filters still work)
 - `span.content LIKE '%error%'` requires `BatchGetTraces` + client-side string match
+- Span cache item could be large for traces with many spans — 400KB DynamoDB item limit applies. For traces with > ~1000 spans, split across multiple items or compress
 
 ## One-Sided LIKE/ILIKE Support
 
@@ -411,6 +466,7 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `get_model_version(name, version)` | PK+SK point read |
 | `get_model_version_by_alias(name, alias)` | GSI3 point query |
 | `get_trace_info(request_id)` | GSI1 point query |
+| `get_trace(request_id)` (with spans) | GSI1 → DynamoDB (metadata + span cache check) → X-Ray `BatchGetTraces` if not cached → cache spans to DynamoDB |
 | `get_metric_history(run_id, key)` | GSI1 (resolve run_id → experiment_id) + PK+SK range query. Store caches run→experiment mappings after first lookup |
 | `search_runs` default sort (`start_time DESC`) | Base SK (ULID) |
 | `search_runs` ORDER BY `end_time` | LSI2 |
@@ -541,6 +597,7 @@ mlflow-dynamodbstore/
 │   │   ├── __init__.py
 │   │   ├── client.py              # X-Ray API (GetTraceSummaries, BatchGetTraces)
 │   │   ├── filter_translator.py   # MLflow span.* filter → X-Ray filter expression
+│   │   ├── span_converter.py      # X-Ray segments → MLflow Span objects
 │   │   └── annotation_config.py   # Configurable mlflow attr → X-Ray annotation mapping
 │   │
 │   └── otel/
@@ -788,7 +845,7 @@ Set to `0` to disable TTL for that entity type (keep forever).
 | Run META + all children (tags, params, metrics latest, RANK, DLINK) | `delete_run` | `restore_run` | `soft_deleted_retention_days` |
 | Experiment META | `delete_experiment` | `restore_experiment` | `soft_deleted_retention_days` |
 | Experiment children (orphaned after META TTL) | Background cleanup | N/A | Same as experiment META |
-| Trace META + all children (tags, req metadata, assessments, FTS, FTS_REV) | `start_trace` (creation time) | Never | `trace_retention_days` |
+| Trace META + all children (tags, req metadata, assessments, FTS, FTS_REV, span cache) | `start_trace` (creation time); span cache on first `get_trace` | Never | `trace_retention_days` |
 | Metric history items | `log_batch` (creation time) | Never | `metric_history_retention_days` |
 | Registered models / versions | Never | N/A | Kept forever |
 | Auth / Workspace / Config | Never | N/A | Kept forever |
