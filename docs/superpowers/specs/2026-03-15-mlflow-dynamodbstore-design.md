@@ -131,8 +131,8 @@ Experiment META items carry a `workspace` attribute (default: `"default"`).
 | DLINK *(materialized)* | `DLINK#<ds_name>#<ds_digest>#R#<ulid>` | — | — | — | — | — |
 | RANK metric *(materialized)* | `RANK#m#<key>#<inv_value>#<ulid>` | — | — | — | — | — |
 | RANK param *(materialized)* | `RANK#p#<key>#<value>#<ulid>` | — | — | — | — | — |
-| FTS token *(materialized)* | `FTS#<stemmed_token>#T#<trace_id>` | — | — | — | — | — |
-| FTS reverse *(materialized)* | `FTS_REV#T#<trace_id>#<stemmed_token>` | — | — | — | — | — |
+| FTS token *(materialized)* | `FTS#<token>#<entity_type>#<entity_id>[#<field>]` | — | — | — | — | — |
+| FTS reverse *(materialized)* | `FTS_REV#<entity_type>#<entity_id>[#<field>]#<token>` | — | — | — | — | — |
 
 DLINK items carry a `context` attribute (denormalized from input tags) for dataset context filtering.
 
@@ -301,20 +301,27 @@ PK: RM#<model_name>        SK: M#NAME_REV    gsi5pk: MODEL_NAMES  gsi5sk: REV#<r
 
 ### FTS Items (full-text search)
 
-Written when assessments, trace tags, or trace request metadata are created/updated. Each token is written as two items — a forward index for search and a reverse index for cleanup:
+Written for all text fields within an experiment partition that support `LIKE '%word%'` queries. Each token is written as two items — a forward index for search and a reverse index for cleanup.
 
-```
-# Forward index (for search queries):
-PK: EXP#<experiment_id>
-SK: FTS#<stemmed_token>#T#<trace_id>
-Attrs: field, key, trace_id
+**Indexed fields and SK patterns:**
 
-# Reverse index (for deletion cleanup):
-PK: EXP#<experiment_id>
-SK: FTS_REV#T#<trace_id>#<stemmed_token>
-```
+| Field | Forward SK | Reverse SK | Written When |
+|-------|-----------|------------|-------------|
+| Experiment name | `FTS#<token>#E#<exp_id>` | `FTS_REV#E#<exp_id>#<token>` | Experiment create/rename |
+| Run name | `FTS#<token>#R#<run_id>` | `FTS_REV#R#<run_id>#<token>` | Run create / `update_run_info` |
+| Run param value | `FTS#<token>#R#<run_id>#P#<key>` | `FTS_REV#R#<run_id>#P#<key>#<token>` | `log_batch` param write |
+| Run tag value | `FTS#<token>#R#<run_id>#TAG#<key>` | `FTS_REV#R#<run_id>#TAG#<key>#<token>` | `set_tag` |
+| Trace tag value | `FTS#<token>#T#<trace_id>#TAG#<key>` | `FTS_REV#T#<trace_id>#TAG#<key>#<token>` | `set_trace_tag` |
+| Trace req metadata value | `FTS#<token>#T#<trace_id>#RMETA#<key>` | `FTS_REV#T#<trace_id>#RMETA#<key>#<token>` | Trace metadata write |
+| Assessment value | `FTS#<token>#T#<trace_id>#ASSESS#<id>` | `FTS_REV#T#<trace_id>#ASSESS#<id>#<token>` | Assessment create/update |
 
-The reverse index enables efficient cleanup when a trace is deleted: `Query SK begins_with("FTS_REV#T#<trace_id>#")` returns all tokens to delete.
+All FTS items share `PK = EXP#<experiment_id>`.
+
+**Forward index** enables search: `SK begins_with("FTS#<stemmed_token>#R#")` → all runs matching that token.
+
+**Reverse index** enables cleanup: `SK begins_with("FTS_REV#R#<run_id>#")` → all tokens for that run (for deletion). Same pattern for traces, experiments, etc.
+
+**Cross-partition LIKE** (experiment/model names across all experiments): FTS can't help since items are scoped to a single experiment partition. Cross-partition `LIKE '%word%'` uses `contains()` FilterExpression on GSI2 — server-side filter, not index-native, but avoids client-side scanning.
 
 ## Full-Text Search
 
@@ -340,9 +347,20 @@ def tokenize(text: str) -> set[str]:
     return set(_stemmer.stemWords(words))
 ```
 
-Indexed fields: assessment values, trace tag values, trace request metadata values. Span content is NOT indexed (lives in X-Ray).
+**Indexed fields:** experiment names, run names, run param values, run tag values (non-denormalized), trace tag values, trace request metadata values, assessment values. Span content is NOT indexed (lives in X-Ray).
 
 Search queries apply the same tokenizer+stemmer, so `error`, `errors`, `errored` all resolve to the same stem.
+
+**What FTS handles vs what it doesn't:**
+
+| Search | Works? | Why |
+|--------|--------|-----|
+| `run_name LIKE '%pipeline%'` | Yes | "pipeline" → stem "pipelin" matches token |
+| `param.model LIKE '%transformer%'` | Yes | "transformer" → stem matches |
+| `run_name LIKE '%pipe%'` | No | "pipe" stems differently than "pipelin" |
+| Cross-partition `name LIKE '%pipeline%'` | No | FTS is within-partition; use `contains()` FilterExpression on GSI2 |
+
+Word-boundary matches work. Arbitrary substring matches (partial words) don't — this is the standard tradeoff for token-based search.
 
 ### Upgrade Path
 
@@ -505,6 +523,9 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `search_traces` ORDER BY `execution_time` | LSI5 |
 | `search_traces` filter `name LIKE 'prefix%'` | LSI4 `begins_with(lower("prefix"))` |
 | `search_traces` FTS keyword | FTS items |
+| `search_runs` filter `run_name LIKE '%word%'` | FTS `begins_with("FTS#<stem>#R#")` — word-boundary match |
+| `search_runs` filter `param.<key> LIKE '%word%'` | FTS `begins_with("FTS#<stem>#R#")` with field filter |
+| `search_runs` filter `tag.<key> LIKE '%word%'` (non-denormalized) | FTS `begins_with("FTS#<stem>#R#")` with field filter |
 | `create_experiment` uniqueness check | GSI3 `EXP_NAME#<workspace>#<name>` condition |
 | `list_workspaces` | GSI2 `WORKSPACES` |
 | `get_workspace(name)` | PK point read `WORKSPACE#<name>` |
@@ -529,8 +550,9 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 
 | Pattern | Why | How |
 |---------|-----|-----|
-| `LIKE '%foo%'` (double-sided) | No substring index in DynamoDB | Query candidates → Python `"foo" in value.lower()` |
-| `IS NULL` / `IS NOT NULL` on tags | Proving absence requires checking item existence | BatchGetItem for tag SK → include/exclude by presence |
+| `LIKE '%foo%'` (partial word substring) | FTS handles whole-word matches; partial words (e.g., `'%pipe%'` matching "pipeline") need substring check | FTS query for closest stem first, then Python `"foo" in value.lower()` on candidates |
+| `LIKE '%foo%'` (cross-partition: experiment/model names) | FTS is within-partition only | `contains()` FilterExpression on GSI2 — server-side filter |
+| `IS NULL` / `IS NOT NULL` on tags | Proving absence requires checking item existence | Denormalized tags: `attribute_not_exists` FilterExpression. Non-denormalized: BatchGetItem check |
 | Assessment filters (`feedback.<key>`) | Dynamic keys, child items | Query traces → query assessments per trace → filter |
 | `RLIKE` (regex, traces only) | No regex engine in DynamoDB | BatchGetItem → `re.match()` in Python |
 | `span.*` with LIKE/ILIKE | X-Ray only supports `=` on annotations | `BatchGetTraces` → client-side match |
@@ -735,7 +757,7 @@ These require no materialized view cleanup — DynamoDB automatically propagates
 
 | Operation | Fields Changed | Auto-Updated Indexes |
 |-----------|---------------|---------------------|
-| `update_run_info(run_id, status, end_time, run_name)` | status, end_time, run_name on run META | LSI2 (`end_time`), LSI3 (`<status>#<ulid>`), LSI4 (`lower(run_name)`), LSI5 (`duration_ms` = end_time - start_time) |
+| `update_run_info(run_id, status, end_time, run_name)` | status, end_time, run_name on run META | LSI2 (`end_time`), LSI3 (`<status>#<ulid>`), LSI4 (`lower(run_name)`), LSI5 (`duration_ms`). **If run_name changes:** also update FTS tokens (see below) |
 | `update_registered_model(name, description)` | description on model META | None (description not indexed) |
 | `update_model_version(name, version, description)` | description on version META | None |
 | `transition_model_version_stage(name, version, stage)` | stage on version META | LSI3 (`<stage>#<padded_ver>`) |
@@ -749,12 +771,19 @@ These require no materialized view cleanup — DynamoDB automatically propagates
 
 ```
 set_tag(run_id, key, value):
-  1. PutItem: PK=EXP#<id>, SK=R#<ulid>#TAG#<key>  (overwrites old value)
-  2. If key matches denormalize pattern:
+  1. GetItem old tag → tokenize old value (if exists)
+  2. Tokenize new value
+  3. Compute diff: tokens_to_delete = old - new, tokens_to_add = new - old
+  4. PutItem: PK=EXP#<id>, SK=R#<ulid>#TAG#<key>  (overwrites old value)
+  5. If key matches denormalize pattern:
      UpdateItem on run META: SET tags.<key> = new_value
+  6. BatchWriteItem: delete old FTS + FTS_REV items, write new FTS + FTS_REV items
+     (SK pattern: FTS#<token>#R#<run_id>#TAG#<key>)
 ```
 
-Same pattern for `set_experiment_tag`, `set_registered_model_tag`, `set_model_version_tag`.
+Same pattern for `set_experiment_tag` (FTS on experiment name tokens already handled by rename).
+
+`set_registered_model_tag` and `set_model_version_tag` do NOT write FTS items (model partition, not experiment partition — model name search uses GSI5).
 
 For trace tags, FTS tokens must also be maintained:
 
@@ -787,16 +816,23 @@ log_batch(run_id, metrics, params, tags):
        (Skip if value unchanged — same rank_sk means same RANK item)
 
   For each param:
-    1. GetItem param: R#<ulid>#PARAM#<key> → read old rank_sk (if exists)
+    1. GetItem param: R#<ulid>#PARAM#<key> → read old rank_sk + old value (if exists)
     2. PutItem param with new value + new rank_sk attribute
     3. If rank_sk changed:
        DeleteItem: old RANK item
        PutItem: new RANK item
+    4. Tokenize old value (if exists) and new value, compute diff
+    5. BatchWriteItem: delete old FTS + FTS_REV, write new FTS + FTS_REV
+       (SK pattern: FTS#<token>#R#<run_id>#P#<key>)
 
   For each tag:
-    1. PutItem tag: R#<ulid>#TAG#<key>
-    2. If key matches denormalize pattern:
+    1. GetItem old tag → tokenize old value (if exists)
+    2. Tokenize new value, compute diff
+    3. PutItem tag: R#<ulid>#TAG#<key>
+    4. If key matches denormalize pattern:
        UpdateItem on run META: SET tags.<key> = new_value
+    5. BatchWriteItem: delete old FTS + FTS_REV, write new FTS + FTS_REV
+       (SK pattern: FTS#<token>#R#<run_id>#TAG#<key>)
 ```
 
 The `rank_sk` attribute on Metric Latest / Param items avoids recomputing the inverted value and ensures we always know the exact old RANK SK to delete.
@@ -809,16 +845,20 @@ Experiment renames update the META item and the NAME_REV materialized item. Sinc
 rename_experiment(id, new_name):
   1. Uniqueness check: Query GSI3 gsi3pk=EXP_NAME#<ws>#<new_name>
      ConditionExpression: must return empty
-  2. UpdateItem on experiment META:
+  2. Read old name from experiment META
+  3. UpdateItem on experiment META:
      SET name = new_name,
          lsi3sk = lower(new_name),
          lsi4sk = rev(lower(new_name)),
          gsi3pk = EXP_NAME#<ws>#<new_name>,
          gsi5sk = FWD#<lower(new_name)>#<id>
      (DynamoDB auto-removes old GSI3/GSI5 entries, creates new ones)
-  3. UpdateItem on NAME_REV item:
+  4. UpdateItem on NAME_REV item:
      SET gsi5sk = REV#<rev(lower(new_name))>#<id>
      (DynamoDB auto-updates GSI5 reverse entry)
+  5. Tokenize old name and new name, compute diff
+  6. BatchWriteItem: delete old FTS + FTS_REV, write new FTS + FTS_REV
+     (SK pattern: FTS#<token>#E#<exp_id>)
 ```
 
 ### Rename Registered Model
