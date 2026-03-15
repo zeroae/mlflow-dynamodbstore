@@ -196,7 +196,7 @@ Note: The `CLIENT#<client_req_id>` entry is a separate materialized pointer item
 
 | Entity | gsi2pk | gsi2sk | Query |
 |--------|--------|--------|-------|
-| Experiment META | `EXPERIMENTS#<lifecycle>` | `<ulid>` | List all experiments by lifecycle (e.g., `EXPERIMENTS#active`), time-sorted via ULID |
+| Experiment META | `EXPERIMENTS#<lifecycle>` | `<ulid>` | List all experiments by lifecycle (e.g., `EXPERIMENTS#active`), time-sorted via ULID. `ViewType.ALL` requires two queries (`#active` + `#deleted`) merged client-side |
 | Model META | `MODELS` | `<last_update_time>#<name>` | List all registered models |
 | Auth User META | `AUTH_USERS` | `<username>` | List all auth users |
 
@@ -243,7 +243,7 @@ Query: `ORDER BY metric.accuracy DESC` → `PK=EXP#1, SK begins_with("RANK#m#acc
 
 Only the **latest value** per (metric_key, run) is materialized as a RANK item. When a metric is logged at a new step, the previous RANK item for that (key, run) is deleted and replaced with the new value. This avoids write amplification from high-frequency metric logging (e.g., loss per training step).
 
-On run deletion (lifecycle → deleted): all RANK items for that run are deleted. On restore: re-created by reading the run's latest metric values.
+On run deletion (lifecycle → deleted): all RANK items for that run are deleted. Deletion strategy: enumerate the run's Metric Latest (`R#<ulid>#METRIC#*`) and Param (`R#<ulid>#PARAM#*`) items to construct exact RANK SKs, then BatchWriteItem deletes. This avoids scanning all RANK items in the partition. On restore: same enumeration, re-create RANK items.
 
 ### DLINK Items (dataset→run linkage)
 
