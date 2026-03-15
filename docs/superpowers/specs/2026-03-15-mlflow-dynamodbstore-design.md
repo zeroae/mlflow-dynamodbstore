@@ -11,6 +11,7 @@ A pip-installable MLflow plugin (`mlflow-dynamodbstore`) that provides DynamoDB-
 | Tracking Store (experiments, runs, metrics, params, tags, datasets, inputs, logged models, trace metadata, assessments) | DynamoDB | `mlflow-dynamodbstore` |
 | Model Registry Store (registered models, versions, tags, aliases) | DynamoDB | `mlflow-dynamodbstore` |
 | Auth Plugin (users, permissions) | DynamoDB | `mlflow-dynamodbstore` |
+| Workspace Provider (workspace CRUD, artifact root resolution) | DynamoDB | `mlflow-dynamodbstore` |
 | Artifacts (model files, plots) | S3 | MLflow built-in |
 | Spans (timing, flamegraphs, service maps) | AWS X-Ray | OTel dual-export |
 | Full serverless deployment (API GW, Lambda, CDK) | AWS | `zae-mlflow` (separate repo, v2) |
@@ -95,11 +96,15 @@ Using the entity's creation timestamp as the ULID timestamp means:
 
 ## Single Table Design
 
-One DynamoDB table, pay-per-request billing, 3 partition families, 19 entity types + 4 materialized types.
+One DynamoDB table, pay-per-request billing, 4 partition families, 20 entity types + 4 materialized types.
+
+All workspace-scoped entities carry a `workspace` attribute. Experiment IDs are globally unique (ULIDs), so `EXP#<experiment_id>` remains the PK — workspace is an attribute, not part of the experiment PK. Model names are unique per workspace, so workspace IS part of the model PK: `RM#<workspace>#<model_name>`. When workspaces are disabled, all operations use workspace `"default"`.
 
 LSI attributes are only populated on META-level items. Sub-items (tags, params, metrics, etc.) omit them and are automatically excluded from LSI projections.
 
 ### Experiment Partition: `PK = EXP#<experiment_id>`
+
+Experiment META items carry a `workspace` attribute (default: `"default"`).
 
 | Entity | SK | lsi1sk | lsi2sk | lsi3sk | lsi4sk | lsi5sk |
 |--------|-----|--------|--------|--------|--------|--------|
@@ -132,7 +137,9 @@ RANK metric items use inverted values (`9999999999.9999 - value`, zero-padded) s
 
 FTS items carry `field` (assessment/tag/metadata) and `key` attributes for filtering by source.
 
-### Model Partition: `PK = RM#<model_name>`
+### Model Partition: `PK = RM#<workspace>#<model_name>`
+
+Model names are unique per workspace, so the workspace is part of the partition key.
 
 | Entity | SK | lsi1sk | lsi2sk | lsi3sk | lsi4sk | lsi5sk |
 |--------|-----|--------|--------|--------|--------|--------|
@@ -142,6 +149,14 @@ FTS items carry `field` (assessment/tag/metadata) and `key` attributes for filte
 | Model NAME_REV *(materialized)* | `M#NAME_REV` | — | — | — | — | — |
 | Version META | `V#<padded_ver>` | — | `last_update_time` | `<stage>#<padded_ver>` | `lower(source_path)` | — |
 | Version Tag | `V#<padded_ver>#TAG#<key>` | — | — | — | — | — |
+
+### Workspace Partition: `PK = WORKSPACE#<workspace_name>`
+
+| Entity | SK |
+|--------|-----|
+| Workspace META | `META` |
+
+Attributes: `name`, `description`, `default_artifact_root`. A `default` workspace is created during table provisioning.
 
 ### Auth Partition: `PK = USER#<username>`
 
@@ -179,7 +194,7 @@ FTS items carry `field` (assessment/tag/metadata) and `key` attributes for filte
 | Entity | gsi1pk | gsi1sk | Query |
 |--------|--------|--------|-------|
 | Run META | `RUN#<run_id>` | `EXP#<exp_id>` | Get run by ID → find experiment |
-| Model Version | `RUN#<run_id>` | `MV#<model>#<ver>` | Model versions by run_id |
+| Model Version | `RUN#<run_id>` | `MV#<workspace>#<model>#<ver>` | Model versions by run_id |
 | Trace META | `TRACE#<trace_id>` | `EXP#<exp_id>` | Get trace by request ID |
 | Trace Client Req Ptr *(materialized)* | `CLIENT#<client_req_id>` | `TRACE#<trace_id>` | Trace by client request ID |
 | Input Link | `DS#<ds_uuid>` | `R#<run_id>` | Find runs using a dataset |
@@ -188,20 +203,23 @@ FTS items carry `field` (assessment/tag/metadata) and `key` attributes for filte
 
 Note: The `CLIENT#<client_req_id>` entry is a separate materialized pointer item (written alongside the Trace META item at `start_trace` time), not an attribute on the Trace META item itself. A single DynamoDB item can only have one `gsi1pk` value.
 
-#### GSI2 — Global Entity Listings
+#### GSI2 — Workspace-Scoped Entity Listings
 
 | Entity | gsi2pk | gsi2sk | Query |
 |--------|--------|--------|-------|
-| Experiment META | `EXPERIMENTS#<lifecycle>` | `<ulid>` | List all experiments by lifecycle (e.g., `EXPERIMENTS#active`), time-sorted via ULID. `ViewType.ALL` requires two queries (`#active` + `#deleted`) merged client-side |
-| Model META | `MODELS` | `<last_update_time>#<name>` | List all registered models |
-| Auth User META | `AUTH_USERS` | `<username>` | List all auth users |
+| Experiment META | `EXPERIMENTS#<workspace>#<lifecycle>` | `<ulid>` | List experiments in workspace by lifecycle. `ViewType.ALL` requires two queries (`#active` + `#deleted`) merged client-side |
+| Model META | `MODELS#<workspace>` | `<last_update_time>#<name>` | List registered models in workspace |
+| Auth User META | `AUTH_USERS` | `<username>` | List all auth users (workspace-independent) |
+| Workspace META | `WORKSPACES` | `<workspace_name>` | List all workspaces |
 
-#### GSI3 — Uniqueness & Named Lookups
+When workspaces are disabled, all queries use `workspace = "default"` (e.g., `EXPERIMENTS#default#active`).
+
+#### GSI3 — Uniqueness & Named Lookups (workspace-scoped)
 
 | Entity | gsi3pk | gsi3sk | Query |
 |--------|--------|--------|-------|
-| Experiment META | `EXP_NAME#<name>` | `<exp_id>` | `get_experiment_by_name()`, uniqueness check |
-| Model Alias | `ALIAS#<model>#<alias>` | `<version>` | `get_model_version_by_alias()` |
+| Experiment META | `EXP_NAME#<workspace>#<name>` | `<exp_id>` | `get_experiment_by_name()`, uniqueness check within workspace |
+| Model Alias | `ALIAS#<workspace>#<model>#<alias>` | `<version>` | `get_model_version_by_alias()` within workspace |
 
 #### GSI4 — Auth Inverted Queries
 
@@ -209,14 +227,14 @@ Note: The `CLIENT#<client_req_id>` entry is a separate materialized pointer item
 |--------|--------|--------|-------|
 | Permission | `PERM#<resource_type>#<resource_id>` | `USER#<username>` | "Who has access to resource X?" |
 
-#### GSI5 — Name Prefix/Suffix Search (cross-partition)
+#### GSI5 — Name Prefix/Suffix Search (workspace-scoped)
 
 | Entity | gsi5pk | gsi5sk | Query |
 |--------|--------|--------|-------|
-| Experiment META | `EXP_NAMES` | `FWD#<lower(name)>#<id>` | Prefix ILIKE |
-| Experiment NAME_REV *(materialized)* | `EXP_NAMES` | `REV#<rev(lower(name))>#<id>` | Suffix ILIKE |
-| Model META | `MODEL_NAMES` | `FWD#<lower(name)>` | Prefix ILIKE |
-| Model NAME_REV *(materialized)* | `MODEL_NAMES` | `REV#<rev(lower(name))>` | Suffix ILIKE |
+| Experiment META | `EXP_NAMES#<workspace>` | `FWD#<lower(name)>#<id>` | Prefix ILIKE within workspace |
+| Experiment NAME_REV *(materialized)* | `EXP_NAMES#<workspace>` | `REV#<rev(lower(name))>#<id>` | Suffix ILIKE within workspace |
+| Model META | `MODEL_NAMES#<workspace>` | `FWD#<lower(name)>` | Prefix ILIKE within workspace |
+| Model NAME_REV *(materialized)* | `MODEL_NAMES#<workspace>` | `REV#<rev(lower(name))>` | Suffix ILIKE within workspace |
 
 Forward direction lives on the META item. Reverse direction is a separate materialized item (one DynamoDB item can only appear once per GSI).
 
@@ -393,10 +411,10 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `search_runs` filter `metric.<key> > X` | RANK items key condition |
 | `search_runs` ORDER BY `param.<key>` | RANK items |
 | `search_runs` filter `dataset.name = X` | DLINK items |
-| `search_experiments` default sort | GSI2 (ULID) |
-| `search_experiments` name ILIKE prefix/suffix | GSI5 |
-| `search_registered_models` default sort | GSI2 |
-| `search_registered_models` name ILIKE prefix/suffix | GSI5 |
+| `search_experiments` default sort | GSI2 `EXPERIMENTS#<workspace>#<lifecycle>` (ULID) |
+| `search_experiments` name ILIKE prefix/suffix | GSI5 `EXP_NAMES#<workspace>` |
+| `search_registered_models` default sort | GSI2 `MODELS#<workspace>` |
+| `search_registered_models` name ILIKE prefix/suffix | GSI5 `MODEL_NAMES#<workspace>` |
 | `search_model_versions` ORDER BY `version` | Base SK |
 | `search_model_versions` filter `run_id` | GSI1 |
 | `get_latest_versions(name, stages)` | LSI3 reverse limit 1 |
@@ -404,7 +422,9 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `search_traces` filter `status` + time sort | LSI3 composite |
 | `search_traces` ORDER BY `execution_time` | LSI5 |
 | `search_traces` FTS keyword | FTS items |
-| `create_experiment` uniqueness check | GSI3 condition |
+| `create_experiment` uniqueness check | GSI3 `EXP_NAME#<workspace>#<name>` condition |
+| `list_workspaces` | GSI2 `WORKSPACES` |
+| `get_workspace(name)` | PK point read `WORKSPACE#<name>` |
 | Auth: who can access resource X? | GSI4 |
 
 ### 1 Extra Round Trip (~10 patterns)
@@ -481,13 +501,16 @@ mlflow-dynamodbstore/
 │       │   └── dynamodb = "mlflow_dynamodbstore.registry_store:DynamoDBRegistryStore"
 │       ├── "mlflow.app"
 │       │   └── dynamodb-auth = "mlflow_dynamodbstore.auth.app:create_app"
-│       └── "mlflow.app.client"
-│           └── dynamodb-auth = "mlflow_dynamodbstore.auth.client:DynamoDBAuthClient"
+│       ├── "mlflow.app.client"
+│       │   └── dynamodb-auth = "mlflow_dynamodbstore.auth.client:DynamoDBAuthClient"
+│       └── "mlflow.workspace_provider"
+│           └── dynamodb = "mlflow_dynamodbstore.workspace_store:DynamoDBWorkspaceStore"
 │
 ├── src/mlflow_dynamodbstore/
 │   ├── __init__.py
 │   ├── tracking_store.py          # AbstractStore (~16 required methods)
-│   ├── registry_store.py          # Registry AbstractStore (~17 required methods)
+│   ├── registry_store.py          # Registry AbstractStore (~21 required methods)
+│   ├── workspace_store.py         # Workspace provider (list/get/create/update/delete workspaces)
 │   │
 │   ├── auth/
 │   │   ├── __init__.py
@@ -712,6 +735,91 @@ mlflow-dynamodbstore denormalize-tags backfill --table my-table --experiment-id 
 ```
 
 The `backfill` command scans tag items, checks against current effective patterns, and updates META items. Reports progress. Idempotent.
+
+## Workspaces
+
+Workspaces provide logical separation of experiments, models, prompts, and AI Gateway resources within a single MLflow deployment. Enabled via `MLFLOW_ENABLE_WORKSPACES=1`.
+
+### How MLflow Workspaces Work
+
+Workspace scoping is handled above the store layer:
+
+1. Server middleware reads the `X-MLFLOW-WORKSPACE` header and sets a `ContextVar`
+2. A workspace-aware store subclass intercepts all queries, injecting workspace filters
+3. The base store is workspace-unaware — it never sees workspace parameters directly
+
+Our DynamoDB store follows this pattern: the base `DynamoDBTrackingStore` always uses `workspace = "default"`. A `WorkspaceAwareDynamoDBTrackingStore` subclass overrides key-building methods to substitute the active workspace.
+
+### Key Design
+
+Workspace is baked into the key structure from day one:
+
+- **Experiment partition** (`PK = EXP#<experiment_id>`): Experiment IDs are globally unique ULIDs, so workspace is an **attribute** on the META item, not part of the PK. Cross-partition queries (GSI2, GSI3, GSI5) include workspace in the GSI partition key.
+- **Model partition** (`PK = RM#<workspace>#<model_name>`): Model names are unique per workspace, so workspace is part of the **PK**.
+- **Auth partition** (`PK = USER#<username>`): Workspace-independent.
+- **Workspace partition** (`PK = WORKSPACE#<workspace_name>`): Workspace metadata.
+
+When workspaces are disabled, all operations use `workspace = "default"`. No migration needed to enable workspaces later.
+
+### Workspace-Scoped GSI Keys
+
+| GSI | Without Workspace | With Workspace |
+|-----|------------------|----------------|
+| GSI2 (listings) | `EXPERIMENTS#<lifecycle>` | `EXPERIMENTS#<workspace>#<lifecycle>` |
+| GSI2 (listings) | `MODELS` | `MODELS#<workspace>` |
+| GSI3 (uniqueness) | `EXP_NAME#<name>` | `EXP_NAME#<workspace>#<name>` |
+| GSI3 (uniqueness) | `ALIAS#<model>#<alias>` | `ALIAS#<workspace>#<model>#<alias>` |
+| GSI5 (name search) | `EXP_NAMES` | `EXP_NAMES#<workspace>` |
+| GSI5 (name search) | `MODEL_NAMES` | `MODEL_NAMES#<workspace>` |
+
+### Workspace Provider
+
+Implements `mlflow.store.workspace.abstract_store.AbstractStore`:
+
+```python
+class DynamoDBWorkspaceStore(AbstractStore):
+    def list_workspaces(self) -> Iterable[Workspace]       # GSI2: gsi2pk=WORKSPACES
+    def get_workspace(self, name) -> Workspace              # PK=WORKSPACE#<name>, SK=META
+    def create_workspace(self, workspace) -> Workspace      # PutItem, condition: not exists
+    def update_workspace(self, workspace) -> Workspace      # UpdateItem
+    def delete_workspace(self, name, mode) -> None          # DeleteItem (or soft-delete)
+    def resolve_artifact_root(self, default, name) -> tuple # Read workspace default_artifact_root
+```
+
+Registered via entry point:
+
+```toml
+[project.entry-points."mlflow.workspace_provider"]
+dynamodb = "mlflow_dynamodbstore.workspace_store:DynamoDBWorkspaceStore"
+```
+
+### Artifact Isolation
+
+Workspaces automatically scope artifact paths:
+
+```
+# Default workspace (backward-compatible):
+s3://bucket/artifacts/<experiment-id>/
+
+# Named workspace:
+s3://bucket/artifacts/workspaces/<workspace-name>/<experiment-id>/
+
+# Workspace with custom artifact root:
+s3://custom-bucket/<experiment-id>/
+```
+
+The workspace provider's `resolve_artifact_root()` method handles this resolution.
+
+### Workspace Permissions
+
+Auth permissions support workspace as a resource type:
+
+```
+PK: USER#alice    SK: U#PERM#workspace#team-ml
+attrs: permission = "MANAGE"
+```
+
+Workspace-level permissions (`READ`, `USE`, `MANAGE`) are checked before resource-level permissions. Individual resource permissions take precedence over workspace-level grants.
 
 ## Open Decisions
 
