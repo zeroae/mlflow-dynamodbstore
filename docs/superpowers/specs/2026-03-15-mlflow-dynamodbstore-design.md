@@ -23,7 +23,7 @@ Small team (< 10 data scientists), serverless AWS stack, bursty usage, cost-sens
 
 | Repo | Package | Purpose | Timeline |
 |------|---------|---------|----------|
-| `mlflow-dynamodbstore` | `pip install mlflow-dynamodbstore` | MLflow plugin — pure Python, auto-provisions DynamoDB table via CloudFormation on first use | v1 (now) |
+| `mlflow-dynamodbstore` | `uv pip install mlflow-dynamodbstore` | MLflow plugin — pure Python, auto-provisions DynamoDB table via CloudFormation on first use | v1 (now) |
 | `zae-mlflow` | CDK app | Full serverless stack: API Gateway + Lambda + DynamoDB + S3 + X-Ray + OTel collector + async stream Lambda | v2 (later) |
 
 ## Architecture
@@ -50,7 +50,7 @@ Small team (< 10 data scientists), serverless AWS stack, bursty usage, cost-sens
 **URI scheme:** `dynamodb://` registered via `pyproject.toml` entry points.
 
 ```bash
-pip install mlflow-dynamodbstore
+uv pip install mlflow-dynamodbstore
 
 mlflow server \
   --app-name dynamodb-auth \
@@ -114,7 +114,7 @@ LSI attributes are only populated on META-level items. Sub-items (tags, params, 
 | Run Tag | `R#<ulid>#TAG#<key>` | — | — | — | — | — |
 | Run Param | `R#<ulid>#PARAM#<key>` | — | — | — | — | — |
 | Metric Latest | `R#<ulid>#METRIC#<key>` | — | — | — | — | — |
-| Metric History | `R#<ulid>#MHIST#<key>#<step>#<ts>` | — | — | — | — | — |
+| Metric History | `R#<ulid>#MHIST#<key>#<zero_padded_step>#<ts>` | — | — | — | — | — |
 | Dataset | `D#<name>#<digest>` | — | — | — | — | — |
 | Input Link | `R#<ulid>#INPUT#<ds_uuid>` | — | — | — | — | — |
 | Input Tag | `R#<ulid>#INPUT#<ds_uuid>#ITAG#<name>` | — | — | — | — | — |
@@ -124,6 +124,7 @@ LSI attributes are only populated on META-level items. Sub-items (tags, params, 
 | Trace Tag | `T#<trace_id>#TAG#<key>` | — | — | — | — | — |
 | Trace Req Metadata | `T#<trace_id>#RMETA#<key>` | — | — | — | — | — |
 | Assessment | `T#<trace_id>#ASSESS#<id>` | — | — | — | — | — |
+| Trace Client Req Ptr *(materialized)* | `T#<trace_id>#CLIENTPTR` | — | — | — | — | — |
 | DLINK *(materialized)* | `DLINK#<ds_name>#<ds_digest>#R#<ulid>` | — | — | — | — | — |
 | RANK metric *(materialized)* | `RANK#m#<key>#<inv_value>#<ulid>` | — | — | — | — | — |
 | RANK param *(materialized)* | `RANK#p#<key>#<value>#<ulid>` | — | — | — | — | — |
@@ -131,7 +132,7 @@ LSI attributes are only populated on META-level items. Sub-items (tags, params, 
 
 DLINK items carry a `context` attribute (denormalized from input tags) for dataset context filtering.
 
-RANK metric items use inverted values (`9999999999.9999 - value`, zero-padded) for descending numeric sort via `ScanIndexForward=False`.
+RANK metric items use inverted values (`9999999999.9999 - value`, zero-padded) so that ascending SK scan (`ScanIndexForward=True`) yields descending original-value order.
 
 FTS items carry `field` (assessment/tag/metadata) and `key` attributes for filtering by source.
 
@@ -184,16 +185,18 @@ FTS items carry `field` (assessment/tag/metadata) and `key` attributes for filte
 | Run META | `RUN#<run_id>` | `EXP#<exp_id>` | Get run by ID → find experiment |
 | Model Version | `RUN#<run_id>` | `MV#<model>#<ver>` | Model versions by run_id |
 | Trace META | `TRACE#<trace_id>` | `EXP#<exp_id>` | Get trace by request ID |
-| Trace META | `CLIENT#<client_req_id>` | `TRACE#<trace_id>` | Trace by client request ID |
+| Trace Client Req Ptr *(materialized)* | `CLIENT#<client_req_id>` | `TRACE#<trace_id>` | Trace by client request ID |
 | Input Link | `DS#<ds_uuid>` | `R#<run_id>` | Find runs using a dataset |
 
 `gsi1pk = RUN#<run_id>` serves three purposes in one query: run lookup, experiment discovery, and model version linkage.
+
+Note: The `CLIENT#<client_req_id>` entry is a separate materialized pointer item (written alongside the Trace META item at `start_trace` time), not an attribute on the Trace META item itself. A single DynamoDB item can only have one `gsi1pk` value.
 
 #### GSI2 — Global Entity Listings
 
 | Entity | gsi2pk | gsi2sk | Query |
 |--------|--------|--------|-------|
-| Experiment META | `EXPERIMENTS` | `<ulid>` | List all experiments (time-sorted via ULID) |
+| Experiment META | `EXPERIMENTS#<lifecycle>` | `<ulid>` | List all experiments by lifecycle (e.g., `EXPERIMENTS#active`), time-sorted via ULID |
 | Model META | `MODELS` | `<last_update_time>#<name>` | List all registered models |
 | Auth User META | `AUTH_USERS` | `<username>` | List all auth users |
 
@@ -238,7 +241,9 @@ Inverted value: `inv = 9999999999.9999 - value`, zero-padded to fixed width. Ena
 
 Query: `ORDER BY metric.accuracy DESC` → `PK=EXP#1, SK begins_with("RANK#m#accuracy#"), ScanIndexForward=True` (inverted values give descending order).
 
-On run deletion (lifecycle → deleted): all RANK items for that run are deleted. On restore: re-created by reading the run's metrics/params.
+Only the **latest value** per (metric_key, run) is materialized as a RANK item. When a metric is logged at a new step, the previous RANK item for that (key, run) is deleted and replaced with the new value. This avoids write amplification from high-frequency metric logging (e.g., loss per training step).
+
+On run deletion (lifecycle → deleted): all RANK items for that run are deleted. On restore: re-created by reading the run's latest metric values.
 
 ### DLINK Items (dataset→run linkage)
 
@@ -380,7 +385,7 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `get_model_version(name, version)` | PK+SK point read |
 | `get_model_version_by_alias(name, alias)` | GSI3 point query |
 | `get_trace_info(request_id)` | GSI1 point query |
-| `get_metric_history(run_id, key)` | PK+SK range query |
+| `get_metric_history(run_id, key)` | GSI1 (resolve run_id → experiment_id) + PK+SK range query. Store caches run→experiment mappings after first lookup |
 | `search_runs` default sort (`start_time DESC`) | Base SK (ULID) |
 | `search_runs` ORDER BY `end_time` | LSI2 |
 | `search_runs` ORDER BY `run_name` | LSI4 |
@@ -399,7 +404,7 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `search_model_versions` ORDER BY `version` | Base SK |
 | `search_model_versions` filter `run_id` | GSI1 |
 | `get_latest_versions(name, stages)` | LSI3 reverse limit 1 |
-| `search_traces` ORDER BY `timestamp` | Base SK |
+| `search_traces` ORDER BY `timestamp` | LSI2 (`end_time_ms`) or LSI3 (`<status>#<timestamp_ms>`). Note: `trace_id` is OTel-provided and not time-sortable, so base SK cannot be used for trace time-ordering |
 | `search_traces` filter `status` + time sort | LSI3 composite |
 | `search_traces` ORDER BY `execution_time` | LSI5 |
 | `search_traces` FTS keyword | FTS items |
@@ -517,6 +522,8 @@ mlflow-dynamodbstore/
 
 ### Dependencies
 
+Managed via `uv`:
+
 ```
 mlflow >= 3.0
 boto3
@@ -541,6 +548,57 @@ annotation_mapping = [
 ```
 
 When `xray.enabled = false`, `span.*` filters raise `MlflowException("Span filters require X-Ray integration. Set xray.enabled = true.")`.
+
+## Implementation Notes
+
+### Run-ID Resolution Cache
+
+Many tracking store methods accept `run_id` but the data lives under `PK=EXP#<experiment_id>`. The store maintains an in-memory LRU cache of `run_id → experiment_id` mappings (populated from GSI1 lookups). After the first resolution, subsequent operations on the same run (log metrics, set tags, etc.) are single-call operations with no GSI round trip.
+
+### LSI 10GB Partition Limit
+
+DynamoDB enforces a 10GB limit per partition key value when LSIs are present. The experiment partition aggregates all runs, metrics, params, tags, datasets, traces, assessments, RANK items, DLINK items, and FTS items. For a small team this is unlikely to be hit, but for safety:
+
+- Monitor partition size via CloudWatch `AccountProvisionedWriteCapacityUtilization` and item count
+- Metric history is the highest-volume entity: 10K steps × 10 metrics × 100 runs = 10M items at ~200 bytes each = ~2GB. Well within limits for typical small-team usage
+- If approaching 10GB: archive old metric history to S3, or split experiments
+
+### FTS Token Cleanup
+
+When an assessment, trace tag, or trace metadata value is updated or deleted, the old FTS token items must be cleaned up. The store reads the old value, tokenizes it, computes the diff against the new tokens, and deletes removed tokens / writes new tokens in the same BatchWriteItem.
+
+### Metric History Step Padding
+
+Steps are zero-padded to 20 digits (e.g., `00000000000000010000`) for correct lexicographic ordering. Negative steps (which MLflow allows) use a sign prefix: positive steps get `P#<zero_padded>`, negative steps get `N#<inverted_zero_padded>` where the value is `MAX_INT - abs(step)`. This ensures negative steps sort before positive steps.
+
+### MLflow Interface Method Counts
+
+**Tracking store:** 16 abstract methods implemented. Additional methods with default `raise NotImplementedError` that we implement: `search_traces`, `start_trace`, `get_trace_info`, `get_trace`, `set_trace_tag`, `delete_trace_tag`, `create_assessment`, `update_assessment`, `delete_assessment`, `create_logged_model`, `search_logged_models`, `finalize_logged_model`, `delete_logged_model`, `set_logged_model_tags`, `get_logged_model`, `log_inputs`.
+
+**Model registry store:** 21 abstract methods implemented (including `transition_model_version_stage`, full alias/tag CRUD, and the complete `set_registered_model_alias` / `delete_registered_model_alias` / `get_model_version_by_alias` set).
+
+**Not implemented (raise NotImplementedError):** Gateway endpoints, gateway model definitions, gateway secrets, and related CRUD. These are Databricks-specific features not applicable to a DynamoDB backend. Online scoring methods are also out of scope.
+
+### Auth Interface
+
+The `Permission` item with SK `U#PERM#<resource_type>#<resource_id>` handles all permission types generically:
+
+| resource_type | Examples |
+|--------------|---------|
+| `experiment` | Read/write/manage access to experiments |
+| `registered_model` | Read/write/manage access to models |
+| `workspace` | Workspace-level permissions (CAN_MANAGE, etc.) |
+
+Supported operations:
+- `list_permissions_for_user(username)`: Query `PK=USER#<username>, SK begins_with("U#PERM#")`
+- `list_permissions_for_resource(type, id)`: GSI4 query `PERM#<type>#<id>`
+- `create/update/delete_permission`: PutItem/DeleteItem on the permission SK
+
+Scorer, gateway secret, gateway endpoint, and gateway model definition permissions are out of scope (Databricks-specific).
+
+### Prompts
+
+MLflow 3.x Prompts are built on top of registered models via default method implementations (`create_prompt`, `get_prompt`, etc.) that delegate to registered model CRUD with special `mlflow.prompt.*` tags. Our registered model implementation handles this automatically — no special prompt code needed.
 
 ## Open Decisions
 
