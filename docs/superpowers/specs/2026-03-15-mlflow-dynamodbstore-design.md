@@ -28,23 +28,19 @@ Small team (< 10 data scientists), serverless AWS stack, bursty usage, cost-sens
 
 ## Architecture
 
-```
-┌─────────────┐      OTel dual-export       ┌───────────┐
-│  ML Client   │ ──────────────────────────→ │  AWS X-Ray │
-└──────┬───────┘                             └───────────┘
-       │ MLflow API                            ▲
-       ▼                                       │
-┌───────────────┐     dynamodb://      ┌──────┴─────┐
-│  MLflow Server │ ──────────────────→ │  DynamoDB   │
-│                │    (sync RANK,      │  (1 table)  │
-│                │     DLINK, FTS,     └────────────┘
-│                │     NAME_REV)
-└───────┬───────┘
-        │     s3://
-        ▼
-┌──────────┐
-│    S3     │
-└──────────┘
+```mermaid
+graph TD
+    Client["ML Client<br/>(OTel SDK)"]
+    Server["MLflow Server<br/>(sync RANK, DLINK, FTS, NAME_REV)"]
+    DDB["DynamoDB<br/>(1 table)"]
+    XRay["AWS X-Ray"]
+    S3["S3"]
+
+    Client -- "OTel dual-export" --> XRay
+    Client -- "MLflow API" --> Server
+    Server -- "dynamodb://" --> DDB
+    Server -- "s3://" --> S3
+    Server -. "GetTraceSummaries /<br/>BatchGetTraces" .-> XRay
 ```
 
 **URI scheme:** `dynamodb://` registered via `pyproject.toml` entry points.
