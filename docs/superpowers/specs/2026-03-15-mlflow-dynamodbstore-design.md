@@ -165,10 +165,23 @@ Attributes: `name`, `description`, `default_artifact_root`. A `default` workspac
 
 ### Auth Partition: `PK = USER#<username>`
 
-| Entity | SK |
-|--------|-----|
-| User META | `U#META` |
-| Permission | `U#PERM#<resource_type>#<resource_id>` |
+| Entity | SK | GSI4 (gsi4pk → gsi4sk) |
+|--------|-----|------------------------|
+| User META | `U#META` | — |
+| Experiment Permission | `U#PERM#EXP#<experiment_id>` | `PERM#EXP#<experiment_id>` → `USER#<username>` |
+| Model Permission | `U#PERM#MODEL#<workspace>#<model_name>` | `PERM#MODEL#<workspace>#<model_name>` → `USER#<username>` |
+| Workspace Permission | `U#PERM#WORKSPACE#<workspace_name>` | `PERM#WORKSPACE#<workspace_name>` → `USER#<username>` |
+| Scorer Permission | `U#PERM#SCORER#<experiment_id>#<scorer_name>` | `PERM#SCORER#<experiment_id>#<scorer_name>` → `USER#<username>` |
+
+Attributes: `permission` (READ / USE / EDIT / MANAGE / NO_PERMISSIONS).
+
+User META attributes: `password_hash` (Werkzeug scrypt), `is_admin` (bool).
+
+Gateway secret, endpoint, and model definition permissions are out of scope (Databricks-specific) — raise `NotImplementedError`.
+
+**Authentication and permission checks use strongly consistent reads** (`ConsistentRead=True`).
+
+**No abstract base class** — MLflow's auth store is duck-typed (~50 methods). Our `DynamoDBAuthStore` implements the same interface as `mlflow.server.auth.sqlalchemy_store.SqlAlchemyStore`. The `dynamodb-auth` app plugin provides its own `create_app` that initializes our store and reuses MLflow's auth middleware/validators.
 
 ## Index Design
 
@@ -674,20 +687,37 @@ Steps are zero-padded to 20 digits (e.g., `00000000000000010000`) for correct le
 
 ### Auth Interface
 
-The `Permission` item with SK `U#PERM#<resource_type>#<resource_id>` handles all permission types generically:
+MLflow's auth store is duck-typed (~50 methods, no abstract base class). Our `DynamoDBAuthStore` implements the same interface as `mlflow.server.auth.sqlalchemy_store.SqlAlchemyStore`.
 
-| resource_type | Examples |
-|--------------|---------|
-| `experiment` | Read/write/manage access to experiments |
-| `registered_model` | Read/write/manage access to models |
-| `workspace` | Workspace-level permissions (CAN_MANAGE, etc.) |
+**Permission types and SK patterns:**
 
-Supported operations:
-- `list_permissions_for_user(username)`: Query `PK=USER#<username>, SK begins_with("U#PERM#")`
-- `list_permissions_for_resource(type, id)`: GSI4 query `PERM#<type>#<id>`
-- `create/update/delete_permission`: PutItem/DeleteItem on the permission SK
+| Permission Type | SK Pattern | GSI4 PK | Methods |
+|----------------|-----------|---------|---------|
+| Experiment | `U#PERM#EXP#<experiment_id>` | `PERM#EXP#<experiment_id>` | CRUD + list by user |
+| Registered Model | `U#PERM#MODEL#<workspace>#<model_name>` | `PERM#MODEL#<workspace>#<model_name>` | CRUD + list by user + bulk delete + rename |
+| Workspace | `U#PERM#WORKSPACE#<workspace_name>` | `PERM#WORKSPACE#<workspace_name>` | CRUD + list by workspace + list accessible workspaces |
+| Scorer | `U#PERM#SCORER#<experiment_id>#<scorer_name>` | `PERM#SCORER#<experiment_id>#<scorer_name>` | CRUD + list by user + bulk delete |
 
-Scorer, gateway secret, gateway endpoint, and gateway model definition permissions are out of scope (Databricks-specific).
+**Query patterns:**
+
+| Method | DynamoDB Operation |
+|--------|-------------------|
+| `authenticate_user(username, password)` | GetItem `USER#<username>, U#META` (strongly consistent) → `check_password_hash` |
+| `create_user(username, password)` | PutItem with `attribute_not_exists(PK)` condition |
+| `get_user(username)` | GetItem (strongly consistent) |
+| `list_users()` | GSI2 `AUTH_USERS` |
+| `delete_user(username)` | Query `PK=USER#<username>` → delete all items (META + all permissions) |
+| `list_experiment_permissions(username)` | Query `PK=USER#<username>, SK begins_with("U#PERM#EXP#")` |
+| `list_workspace_permissions(workspace)` | GSI4 `PERM#WORKSPACE#<workspace>` |
+| `list_accessible_workspace_names(username)` | Query `PK=USER#<username>, SK begins_with("U#PERM#WORKSPACE#")` |
+| `delete_registered_model_permissions(name)` | GSI4 `PERM#MODEL#<ws>#<name>` → all users → BatchWriteItem deletes |
+| `rename_registered_model_permissions(old, new)` | GSI4 → all users → for each: delete old SK, write new SK |
+
+**Password hashing:** Werkzeug's `generate_password_hash` / `check_password_hash` (scrypt). Independent of storage backend.
+
+**`create_app` entry point:** Our `dynamodb-auth` app plugin provides its own `create_app` that initializes `DynamoDBAuthStore` and reuses MLflow's auth middleware, before/after request hooks, and permission validators.
+
+Gateway secret, endpoint, and model definition permissions raise `NotImplementedError` (Databricks-specific).
 
 ### Prompts
 
