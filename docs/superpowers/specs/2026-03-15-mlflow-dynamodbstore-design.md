@@ -644,7 +644,7 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 
 ## Access Pattern Coverage
 
-### Index-Native (~30 patterns)
+### Index-Native (~45 patterns)
 
 | Pattern | Mechanism |
 |---------|-----------|
@@ -705,21 +705,37 @@ No index trick exists. Client-side `if "foo" in value.lower()` on the result set
 | `search_experiments` filter `tag.<key> = X` | GSI2 → BatchGetItem tags → filter |
 | `search_model_versions` filter `tag.<key>` | Query versions → BatchGetItem tags → filter |
 | `search_traces` filter `tag.<key>` / `metadata.<key>` | LSI query → BatchGetItem items → filter |
-| `search_traces` filter `span.type = 'LLM'` | Cached: FilterExpression `contains(span_types, 'LLM')`. Uncached: X-Ray `GetTraceSummaries`. Union results |
-| `search_traces` filter `span.name = 'X'` | Cached: FilterExpression `contains(span_names, 'X')`. Uncached: X-Ray annotation query. Union results |
-| `search_traces` filter `span.name LIKE '%chat%'` (cached) | FTS: `FTS#W#chat#T#...#SPAN_NAME` or trigram `FTS#3#` |
-| `search_traces` filter `span.content LIKE '%error%'` (cached) | FTS: `FTS#W#error#T#...#SPAN_CONTENT` |
+| `search_traces` filter `span.type = 'LLM'` | Hybrid: DynamoDB FilterExpression `contains(span_types, 'LLM')` for cached traces ∪ X-Ray `GetTraceSummaries` for uncached |
+| `search_traces` filter `span.name = 'X'` | Hybrid: DynamoDB FilterExpression `contains(span_names, 'X')` for cached ∪ X-Ray annotation query for uncached |
+| `search_traces` filter `span.name LIKE '%chat%'` | Cached traces: FTS `FTS#W#chat#T#...#SPAN_NAME` or trigram. Uncached: X-Ray + client-side |
+| `search_traces` filter `span.content LIKE '%error%'` | Cached traces: FTS `FTS#W#error#T#...#SPAN_CONTENT`. Uncached: X-Ray `BatchGetTraces` + client-side |
 | Multi-experiment `search_runs` | Parallel queries per experiment, merge |
 
-### Client-Side Filter (~5 patterns)
+### Server-Side FilterExpression (not index-native, but no Python filtering)
+
+These use DynamoDB `FilterExpression` — evaluated server-side, reducing data transfer, but still consuming read capacity on non-matching items:
+
+| Pattern | FilterExpression |
+|---------|-----------------|
+| `LIKE '%ab%'` (< 3 chars, too short for trigrams) | `contains(attribute, 'ab')` |
+| `IS NULL` on denormalized tags | `attribute_not_exists(tags.<key>)` |
+| `IS NOT NULL` on denormalized tags | `attribute_exists(tags.<key>)` |
+
+### Client-Side Filter (~3 patterns)
+
+True client-side filtering in Python, after fetching candidate items from DynamoDB:
 
 | Pattern | Why | How |
 |---------|-----|-----|
-| `LIKE '%ab%'` (< 3 chars, too short for trigrams) | Minimum trigram length is 3 characters | `contains()` FilterExpression fallback |
-| `IS NULL` / `IS NOT NULL` on tags | Proving absence requires checking item existence | Denormalized tags: `attribute_not_exists` FilterExpression. Non-denormalized: BatchGetItem check |
-| Assessment filters (`feedback.<key>`) | Dynamic keys, child items | Query traces → query assessments per trace → filter |
-| `RLIKE` (regex, traces only) | No regex engine in DynamoDB | BatchGetItem → `re.match()` in Python |
-| `span.*` on uncached traces > 30 days | X-Ray data expired, no DynamoDB index | No results for these traces — use `cache-spans` CLI proactively |
+| `IS NULL` / `IS NOT NULL` on non-denormalized tags | Tag is a separate item, not on META | BatchGetItem for tag SK → check presence/absence |
+| Assessment filters (`feedback.<key>`, `expectation.<key>`) | Dynamic keys, child items | Query traces → query assessments per trace → Python filter |
+| `RLIKE` (regex, traces only) | No regex engine in DynamoDB | Fetch candidates → `re.match()` in Python |
+
+### Data Unavailable (~1 pattern)
+
+| Pattern | Why | Mitigation |
+|---------|-----|-----------|
+| `span.*` on uncached traces > 30 days | X-Ray expired, trace never viewed/pre-cached | Run `cache-spans` CLI proactively within X-Ray's 30-day window |
 
 All client-side filters are bounded by partition scope (experiment) or page size. Sub-second for small teams.
 
