@@ -1,0 +1,39 @@
+import pytest
+import requests
+from moto.server import ThreadedMotoServer
+
+
+@pytest.fixture(scope="session")
+def moto_endpoint():
+    server = ThreadedMotoServer(port=0)
+    server.start()
+    host, port = server.get_host_and_port()
+    yield f"http://localhost:{port}"
+    server.stop()
+
+
+@pytest.fixture(autouse=True)
+def reset_moto(moto_endpoint):
+    yield
+    requests.post(f"{moto_endpoint}/moto-api/reset")
+
+
+@pytest.fixture
+def tracking_store(moto_endpoint):
+    from mlflow_dynamodbstore.tracking_store import DynamoDBTrackingStore
+
+    store = DynamoDBTrackingStore(
+        store_uri=f"dynamodb://{moto_endpoint}/test-table",
+        artifact_uri="/tmp/artifacts",
+    )
+    return store
+
+
+@pytest.fixture
+def registry_store(moto_endpoint):
+    from mlflow_dynamodbstore.registry_store import DynamoDBRegistryStore
+
+    store = DynamoDBRegistryStore(
+        store_uri=f"dynamodb://{moto_endpoint}/test-table",
+    )
+    return store
