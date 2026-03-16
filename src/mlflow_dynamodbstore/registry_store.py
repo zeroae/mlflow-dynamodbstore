@@ -392,9 +392,11 @@ class DynamoDBRegistryStore(AbstractStore):
         if order_by:
             models = self._sort_models(models, order_by)
 
+        from mlflow.store.entities import PagedList
+
         if max_results:
             models = models[:max_results]
-        return models
+        return PagedList(models, token=None)
 
     def _search_models_by_name_exact(self, name: str) -> list[RegisteredModel]:
         """Look up a single model by exact name via GSI3."""
@@ -698,9 +700,13 @@ class DynamoDBRegistryStore(AbstractStore):
             LSI1_SK: str(now_ms),
             LSI2_SK: str(now_ms),
             LSI3_SK: f"None#{padded}",
-            LSI4_SK: (source or "").lower(),
-            LSI5_SK: f"{run_id or ''}#{padded}",
         }
+
+        # Sparse LSI keys — DynamoDB rejects empty string index keys
+        if source:
+            item[LSI4_SK] = source.lower()
+        if run_id:
+            item[LSI5_SK] = f"{run_id}#{padded}"
 
         # GSI1: run linkage (only if run_id provided)
         if run_id:
@@ -827,7 +833,9 @@ class DynamoDBRegistryStore(AbstractStore):
 
         if max_results:
             versions = versions[:max_results]
-        return versions
+        from mlflow.store.entities import PagedList
+
+        return PagedList(versions, token=None)
 
     def _get_versions_for_model(self, model_ulid: str, model_name: str) -> list[ModelVersion]:
         """Get all versions for a specific model."""

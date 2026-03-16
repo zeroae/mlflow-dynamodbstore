@@ -1,9 +1,15 @@
 """E2E tests for experiment operations via MLflow client SDK."""
 
+import uuid
+
 import pytest
 from mlflow import MlflowClient
 
 pytestmark = pytest.mark.e2e
+
+
+def _uid() -> str:
+    return uuid.uuid4().hex[:8]
 
 
 class TestExperiments:
@@ -14,13 +20,14 @@ class TestExperiments:
         assert exp.lifecycle_stage == "active"
 
     def test_create_experiment(self, client: MlflowClient):
-        exp_id = client.create_experiment("e2e-create-exp")
+        name = f"e2e-create-{_uid()}"
+        exp_id = client.create_experiment(name)
         exp = client.get_experiment(exp_id)
-        assert exp.name == "e2e-create-exp"
+        assert exp.name == name
         assert exp.experiment_id == exp_id
 
     def test_get_experiment_by_name(self, client: MlflowClient):
-        name = "e2e-by-name"
+        name = f"e2e-byname-{_uid()}"
         exp_id = client.create_experiment(name)
         exp = client.get_experiment_by_name(name)
         assert exp is not None
@@ -35,7 +42,7 @@ class TestExperiments:
         assert len(experiments) >= 1
 
     def test_search_experiments_ui_homepage(self, client: MlflowClient):
-        """Exact call the MLflow UI homepage makes — was failing with Decimal error."""
+        """Exact call the MLflow UI homepage makes."""
         experiments = client.search_experiments(
             max_results=25,
             order_by=["last_update_time DESC"],
@@ -44,15 +51,16 @@ class TestExperiments:
         assert isinstance(experiments, list)
 
     def test_search_experiments_by_name(self, client: MlflowClient):
-        client.create_experiment("e2e-search-name")
+        name = f"e2e-search-{_uid()}"
+        client.create_experiment(name)
         experiments = client.search_experiments(
-            filter_string="name = 'e2e-search-name'",
+            filter_string=f"name = '{name}'",
         )
         assert len(experiments) == 1
-        assert experiments[0].name == "e2e-search-name"
+        assert experiments[0].name == name
 
     def test_delete_and_restore_experiment(self, client: MlflowClient):
-        exp_id = client.create_experiment("e2e-delete-exp")
+        exp_id = client.create_experiment(f"e2e-delete-{_uid()}")
         client.delete_experiment(exp_id)
         exp = client.get_experiment(exp_id)
         assert exp.lifecycle_stage == "deleted"
@@ -62,13 +70,14 @@ class TestExperiments:
         assert exp.lifecycle_stage == "active"
 
     def test_set_experiment_tag(self, client: MlflowClient):
-        exp_id = client.create_experiment("e2e-tag-exp")
+        exp_id = client.create_experiment(f"e2e-tag-{_uid()}")
         client.set_experiment_tag(exp_id, "team", "ml-platform")
         exp = client.get_experiment(exp_id)
         assert exp.tags["team"] == "ml-platform"
 
     def test_rename_experiment(self, client: MlflowClient):
-        exp_id = client.create_experiment("e2e-rename-old")
-        client.rename_experiment(exp_id, "e2e-rename-new")
+        exp_id = client.create_experiment(f"e2e-rename-old-{_uid()}")
+        new_name = f"e2e-rename-new-{_uid()}"
+        client.rename_experiment(exp_id, new_name)
         exp = client.get_experiment(exp_id)
-        assert exp.name == "e2e-rename-new"
+        assert exp.name == new_name

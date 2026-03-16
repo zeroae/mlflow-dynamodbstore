@@ -441,7 +441,10 @@ class DynamoDBTrackingStore(AbstractStore):
         if order_by:
             experiments = self._sort_experiments(experiments, order_by)
 
-        return experiments[:max_results] if max_results else experiments
+        from mlflow.store.entities import PagedList
+
+        results = experiments[:max_results] if max_results else experiments
+        return PagedList(results, token=None)
 
     # ------------------------------------------------------------------
     # search_experiments helpers
@@ -740,11 +743,14 @@ class DynamoDBTrackingStore(AbstractStore):
             # LSI attributes
             LSI1_SK: f"active#{run_id}",
             LSI3_SK: f"RUNNING#{run_id}",
-            LSI4_SK: run_name.lower() if run_name else "",
             # GSI1: reverse lookup run_id -> experiment_id
             GSI1_PK: f"{GSI1_RUN_PREFIX}{run_id}",
             GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
         }
+
+        # LSI4 is sparse — only set when run_name is non-empty (DynamoDB rejects empty string keys)
+        if run_name:
+            item[LSI4_SK] = run_name.lower()
 
         self._table.put_item(item, condition="attribute_not_exists(PK)")
 
@@ -822,8 +828,12 @@ class DynamoDBTrackingStore(AbstractStore):
             "status": run_status,
             "run_name": run_name,
             LSI3_SK: f"{run_status}#{run_id}",
-            LSI4_SK: run_name.lower() if run_name else "",
         }
+        removes: list[str] = []
+        if run_name:
+            updates[LSI4_SK] = run_name.lower()
+        else:
+            removes.append(LSI4_SK)
 
         if end_time is not None:
             updates["end_time"] = end_time
@@ -836,6 +846,7 @@ class DynamoDBTrackingStore(AbstractStore):
             pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
             sk=f"{SK_RUN_PREFIX}{run_id}",
             updates=updates,
+            removes=removes if removes else None,
         )
 
         assert updated_item is not None  # update always returns ALL_NEW

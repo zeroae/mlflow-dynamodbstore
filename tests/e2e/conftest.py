@@ -1,9 +1,18 @@
-"""E2E test fixtures: real AWS DynamoDB + mlflow server subprocess.
+"""E2E test fixtures: real AWS DynamoDB + mlflow server.
 
-Requires AWS credentials configured via AWS_PROFILE or environment variables.
-Creates a CloudFormation stack on setup, deletes it on teardown.
+If MLFLOW_TRACKING_URI is set, uses the existing server.
+Otherwise, starts a server subprocess backed by real DynamoDB.
 
-Local usage:
+Local usage (existing server):
+    # Terminal 1: start server
+    AWS_PROFILE=zeroae-code/AWSPowerUserAccess MLFLOW_FLASK_SERVER_SECRET_KEY=secret \\
+      mlflow server --backend-store-uri dynamodb://us-east-1/e2e-mlflow \\
+      --default-artifact-root /tmp/mlflow-e2e-artifacts --port 15123 --workers 1
+
+    # Terminal 2: run tests
+    MLFLOW_TRACKING_URI=http://127.0.0.1:15123 uv run pytest tests/e2e/ -m e2e -v
+
+Local usage (auto-start):
     AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run pytest tests/e2e/ -m e2e -v
 """
 
@@ -11,6 +20,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 import boto3
@@ -18,31 +28,15 @@ import pytest
 import requests
 from mlflow import MlflowClient
 
-from mlflow_dynamodbstore.dynamodb.provisioner import get_stack_name
-
-# Unique table name per test session to avoid collisions
-_TABLE_NAME = f"e2e-mlflow-{int(time.time())}"
+_TABLE_NAME = "e2e-mlflow"
 _REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+_SERVER_LOG = os.path.join(tempfile.gettempdir(), "mlflow-e2e-server.log")
 
 
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
-
-
-def _delete_stack(table_name: str, region: str) -> None:
-    """Delete the CloudFormation stack and wait for completion."""
-    cfn = boto3.client("cloudformation", region_name=region)
-    stack_name = get_stack_name(table_name)
-    try:
-        cfn.delete_stack(StackName=stack_name)
-        cfn.get_waiter("stack_delete_complete").wait(
-            StackName=stack_name,
-            WaiterConfig={"Delay": 5, "MaxAttempts": 60},
-        )
-    except Exception as exc:
-        print(f"Warning: failed to delete stack {stack_name}: {exc}")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -58,15 +52,30 @@ def verify_aws_credentials():
 
 @pytest.fixture(scope="session")
 def mlflow_server(verify_aws_credentials):
-    """Start an mlflow server backed by real AWS DynamoDB.
+    """Return tracking URI for an mlflow server.
 
-    Creates the CloudFormation stack on startup, tears it down on exit.
+    If MLFLOW_TRACKING_URI is set, uses the existing server.
+    Otherwise, starts a subprocess backed by real AWS DynamoDB.
     """
+    existing_uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if existing_uri:
+        # Verify the existing server is reachable
+        try:
+            resp = requests.get(f"{existing_uri}/health", timeout=5)
+            resp.raise_for_status()
+        except Exception as exc:
+            pytest.fail(f"MLFLOW_TRACKING_URI={existing_uri} is not reachable: {exc}")
+        yield existing_uri
+        return
+
+    # Start a server subprocess
     port = _find_free_port()
     env = os.environ.copy()
     env["MLFLOW_FLASK_SERVER_SECRET_KEY"] = "e2e-test-secret-key"
-
     store_uri = f"dynamodb://{_REGION}/{_TABLE_NAME}"
+
+    log_file = open(_SERVER_LOG, "w")
+    print(f"Server log: {_SERVER_LOG}")
 
     proc = subprocess.Popen(
         [
@@ -86,13 +95,12 @@ def mlflow_server(verify_aws_credentials):
             "1",
         ],
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=log_file,
         stderr=subprocess.STDOUT,
     )
 
     tracking_uri = f"http://127.0.0.1:{port}"
 
-    # Wait for server to respond (CFN stack creation can take 1-2 min)
     deadline = time.time() + 180
     while time.time() < deadline:
         try:
@@ -103,21 +111,20 @@ def mlflow_server(verify_aws_credentials):
             time.sleep(1)
     else:
         proc.kill()
-        stdout = proc.stdout.read().decode() if proc.stdout else ""
-        _delete_stack(_TABLE_NAME, _REGION)
-        raise RuntimeError(f"MLflow server did not start within 180s.\nOutput:\n{stdout}")
+        log_file.close()
+        with open(_SERVER_LOG) as f:
+            log_content = f.read()
+        raise RuntimeError(f"MLflow server did not start within 180s.\nLog:\n{log_content}")
 
     yield tracking_uri
 
-    # Teardown: stop server, delete CloudFormation stack
     proc.terminate()
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
-
-    _delete_stack(_TABLE_NAME, _REGION)
+    log_file.close()
 
 
 @pytest.fixture(scope="session")
