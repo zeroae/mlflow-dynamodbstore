@@ -9,7 +9,7 @@ from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
-from mlflow.server.auth.entities import User
+from mlflow.server.auth.entities import ExperimentPermission, User
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
@@ -18,8 +18,12 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_NAME,
     GSI2_PK,
     GSI2_SK,
+    GSI4_PERM_PREFIX,
+    GSI4_PK,
+    GSI4_SK,
     PK_USER_PREFIX,
     SK_USER_META,
+    SK_USER_PERM_PREFIX,
 )
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
@@ -175,3 +179,88 @@ class DynamoDBAuthStore:
         items = self._table.query(pk=pk)
         for item in items:
             self._table.delete_item(pk=pk, sk=item["SK"])
+
+    # ------------------------------------------------------------------
+    # Experiment Permission CRUD
+    # ------------------------------------------------------------------
+
+    def create_experiment_permission(
+        self, experiment_id: str, username: str, permission: str
+    ) -> ExperimentPermission:
+        """Create an experiment permission for a user.
+
+        Raises MlflowException if the permission already exists.
+        """
+        pk = f"{PK_USER_PREFIX}{username}"
+        sk = f"{SK_USER_PERM_PREFIX}EXP#{experiment_id}"
+        item: dict[str, Any] = {
+            "PK": pk,
+            "SK": sk,
+            "permission": permission,
+            # GSI4: look up all users with permissions on an experiment
+            GSI4_PK: f"{GSI4_PERM_PREFIX}EXP#{experiment_id}",
+            GSI4_SK: f"{PK_USER_PREFIX}{username}",
+        }
+        try:
+            self._table.put_item(item, condition="attribute_not_exists(PK)")
+        except Exception as exc:
+            if "ConditionalCheckFailedException" in str(exc):
+                raise MlflowException(  # type: ignore[no-untyped-call]
+                    f"Permission for experiment '{experiment_id}' "
+                    f"and user '{username}' already exists.",
+                    error_code=RESOURCE_ALREADY_EXISTS,
+                ) from exc
+            raise
+
+        return ExperimentPermission(  # type: ignore[no-untyped-call]
+            experiment_id=experiment_id,
+            user_id=_user_id_from_username(username),
+            permission=permission,
+        )
+
+    def get_experiment_permission(self, experiment_id: str, username: str) -> ExperimentPermission:
+        """Return an experiment permission.
+
+        Raises MlflowException if the permission does not exist.
+        """
+        pk = f"{PK_USER_PREFIX}{username}"
+        sk = f"{SK_USER_PERM_PREFIX}EXP#{experiment_id}"
+        item = self._table.get_item(pk=pk, sk=sk, consistent=True)
+        if item is None:
+            raise MlflowException(  # type: ignore[no-untyped-call]
+                f"Permission for experiment '{experiment_id}' and user '{username}' not found.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        return ExperimentPermission(  # type: ignore[no-untyped-call]
+            experiment_id=experiment_id,
+            user_id=_user_id_from_username(username),
+            permission=item["permission"],
+        )
+
+    def list_experiment_permissions(self, username: str) -> list[ExperimentPermission]:
+        """Return all experiment permissions for a user."""
+        pk = f"{PK_USER_PREFIX}{username}"
+        items = self._table.query(pk=pk, sk_prefix=f"{SK_USER_PERM_PREFIX}EXP#")
+        user_id = _user_id_from_username(username)
+        return [
+            ExperimentPermission(  # type: ignore[no-untyped-call]
+                experiment_id=item["SK"].removeprefix(f"{SK_USER_PERM_PREFIX}EXP#"),
+                user_id=user_id,
+                permission=item["permission"],
+            )
+            for item in items
+        ]
+
+    def update_experiment_permission(
+        self, experiment_id: str, username: str, permission: str
+    ) -> None:
+        """Update an experiment permission."""
+        pk = f"{PK_USER_PREFIX}{username}"
+        sk = f"{SK_USER_PERM_PREFIX}EXP#{experiment_id}"
+        self._table.update_item(pk=pk, sk=sk, updates={"permission": permission})
+
+    def delete_experiment_permission(self, experiment_id: str, username: str) -> None:
+        """Delete an experiment permission."""
+        pk = f"{PK_USER_PREFIX}{username}"
+        sk = f"{SK_USER_PERM_PREFIX}EXP#{experiment_id}"
+        self._table.delete_item(pk=pk, sk=sk)
