@@ -20,13 +20,19 @@ from mlflow.entities import (
 )
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
-    INVALID_PARAMETER_VALUE,
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
 from mlflow.store.tracking.abstract_store import AbstractStore
 
 from mlflow_dynamodbstore.cache import ResolutionCache
+from mlflow_dynamodbstore.dynamodb.config import ConfigReader
+from mlflow_dynamodbstore.dynamodb.fts import (
+    fts_diff,
+    fts_items_for_text,
+    tokenize_trigrams,
+    tokenize_words,
+)
 from mlflow_dynamodbstore.dynamodb.keys import pad_step
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
@@ -34,6 +40,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_RUN_PREFIX,
     GSI1_SK,
     GSI2_EXPERIMENTS_PREFIX,
+    GSI2_FTS_NAMES_PREFIX,
     GSI2_PK,
     GSI2_SK,
     GSI3_EXP_NAME_PREFIX,
@@ -51,7 +58,10 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_DATASET_PREFIX,
     SK_DLINK_PREFIX,
     SK_EXPERIMENT_META,
+    SK_EXPERIMENT_NAME_REV,
     SK_EXPERIMENT_TAG_PREFIX,
+    SK_FTS_PREFIX,
+    SK_FTS_REV_PREFIX,
     SK_INPUT_PREFIX,
     SK_INPUT_TAG_SUFFIX,
     SK_METRIC_HISTORY_PREFIX,
@@ -134,6 +144,8 @@ class DynamoDBTrackingStore(AbstractStore):
         self._cache = ResolutionCache()
         self._artifact_uri = artifact_uri or ""
         self._workspace = "default"
+        self._config = ConfigReader(self._table)
+        self._config.reconcile()
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -171,6 +183,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "creation_time": now_ms,
             "last_update_time": now_ms,
             "workspace": self._workspace,
+            "tags": {},
             # LSI attributes
             LSI1_SK: f"active#{exp_id}",
             LSI2_SK: str(now_ms),
@@ -189,10 +202,32 @@ class DynamoDBTrackingStore(AbstractStore):
 
         self._table.put_item(item, condition="attribute_not_exists(PK)")
 
+        # Write NAME_REV item for suffix ILIKE support (GSI5)
+        name_rev_item = {
+            "PK": f"{PK_EXPERIMENT_PREFIX}{exp_id}",
+            "SK": SK_EXPERIMENT_NAME_REV,
+            GSI5_PK: f"{GSI5_EXP_NAMES_PREFIX}{self._workspace}",
+            GSI5_SK: f"REV#{_rev(name.lower())}#{exp_id}",
+            "name": name,
+        }
+        self._table.put_item(name_rev_item)
+
         # Write tags if provided
         if tags:
             for tag in tags:
                 self._write_experiment_tag(exp_id, tag)
+
+        # Write FTS items for experiment name
+        fts_items = fts_items_for_text(
+            pk=f"{PK_EXPERIMENT_PREFIX}{exp_id}",
+            entity_type="E",
+            entity_id=exp_id,
+            field=None,
+            text=name,
+            workspace=self._workspace,
+        )
+        if fts_items:
+            self._table.batch_write(fts_items)
 
         return exp_id
 
@@ -257,6 +292,53 @@ class DynamoDBTrackingStore(AbstractStore):
             },
         )
 
+        # Update NAME_REV item with new reversed name
+        self._table.update_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=SK_EXPERIMENT_NAME_REV,
+            updates={
+                GSI5_SK: f"REV#{_rev(new_name.lower())}#{experiment_id}",
+                "name": new_name,
+            },
+        )
+
+        # Update FTS items for experiment name change
+        levels = ("W", "3")  # always trigram for experiment_name
+        tokens_to_add, tokens_to_remove = fts_diff(old_name, new_name, levels)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        # Delete removed FTS items by looking up via reverse SK prefix
+        if tokens_to_remove:
+            rev_prefix = f"{SK_FTS_REV_PREFIX}E#{experiment_id}#"
+            rev_items = self._table.query(pk=pk, sk_prefix=rev_prefix)
+            for rev_item in rev_items:
+                # Parse level and token from reverse SK: FTS_REV#E#<id>#<level>#<token>
+                rev_sk = rev_item["SK"]
+                # Build the corresponding forward SK to delete it too
+                # rev_sk pattern: FTS_REV#E#<entity_id>#<level>#<token>
+                parts = rev_sk[len(SK_FTS_REV_PREFIX) :].split("#")
+                # parts = ["E", experiment_id, level, token]
+                if len(parts) >= 4:
+                    lvl, tok = parts[2], parts[3]
+                    if (lvl, tok) in tokens_to_remove:
+                        forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#E#{experiment_id}"
+                        self._table.delete_item(pk=pk, sk=forward_sk)
+                        self._table.delete_item(pk=pk, sk=rev_sk)
+
+        # Write new FTS items for added tokens
+        if tokens_to_add:
+            new_fts_items: list[dict[str, Any]] = []
+            for lvl, tok in tokens_to_add:
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#E#{experiment_id}"
+                reverse_sk = f"{SK_FTS_REV_PREFIX}E#{experiment_id}#{lvl}#{tok}"
+                gsi2pk_val = f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}"
+                gsi2sk_val = f"{lvl}#{tok}#E#{experiment_id}"
+                new_fts_items.append(
+                    {"PK": pk, "SK": forward_sk, GSI2_PK: gsi2pk_val, GSI2_SK: gsi2sk_val}
+                )
+                new_fts_items.append({"PK": pk, "SK": reverse_sk})
+            self._table.batch_write(new_fts_items)
+
         # Invalidate cache
         self._cache.invalidate("exp_name", old_name)
 
@@ -300,18 +382,45 @@ class DynamoDBTrackingStore(AbstractStore):
         order_by: list[str] | None = None,
         page_token: str | None = None,
     ) -> list[Experiment]:
-        """Search experiments using GSI2."""
-        if filter_string:
-            raise MlflowException(
-                "Filter support requires Plan 2",
-                error_code=INVALID_PARAMETER_VALUE,
-            )
-        if order_by:
-            raise MlflowException(
-                "order_by support requires Plan 2",
-                error_code=INVALID_PARAMETER_VALUE,
-            )
+        """Search experiments with filter and order_by support."""
+        from mlflow_dynamodbstore.dynamodb.search import parse_experiment_filter
 
+        predicates = parse_experiment_filter(filter_string)
+
+        # Classify predicates
+        name_pred = next(
+            (p for p in predicates if p.field_type == "attribute" and p.key == "name"),
+            None,
+        )
+        tag_preds = [p for p in predicates if p.field_type == "tag"]
+
+        if name_pred and name_pred.op == "=":
+            experiments = self._search_experiments_by_name_exact(name_pred.value, view_type)
+        elif name_pred and name_pred.op in ("LIKE", "ILIKE"):
+            experiments = self._search_experiments_by_name_like(
+                name_pred.value, name_pred.op, view_type
+            )
+        else:
+            experiments = self._search_experiments_by_lifecycle(view_type, max_results)
+
+        # Apply tag filters as post-filters
+        if tag_preds:
+            experiments = self._filter_experiments_by_tags(experiments, tag_preds)
+
+        # Apply ordering
+        if order_by:
+            experiments = self._sort_experiments(experiments, order_by)
+
+        return experiments[:max_results] if max_results else experiments
+
+    # ------------------------------------------------------------------
+    # search_experiments helpers
+    # ------------------------------------------------------------------
+
+    def _search_experiments_by_lifecycle(
+        self, view_type: int, max_results: int
+    ) -> list[Experiment]:
+        """Query experiments by lifecycle stage using GSI2."""
         experiments: list[Experiment] = []
 
         if view_type in (ViewType.ACTIVE_ONLY, ViewType.ALL):
@@ -335,7 +444,202 @@ class DynamoDBTrackingStore(AbstractStore):
                 exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
                 experiments.append(self.get_experiment(exp_id))
 
-        return experiments[:max_results] if max_results else experiments
+        return experiments
+
+    def _search_experiments_by_name_exact(self, name: str, view_type: int) -> list[Experiment]:
+        """Exact name lookup via GSI3."""
+        results = self._table.query(
+            pk=f"{GSI3_EXP_NAME_PREFIX}{self._workspace}#{name}",
+            index_name="gsi3",
+            limit=1,
+        )
+        if not results:
+            return []
+
+        exp_id = results[0]["PK"].replace(PK_EXPERIMENT_PREFIX, "")
+        exp = self.get_experiment(exp_id)
+
+        # Filter by view_type
+        if not self._matches_view_type(exp, view_type):
+            return []
+
+        return [exp]
+
+    def _search_experiments_by_name_like(
+        self, pattern: str, op: str, view_type: int
+    ) -> list[Experiment]:
+        """Search experiments by name pattern using GSI5 or FTS.
+
+        Strategies:
+        - 'prefix%': GSI5 begins_with on name
+        - '%suffix': GSI5 reversed name begins_with
+        - '%word%': GSI2 FTS index
+        """
+        is_ilike = op == "ILIKE"
+        stripped = pattern
+
+        has_leading = stripped.startswith("%")
+        has_trailing = stripped.endswith("%")
+        core = stripped.strip("%")
+
+        if not has_leading and has_trailing:
+            # Prefix match: name LIKE 'prod%'
+            return self._search_experiments_by_name_prefix(core, view_type)
+        elif has_leading and not has_trailing:
+            # Suffix match: name ILIKE '%pipeline'
+            return self._search_experiments_by_name_suffix(core, view_type, is_ilike)
+        elif has_leading and has_trailing:
+            # Contains match: name LIKE '%pipeline%'
+            return self._search_experiments_by_name_contains(core, view_type, is_ilike)
+        else:
+            # No wildcards — treat as exact match
+            return self._search_experiments_by_name_exact(core, view_type)
+
+    def _search_experiments_by_name_prefix(self, prefix: str, view_type: int) -> list[Experiment]:
+        """Use GSI5 to find experiments whose name starts with prefix."""
+        items = self._table.query(
+            pk=f"{GSI5_EXP_NAMES_PREFIX}{self._workspace}",
+            sk_prefix=prefix,
+            index_name="gsi5",
+        )
+        experiments: list[Experiment] = []
+        for item in items:
+            # GSI5 SK is "name#exp_id" — skip NAME_REV items (start with "REV#")
+            gsi5sk = item.get(GSI5_SK, "")
+            if gsi5sk.startswith("REV#"):
+                continue
+            exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
+            exp = self.get_experiment(exp_id)
+            if self._matches_view_type(exp, view_type):
+                experiments.append(exp)
+        return experiments
+
+    def _search_experiments_by_name_suffix(
+        self, suffix: str, view_type: int, case_insensitive: bool = True
+    ) -> list[Experiment]:
+        """Use GSI5 NAME_REV items to find experiments whose name ends with suffix."""
+        reversed_suffix = _rev(suffix.lower())
+        items = self._table.query(
+            pk=f"{GSI5_EXP_NAMES_PREFIX}{self._workspace}",
+            sk_prefix=f"REV#{reversed_suffix}",
+            index_name="gsi5",
+        )
+        experiments: list[Experiment] = []
+        for item in items:
+            exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
+            exp = self.get_experiment(exp_id)
+            if self._matches_view_type(exp, view_type):
+                experiments.append(exp)
+        return experiments
+
+    def _search_experiments_by_name_contains(
+        self, substring: str, view_type: int, case_insensitive: bool = False
+    ) -> list[Experiment]:
+        """Use GSI2 FTS index to find experiments whose name contains substring."""
+        # Try word tokens first, then trigrams
+        word_tokens = tokenize_words(substring)
+        exp_ids: set[str] | None = None
+
+        if word_tokens:
+            for token in word_tokens:
+                fts_items = self._table.query(
+                    pk=f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}",
+                    sk_prefix=f"W#{token}#E#",
+                    index_name="gsi2",
+                )
+                ids = set()
+                for item in fts_items:
+                    gsi2sk = item.get(GSI2_SK, "")
+                    # Pattern: W#<token>#E#<exp_id>
+                    parts = gsi2sk.split("#")
+                    for i, part in enumerate(parts):
+                        if part == "E" and i + 1 < len(parts):
+                            ids.add(parts[i + 1])
+                            break
+                exp_ids = ids if exp_ids is None else exp_ids & ids
+        else:
+            # Fallback to trigrams
+            trigram_tokens = tokenize_trigrams(substring)
+            for token in trigram_tokens:
+                fts_items = self._table.query(
+                    pk=f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}",
+                    sk_prefix=f"3#{token}#E#",
+                    index_name="gsi2",
+                )
+                ids = set()
+                for item in fts_items:
+                    gsi2sk = item.get(GSI2_SK, "")
+                    parts = gsi2sk.split("#")
+                    for i, part in enumerate(parts):
+                        if part == "E" and i + 1 < len(parts):
+                            ids.add(parts[i + 1])
+                            break
+                exp_ids = ids if exp_ids is None else exp_ids & ids
+
+        if not exp_ids:
+            return []
+
+        experiments: list[Experiment] = []
+        for exp_id in exp_ids:
+            exp = self.get_experiment(exp_id)
+            if self._matches_view_type(exp, view_type):
+                # Verify the substring actually appears in the name (FTS can have false positives)
+                name = exp.name
+                check_name = name.lower() if case_insensitive else name
+                check_sub = substring.lower() if case_insensitive else substring
+                if check_sub in check_name:
+                    experiments.append(exp)
+        return experiments
+
+    def _filter_experiments_by_tags(
+        self, experiments: list[Experiment], tag_preds: list[Any]
+    ) -> list[Experiment]:
+        """Post-filter experiments by tag predicates."""
+        from mlflow_dynamodbstore.dynamodb.search import _compare
+
+        filtered: list[Experiment] = []
+        for exp in experiments:
+            # Experiment.tags is a dict {key: value}
+            tag_map = exp.tags if isinstance(exp.tags, dict) else {}
+            if all(_compare(tag_map.get(pred.key), pred.op, pred.value) for pred in tag_preds):
+                filtered.append(exp)
+        return filtered
+
+    def _sort_experiments(
+        self, experiments: list[Experiment], order_by: list[str]
+    ) -> list[Experiment]:
+        """Sort experiments by the given order_by clauses (Python sort)."""
+        for token in reversed(order_by):
+            token = token.strip()
+            parts = token.rsplit(None, 1)
+            if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
+                key_name = parts[0].strip()
+                reverse = parts[1].upper() == "DESC"
+            else:
+                key_name = token
+                reverse = False
+
+            # Remove "attribute." prefix if present
+            if "." in key_name:
+                _, key_name = key_name.split(".", 1)
+
+            def _sort_key(e: Experiment, k: str = key_name) -> str:
+                val = getattr(e, k, None)
+                return str(val) if val is not None else ""
+
+            experiments = sorted(experiments, key=_sort_key, reverse=reverse)
+        return experiments
+
+    @staticmethod
+    def _matches_view_type(exp: Experiment, view_type: int) -> bool:
+        """Check if an experiment matches the requested view type."""
+        if view_type == ViewType.ALL:
+            return True
+        if view_type == ViewType.ACTIVE_ONLY:
+            return bool(exp.lifecycle_stage == "active")
+        if view_type == ViewType.DELETED_ONLY:
+            return bool(exp.lifecycle_stage == "deleted")
+        return True
 
     # ------------------------------------------------------------------
     # Experiment tags
@@ -348,14 +652,17 @@ class DynamoDBTrackingStore(AbstractStore):
         self._write_experiment_tag(experiment_id, tag)
 
     def _write_experiment_tag(self, experiment_id: str, tag: ExperimentTag) -> None:
-        """Write an experiment tag item."""
+        """Write an experiment tag item and optionally denormalize into the META item."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         item = {
-            "PK": f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            "PK": pk,
             "SK": f"{SK_EXPERIMENT_TAG_PREFIX}{tag.key}",
             "key": tag.key,
             "value": tag.value,
         }
         self._table.put_item(item)
+        if self._config.should_denormalize(None, tag.key):
+            self._denormalize_tag(pk, SK_EXPERIMENT_META, tag.key, tag.value)
 
     def _get_experiment_tags(self, experiment_id: str) -> list[ExperimentTag]:
         """Read all tags for an experiment."""
@@ -399,6 +706,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "run_name": run_name,
             "lifecycle_stage": "active",
             "artifact_uri": artifact_uri,
+            "tags": {},
             # LSI attributes
             LSI1_SK: f"active#{run_id}",
             LSI3_SK: f"RUNNING#{run_id}",
@@ -417,6 +725,18 @@ class DynamoDBTrackingStore(AbstractStore):
 
         # Cache run_id -> experiment_id
         self._cache.put("run_exp", run_id, experiment_id)
+
+        # Write FTS items for run name
+        if run_name:
+            run_fts = fts_items_for_text(
+                pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+                entity_type="R",
+                entity_id=run_id,
+                field=None,
+                text=run_name,
+            )
+            if run_fts:
+                self._table.batch_write(run_fts)
 
         return self._build_run(item, tags)
 
@@ -489,6 +809,21 @@ class DynamoDBTrackingStore(AbstractStore):
         )
 
         assert updated_item is not None  # update always returns ALL_NEW
+
+        # Update FTS for run name if it changed
+        old_run_name = current.get("run_name", "")
+        if run_name and run_name != old_run_name:
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            self._update_fts_for_rename(
+                pk=pk,
+                entity_type="R",
+                entity_id=run_id,
+                field=None,
+                old_text=old_run_name or None,
+                new_text=run_name,
+                workspace=None,
+            )
+
         return _item_to_run_info(updated_item)
 
     def delete_run(self, run_id: str) -> None:
@@ -526,61 +861,98 @@ class DynamoDBTrackingStore(AbstractStore):
         order_by: list[str],
         page_token: str | None,
     ) -> tuple[list[Run], str | None]:
-        """Search runs across experiments."""
-        if filter_string:
-            raise MlflowException(
-                "Filter support requires Plan 2",
-                error_code=INVALID_PARAMETER_VALUE,
-            )
+        """Search runs across experiments using parse -> plan -> execute pipeline."""
+        from mlflow_dynamodbstore.dynamodb.pagination import (
+            decode_page_token,
+            encode_page_token,
+        )
+        from mlflow_dynamodbstore.dynamodb.search import (
+            execute_query,
+            parse_run_filter,
+            plan_run_query,
+        )
+
+        # 1. Parse filter
+        predicates = parse_run_filter(filter_string)
+
+        # 2. Plan query
+        denormalized_patterns = self._config.get_denormalize_patterns()
+        plan = plan_run_query(predicates, order_by, run_view_type, denormalized_patterns)
+
+        # 3. For each experiment: execute query
+        # Handle multi-experiment pagination
+        token_data = decode_page_token(page_token)
+        exp_idx = token_data.get("exp_idx", 0) if token_data else 0
+        inner_token = token_data.get("inner_token") if token_data else None
 
         runs: list[Run] = []
+        remaining = max_results
+        next_page_token: str | None = None
 
-        for exp_id in experiment_ids:
+        for i, exp_id in enumerate(experiment_ids[exp_idx:], start=exp_idx):
             pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            current_token = inner_token if i == exp_idx else None
 
-            if run_view_type == ViewType.ACTIVE_ONLY:
-                items = self._table.query(
+            # Loop within experiment to handle non-run items in results
+            inner_next: str | None = None
+            while remaining > 0:
+                items, inner_next = execute_query(
+                    table=self._table,
+                    plan=plan,
                     pk=pk,
-                    sk_prefix="active#",
-                    index_name="lsi1",
-                    limit=max_results - len(runs) if max_results else None,
-                )
-            elif run_view_type == ViewType.DELETED_ONLY:
-                items = self._table.query(
-                    pk=pk,
-                    sk_prefix="deleted#",
-                    index_name="lsi1",
-                    limit=max_results - len(runs) if max_results else None,
-                )
-            else:
-                # ALL: query by SK prefix on main table
-                items = self._table.query(
-                    pk=pk,
-                    sk_prefix=SK_RUN_PREFIX,
-                    limit=max_results - len(runs) if max_results else None,
+                    max_results=remaining,
+                    page_token=current_token,
+                    predicates=predicates,
                 )
 
-            for item in items:
-                # Filter out non-run items (experiment meta, tags, etc.)
-                if "run_id" not in item:
-                    continue
-                run_id = item["run_id"]
-                # Cache for later lookups
-                self._cache.put("run_exp", run_id, exp_id)
-                # Build run with tags/params/metrics
-                run_prefix = f"{SK_RUN_PREFIX}{run_id}"
-                tag_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_TAG_PREFIX}")
-                param_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_PARAM_PREFIX}")
-                metric_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}")
-                runs.append(_item_to_run(item, tag_items, param_items, metric_items))
+                for item in items:
+                    if "run_id" not in item:
+                        continue
+                    run_id = item["run_id"]
+                    self._cache.put("run_exp", run_id, exp_id)
 
-                if max_results and len(runs) >= max_results:
+                    # Build full Run with tags/params/metrics
+                    run_prefix = f"{SK_RUN_PREFIX}{run_id}"
+                    tag_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_TAG_PREFIX}")
+                    param_items = self._table.query(
+                        pk=pk, sk_prefix=f"{run_prefix}{SK_PARAM_PREFIX}"
+                    )
+                    metric_items = self._table.query(
+                        pk=pk, sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}"
+                    )
+                    runs.append(_item_to_run(item, tag_items, param_items, metric_items))
+                    remaining -= 1
+
+                    if remaining <= 0:
+                        break
+
+                # If no more pages in this experiment, move on
+                if not inner_next:
                     break
+                # If we still need more, fetch the next page
+                current_token = inner_next
 
-            if max_results and len(runs) >= max_results:
+            if remaining <= 0:
+                # Create pagination token
+                if inner_next or i < len(experiment_ids) - 1:
+                    next_page_token = encode_page_token(
+                        {
+                            "exp_idx": i if inner_next else i + 1,
+                            "inner_token": inner_next,
+                        }
+                    )
                 break
 
-        return runs[:max_results] if max_results else runs, None
+            if inner_next:
+                next_page_token = encode_page_token(
+                    {
+                        "exp_idx": i,
+                        "inner_token": inner_next,
+                    }
+                )
+                break
+
+        return runs, next_page_token
 
     # ------------------------------------------------------------------
     # Run helpers
@@ -609,14 +981,28 @@ class DynamoDBTrackingStore(AbstractStore):
         return experiment_id
 
     def _write_run_tag(self, experiment_id: str, run_id: str, tag: RunTag) -> None:
-        """Write a run tag item."""
+        """Write a run tag item and optionally denormalize into the META item."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         item = {
-            "PK": f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            "PK": pk,
             "SK": f"{SK_RUN_PREFIX}{run_id}{SK_TAG_PREFIX}{tag.key}",
             "key": tag.key,
             "value": tag.value,
         }
         self._table.put_item(item)
+        if self._config.should_denormalize(experiment_id, tag.key):
+            self._denormalize_tag(pk, f"{SK_RUN_PREFIX}{run_id}", tag.key, tag.value)
+        # Write FTS items for tag value if configured
+        if self._config.should_trigram("run_tag_value") and tag.value:
+            tag_fts = fts_items_for_text(
+                pk=pk,
+                entity_type="R",
+                entity_id=run_id,
+                field=tag.key,
+                text=tag.value,
+            )
+            if tag_fts:
+                self._table.batch_write(tag_fts)
 
     def _build_run(self, item: dict[str, Any], tags: list[RunTag] | None = None) -> Run:
         """Build a Run entity from an item and optional in-memory tags."""
@@ -627,6 +1013,92 @@ class DynamoDBTrackingStore(AbstractStore):
             metrics=[],
         )
         return Run(run_info=info, run_data=data)
+
+    def _denormalize_tag(self, pk: str, sk: str, tag_key: str, tag_value: str) -> None:
+        """Write tag value into the META item's nested `tags` map."""
+        self._table._table.update_item(
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression="SET #tags.#k = :v",
+            ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
+            ExpressionAttributeValues={":v": tag_value},
+        )
+
+    def _remove_denormalized_tag(self, pk: str, sk: str, tag_key: str) -> None:
+        """Remove a tag from the META item's nested `tags` map."""
+        self._table._table.update_item(
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression="REMOVE #tags.#k",
+            ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
+        )
+
+    def _delete_fts_for_entity_field(
+        self,
+        pk: str,
+        entity_type: str,
+        entity_id: str,
+        field: str | None,
+    ) -> None:
+        """Delete all FTS items for a given entity + field (e.g. when a tag is deleted)."""
+        field_suffix = f"#{field}" if field else ""
+        entity_prefix = f"{entity_type}#{entity_id}{field_suffix}"
+        rev_prefix = f"{SK_FTS_REV_PREFIX}{entity_prefix}#"
+        rev_items = self._table.query(pk=pk, sk_prefix=rev_prefix)
+        for rev_item in rev_items:
+            rev_sk = rev_item["SK"]
+            suffix = rev_sk[len(SK_FTS_REV_PREFIX) + len(entity_prefix) + 1 :]
+            parts = suffix.split("#", 1)
+            if len(parts) == 2:
+                lvl, tok = parts[0], parts[1]
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                self._table.delete_item(pk=pk, sk=forward_sk)
+            self._table.delete_item(pk=pk, sk=rev_sk)
+
+    def _update_fts_for_rename(
+        self,
+        pk: str,
+        entity_type: str,
+        entity_id: str,
+        field: str | None,
+        old_text: str | None,
+        new_text: str,
+        workspace: str | None,
+    ) -> None:
+        """Compute FTS diff and apply: delete removed token items, write new token items."""
+        levels = ("W", "3")
+        tokens_to_add, tokens_to_remove = fts_diff(old_text, new_text, levels)
+        field_suffix = f"#{field}" if field else ""
+        entity_prefix = f"{entity_type}#{entity_id}{field_suffix}"
+
+        # Delete removed FTS items (both forward and reverse)
+        if tokens_to_remove:
+            rev_prefix = f"{SK_FTS_REV_PREFIX}{entity_prefix}#"
+            rev_items = self._table.query(pk=pk, sk_prefix=rev_prefix)
+            for rev_item in rev_items:
+                rev_sk = rev_item["SK"]
+                # rev_sk: FTS_REV#<entity_type>#<entity_id>[#<field>]#<level>#<token>
+                suffix = rev_sk[len(SK_FTS_REV_PREFIX) + len(entity_prefix) + 1 :]
+                parts = suffix.split("#", 1)
+                if len(parts) == 2:
+                    lvl, tok = parts[0], parts[1]
+                    if (lvl, tok) in tokens_to_remove:
+                        forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                        self._table.delete_item(pk=pk, sk=forward_sk)
+                        self._table.delete_item(pk=pk, sk=rev_sk)
+
+        # Write new FTS items for added tokens
+        if tokens_to_add:
+            add_gsi2 = entity_type in ("E", "M") and workspace is not None
+            new_fts_items: list[dict[str, Any]] = []
+            for lvl, tok in tokens_to_add:
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
+                forward: dict[str, Any] = {"PK": pk, "SK": forward_sk}
+                if add_gsi2:
+                    forward[GSI2_PK] = f"{GSI2_FTS_NAMES_PREFIX}{workspace}"
+                    forward[GSI2_SK] = f"{lvl}#{tok}#{entity_prefix}"
+                new_fts_items.append(forward)
+                new_fts_items.append({"PK": pk, "SK": reverse_sk})
+            self._table.batch_write(new_fts_items)
 
     def log_batch(
         self,
@@ -715,6 +1187,23 @@ class DynamoDBTrackingStore(AbstractStore):
         if items:
             self._table.batch_write(items)
 
+        # Write FTS items for param values if configured
+        if self._config.should_trigram("run_param_value"):
+            fts_param_items: list[dict[str, Any]] = []
+            for param in params:
+                if param.value:
+                    fts_param_items.extend(
+                        fts_items_for_text(
+                            pk=pk,
+                            entity_type="R",
+                            entity_id=run_id,
+                            field=param.key,
+                            text=param.value,
+                        )
+                    )
+            if fts_param_items:
+                self._table.batch_write(fts_param_items)
+
         # Write tags individually (uses put_item)
         for tag in tags:
             self._write_run_tag(experiment_id, run_id, tag)
@@ -758,6 +1247,11 @@ class DynamoDBTrackingStore(AbstractStore):
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         sk = f"{SK_RUN_PREFIX}{run_id}{SK_TAG_PREFIX}{key}"
         self._table.delete_item(pk=pk, sk=sk)
+        if self._config.should_denormalize(experiment_id, key):
+            self._remove_denormalized_tag(pk, f"{SK_RUN_PREFIX}{run_id}", key)
+        # Remove FTS items for tag value if FTS was configured
+        if self._config.should_trigram("run_tag_value"):
+            self._delete_fts_for_entity_field(pk=pk, entity_type="R", entity_id=run_id, field=key)
 
     def log_inputs(
         self,

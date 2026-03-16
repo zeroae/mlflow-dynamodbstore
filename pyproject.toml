@@ -79,6 +79,10 @@ strict = true
 exclude = ["tests/"]
 
 [[tool.mypy.overrides]]
+module = ["mlflow_dynamodbstore._version"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = ["ulid.*", "snowballstemmer.*", "moto.*", "boto3", "boto3.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
 

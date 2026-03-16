@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add full search/filter/order_by support to the tracking store and model registry, including the MLflow filter parser adapter, FTS (word + trigram), RANK/DLINK query integration, pagination, and tag denormalization configuration.
+**Goal:** Add full search/filter/order_by/pagination support to the tracking store and model registry, including the MLflow filter parser adapter, FTS (word + trigram), RANK/DLINK query integration, tag denormalization configuration, and NAME_REV items for suffix ILIKE.
 
 **Architecture:** MLflow's filter grammar is SQL-like (`AND`-only, no `OR`). We parse it and translate to a DynamoDB query plan: select the best index (LSI/GSI/RANK/DLINK/FTS), apply key conditions for pushable predicates, use FilterExpressions for denormalized tags, and post-filter in Python for remaining predicates. Pagination uses opaque base64 tokens encoding DynamoDB's `LastEvaluatedKey`.
 
@@ -12,6 +12,18 @@
 
 **Depends on:** Plan 1 (foundation, CRUD, key builders, table client, provisioner)
 
+**What Plan 1 already implemented:**
+- `search_experiments`: Basic GSI2 query by lifecycle (ViewType), no filter/order_by (raises `INVALID_PARAMETER_VALUE`)
+- `_search_runs`: Basic LSI1 query by lifecycle, no filter/order_by (raises `INVALID_PARAMETER_VALUE`)
+- `search_registered_models`: Basic GSI2 query, no filter/order_by
+- `search_model_versions`: Basic listing, no filter/order_by
+- RANK items written on `log_batch` but never queried for search
+- DLINK items written on `log_inputs` but never queried for search
+- No FTS items written on any CRUD operation
+- No tag denormalization (tags written as separate items only, not on META `tags` map)
+- No NAME_REV items written
+- No pagination tokens
+
 ---
 
 ## File Structure (new/modified files only)
@@ -19,18 +31,20 @@
 ```
 src/mlflow_dynamodbstore/
 ├── dynamodb/
-│   ├── search.py                   # NEW: Filter parser adapter, query planner, pagination
-│   └── fts.py                      # NEW: Word tokenizer, trigram tokenizer, FTS query builder
-├── tracking_store.py               # MODIFY: Wire search.py into _search_runs, search_experiments
-├── registry_store.py               # MODIFY: Wire search.py into search_registered_models, search_model_versions
+│   ├── search.py                   # NEW: Filter parser adapter, query planner, query executor, pagination
+│   ├── fts.py                      # NEW: Word tokenizer, trigram tokenizer, FTS key builders, diff helpers
+│   └── config.py                   # NEW: Config readers (denormalize patterns, FTS trigram fields)
+├── tracking_store.py               # MODIFY: Wire search.py into _search_runs, search_experiments; add FTS writes, tag denormalization, NAME_REV
+├── registry_store.py               # MODIFY: Wire search.py into search_registered_models, search_model_versions; add FTS writes, NAME_REV
 
 tests/
 ├── unit/
 │   ├── dynamodb/
-│   │   ├── test_search.py          # NEW: Filter parser, query planner tests
-│   │   └── test_fts.py             # NEW: Tokenizer tests (word + trigram)
+│   │   ├── test_search.py          # NEW: Filter parser, query planner, pagination tests
+│   │   ├── test_fts.py             # NEW: Tokenizer tests (word + trigram), key builder tests
+│   │   └── test_config.py          # NEW: Config reader tests
 │   ├── test_tracking_search.py     # NEW: search_runs, search_experiments with filters
-│   └── test_registry_search.py     # NEW: search_registered_models, search_model_versions
+│   └── test_registry_search.py     # NEW: search_registered_models, search_model_versions with filters
 ├── integration/
 │   ├── test_search_runs.py         # NEW: End-to-end search with moto server
 │   └── test_search_models.py       # NEW: End-to-end model search with moto server
@@ -38,7 +52,7 @@ tests/
 
 ---
 
-## Chunk 1: FTS Tokenizers
+## Chunk 1: FTS Tokenizers + Key Builders
 
 ### Task 1: Word tokenizer (stemmed)
 
@@ -55,8 +69,7 @@ from mlflow_dynamodbstore.dynamodb.fts import tokenize_words, tokenize_trigrams
 class TestWordTokenizer:
     def test_basic_tokenization(self):
         tokens = tokenize_words("The ChatModel returned an error")
-        assert "chatmodel" not in tokens  # lowercased, but "chatmodel" may or may not stem
-        assert "error" in tokens or "error" == list(tokens)[0]  # stemmed
+        assert "error" in tokens or any("error" in t for t in tokens)
 
     def test_stop_words_removed(self):
         tokens = tokenize_words("the a an is in on at to for")
@@ -64,20 +77,18 @@ class TestWordTokenizer:
 
     def test_short_words_removed(self):
         tokens = tokenize_words("I a x go")
-        # "I", "a", "x" are <= 1 char, removed. "go" stays.
         assert len(tokens) == 1
 
     def test_stemming(self):
         t1 = tokenize_words("errors")
         t2 = tokenize_words("error")
         t3 = tokenize_words("errored")
-        assert t1 == t2 == t3  # all stem to same token
+        assert t1 == t2 == t3
 
     def test_alphanumeric_only(self):
         tokens = tokenize_words("gpt-4-turbo v2.0")
         assert "gpt" in tokens
         assert "turbo" in tokens
-        assert "v2" in tokens or "0" not in tokens  # splits on non-alnum
 
     def test_case_insensitive(self):
         t1 = tokenize_words("Pipeline")
@@ -98,10 +109,41 @@ import re
 import snowballstemmer
 
 STOP_WORDS = frozenset({
-    "the", "a", "an", "is", "in", "on", "at", "to", "for",
-    "of", "and", "or", "not", "it", "this", "that", "with",
-    "be", "has", "have", "had", "do", "does", "did", "but",
-    "if", "no", "so", "as", "by", "from", "are", "was", "were",
+    # Articles & determiners
+    "a", "an", "the", "this", "that", "these", "those",
+    # Pronouns
+    "i", "me", "my", "myself", "we", "our", "ours", "ourselves",
+    "you", "your", "yours", "yourself", "yourselves",
+    "he", "him", "his", "himself", "she", "her", "hers", "herself",
+    "it", "its", "itself", "they", "them", "their", "theirs", "themselves",
+    "what", "which", "who", "whom", "whose",
+    # Prepositions
+    "in", "on", "at", "to", "for", "of", "with", "by", "from",
+    "up", "about", "into", "through", "during", "before", "after",
+    "above", "below", "between", "under", "over", "out", "off",
+    "down", "against", "until", "while",
+    # Conjunctions
+    "and", "or", "but", "nor", "so", "yet", "both", "either",
+    "neither", "not", "only", "than", "when", "if", "because",
+    "as", "while", "although", "though",
+    # Be verbs
+    "be", "am", "is", "are", "was", "were", "been", "being",
+    # Have verbs
+    "has", "have", "had", "having",
+    # Do verbs
+    "do", "does", "did", "doing",
+    # Modal verbs
+    "will", "would", "shall", "should", "may", "might",
+    "can", "could", "must",
+    # Common adverbs
+    "no", "not", "very", "too", "also", "just", "more", "most",
+    "now", "then", "here", "there", "where", "how", "all", "each",
+    "every", "any", "few", "some", "such", "own", "same", "other",
+    "much", "many", "well", "back", "even", "still", "already",
+    # Common verbs (low semantic value)
+    "get", "got", "gets", "make", "made", "let",
+    # Misc
+    "no", "yes", "one", "two",
 })
 _stemmer = snowballstemmer.stemmer("english")
 
@@ -177,34 +219,207 @@ def tokenize_trigrams(text: str) -> set[str]:
 git commit -m "feat: add trigram FTS tokenizer"
 ```
 
-### Task 3: FTS key builders and query helpers
+### Task 3: FTS key builders and diff helpers
 
 - [ ] **Step 1: Write failing tests**
 
-Test FTS forward/reverse key generation for all entity types (experiment name, run name, run param, run tag, trace tag, trace metadata, assessment). Test the `fts_keys_for_write` helper that returns both forward + reverse items for a given text + entity. Test `fts_diff` that computes tokens to add/remove given old and new text.
+Test FTS forward/reverse key generation for entity types used in Plan 2 (experiment name, run name, run param, run tag, model name). Test `fts_items_for_text(pk, entity_type, entity_id, field, text, levels)` returning list of DynamoDB items (forward + reverse, word + trigram). Test `fts_diff(old_text, new_text, levels)` returning `(tokens_to_add, tokens_to_remove)`. Test that experiment/model name FTS items include `gsi2pk`/`gsi2sk` for cross-partition search.
+
+```python
+from mlflow_dynamodbstore.dynamodb.fts import fts_items_for_text, fts_diff
+
+class TestFTSKeyBuilders:
+    def test_experiment_name_fts_items(self):
+        items = fts_items_for_text(
+            pk="EXP#01JQXYZ", entity_type="E", entity_id="01JQXYZ",
+            field=None, text="my data pipeline", levels=("W", "3"),
+            workspace="default",
+        )
+        # Should have forward + reverse for each word token and each trigram
+        forward_items = [i for i in items if i["SK"].startswith("FTS#")]
+        reverse_items = [i for i in items if i["SK"].startswith("FTS_REV#")]
+        assert len(forward_items) == len(reverse_items)
+        # Experiment name FTS items should have GSI2 attributes
+        for item in forward_items:
+            assert "gsi2pk" in item
+            assert item["gsi2pk"].startswith("FTS_NAMES#")
+
+    def test_run_name_fts_items_no_gsi2(self):
+        items = fts_items_for_text(
+            pk="EXP#01JQXYZ", entity_type="R", entity_id="01JRABC",
+            field=None, text="training run", levels=("W", "3"),
+        )
+        # Run name FTS items should NOT have GSI2 (not cross-partition)
+        for item in items:
+            assert "gsi2pk" not in item
+
+    def test_fts_diff(self):
+        to_add, to_remove = fts_diff("old pipeline", "new pipeline", levels=("W",))
+        # "pipeline" is common, "old"→remove, "new"→add (both stemmed)
+        assert len(to_add) > 0
+        assert len(to_remove) > 0
+        # "pipeline" stem should not be in either set
+```
 
 - [ ] **Step 2: Implement FTS key builders**
 
-Functions: `fts_keys_for_write(pk, entity_type, entity_id, field, text, levels)` returns list of items (forward + reverse, word + trigram based on config). `fts_diff(old_text, new_text, levels)` returns `(tokens_to_add, tokens_to_delete)`.
+`fts_items_for_text()`: Returns list of DynamoDB item dicts (forward + reverse). For entity names (experiment, model), adds `gsi2pk`/`gsi2sk` for cross-partition FTS. For other fields (run name, params, tags), no GSI attributes.
+
+`fts_diff()`: Computes (old_tokens - new_tokens, new_tokens - old_tokens) for both word and trigram levels.
 
 - [ ] **Step 3: Run tests, verify pass**
 - [ ] **Step 4: Commit**
 
 ```bash
-git commit -m "feat: add FTS key builders and diff helpers"
+git commit -m "feat: add FTS key builders, diff helpers, and cross-partition GSI2 support"
 ```
 
-### Task 4: Wire FTS into tracking store writes
+---
 
-Modify `tracking_store.py` to write FTS items during:
-- `create_experiment` / `rename_experiment` (experiment name tokens)
-- `create_run` / `update_run_info` (run name tokens)
-- `log_batch` (param + tag tokens)
-- `set_tag` / `delete_tag` (tag tokens with diff)
+## Chunk 2: Config Readers + Tag Denormalization + NAME_REV
+
+### Task 4: Config readers (denormalize patterns, FTS trigram fields)
+
+**Files:**
+- Create: `src/mlflow_dynamodbstore/dynamodb/config.py`
+- Create: `tests/unit/dynamodb/test_config.py`
 
 - [ ] **Step 1: Write failing tests**
 
-Test that after creating an experiment, FTS items exist in DynamoDB. Test that after renaming, old tokens are deleted and new tokens are written.
+```python
+# tests/unit/dynamodb/test_config.py
+from mlflow_dynamodbstore.dynamodb.config import ConfigReader
+
+class TestConfigReader:
+    def test_denormalize_patterns_default(self, config_reader):
+        patterns = config_reader.get_denormalize_patterns()
+        assert "mlflow.*" in patterns
+
+    def test_denormalize_patterns_per_experiment(self, config_reader):
+        # Write per-experiment config, verify merge
+        config_reader.set_experiment_denormalize_patterns("01JQXYZ", ["team.*"])
+        patterns = config_reader.get_effective_denormalize_patterns("01JQXYZ")
+        assert "mlflow.*" in patterns  # global
+        assert "team.*" in patterns    # experiment-specific
+
+    def test_should_denormalize(self, config_reader):
+        assert config_reader.should_denormalize(None, "mlflow.user") is True
+        assert config_reader.should_denormalize(None, "custom_tag") is False
+
+    def test_fts_trigram_fields_default(self, config_reader):
+        fields = config_reader.get_fts_trigram_fields()
+        assert isinstance(fields, list)
+
+    def test_should_trigram_entity_names_always_true(self, config_reader):
+        assert config_reader.should_trigram("experiment_name") is True
+        assert config_reader.should_trigram("run_name") is True
+        assert config_reader.should_trigram("model_name") is True
+
+    def test_should_trigram_other_fields_configurable(self, config_reader):
+        # Default: no extra trigram fields
+        assert config_reader.should_trigram("run_param_value") is False
+
+    def test_reconcile_from_env(self, config_reader, monkeypatch):
+        monkeypatch.setenv("MLFLOW_DYNAMODB_DENORMALIZE_TAGS", "mlflow.*,env,team.*")
+        config_reader.reconcile()
+        patterns = config_reader.get_denormalize_patterns()
+        assert "env" in patterns
+        assert "team.*" in patterns
+        assert "mlflow.*" in patterns
+
+    def test_reconcile_preserves_mlflow_star(self, config_reader, monkeypatch):
+        monkeypatch.setenv("MLFLOW_DYNAMODB_DENORMALIZE_TAGS", "env")
+        config_reader.reconcile()
+        patterns = config_reader.get_denormalize_patterns()
+        assert "mlflow.*" in patterns  # always re-added
+```
+
+- [ ] **Step 2: Implement ConfigReader**
+
+Reads CONFIG items from DynamoDB, caches in memory, provides `should_denormalize(experiment_id, tag_key)` and `should_trigram(field_type)`. Implements `reconcile()` for env var override on startup.
+
+- [ ] **Step 3: Run tests, verify pass**
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "feat: add config readers for denormalize patterns and FTS trigram fields"
+```
+
+### Task 5: Wire tag denormalization into tracking store
+
+Modify `tracking_store.py`:
+- Initialize `ConfigReader` in `__init__`, call `reconcile()`
+- `set_tag` / `log_batch` tags: if `should_denormalize()`, also UpdateItem META `tags.<key> = value`
+- `delete_tag`: if denormalized, also UpdateItem META `REMOVE tags.<key>`
+- `set_experiment_tag`: same pattern for experiment META
+
+- [ ] **Step 1: Write failing tests**
+
+```python
+# tests/unit/test_tracking_search.py (or extend test_tracking_store.py)
+class TestTagDenormalization:
+    def test_mlflow_tag_denormalized_on_run_meta(self, tracking_store, table):
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        run = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r")
+        tracking_store.set_tag(run.info.run_id, RunTag("mlflow.user", "alice"))
+        # Verify the run META item has tags.mlflow.user
+        meta = table.get_item(f"EXP#{exp_id}", f"R#{run.info.run_id}")
+        assert meta.get("tags", {}).get("mlflow.user") == "alice"
+
+    def test_custom_tag_not_denormalized_by_default(self, tracking_store, table):
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        run = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r")
+        tracking_store.set_tag(run.info.run_id, RunTag("custom_tag", "value"))
+        meta = table.get_item(f"EXP#{exp_id}", f"R#{run.info.run_id}")
+        assert "custom_tag" not in meta.get("tags", {})
+
+    def test_delete_tag_removes_from_denormalized(self, tracking_store, table):
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        run = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r")
+        tracking_store.set_tag(run.info.run_id, RunTag("mlflow.user", "alice"))
+        tracking_store.delete_tag(run.info.run_id, "mlflow.user")
+        meta = table.get_item(f"EXP#{exp_id}", f"R#{run.info.run_id}")
+        assert "mlflow.user" not in meta.get("tags", {})
+```
+
+- [ ] **Step 2: Implement denormalization in tracking store writes**
+- [ ] **Step 3: Run tests, verify pass**
+- [ ] **Step 4: Run existing Plan 1 tests to verify no regressions**
+
+```bash
+uv run pytest tests/unit/test_tracking_store.py -v
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "feat: wire tag denormalization into tracking store writes"
+```
+
+### Task 6: Wire tag denormalization into registry store
+
+Same pattern for `set_registered_model_tag` / `delete_registered_model_tag` / `set_model_version_tag` / `delete_model_version_tag`.
+
+- [ ] **Step 1: Write failing tests**
+- [ ] **Step 2: Implement**
+- [ ] **Step 3: Run tests, verify pass**
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "feat: wire tag denormalization into registry store writes"
+```
+
+### Task 7: Wire FTS into tracking store writes
+
+Modify `tracking_store.py` to write FTS items during:
+- `create_experiment` / `rename_experiment` (experiment name: word + trigram + GSI2 cross-partition)
+- `create_run` / `update_run_info` (run name: word + trigram)
+- `log_batch` params (word + trigram if configured)
+- `set_tag` / `delete_tag` (word + trigram if configured, with diff for updates)
+
+- [ ] **Step 1: Write failing tests**
+
+Test that after creating an experiment, FTS items exist in DynamoDB (both W# and 3# prefixed). Test that after renaming, old tokens deleted and new tokens written. Test that experiment name FTS items have GSI2 attributes. Test log_batch params write FTS items.
 
 - [ ] **Step 2: Modify tracking_store.py to call FTS helpers on writes**
 - [ ] **Step 3: Run tests, verify pass**
@@ -214,9 +429,9 @@ Test that after creating an experiment, FTS items exist in DynamoDB. Test that a
 git commit -m "feat: wire FTS writes into tracking store CRUD operations"
 ```
 
-### Task 5: Wire FTS into registry store writes
+### Task 8: Wire FTS into registry store writes
 
-Modify `registry_store.py` to write FTS items for model names on `create_registered_model` / `rename_registered_model`.
+Modify `registry_store.py` to write FTS items for model names on `create_registered_model` / `rename_registered_model` (word + trigram + GSI2 cross-partition).
 
 - [ ] **Step 1: Write failing tests**
 - [ ] **Step 2: Modify registry_store.py**
@@ -227,11 +442,29 @@ Modify `registry_store.py` to write FTS items for model names on `create_registe
 git commit -m "feat: wire FTS writes into registry store CRUD operations"
 ```
 
+### Task 9: NAME_REV materialized items for GSI5 suffix ILIKE
+
+Modify tracking_store.py and registry_store.py:
+- `create_experiment` / `rename_experiment`: Write/update `E#NAME_REV` item with `gsi5sk = REV#<rev(lower(name))>#<id>`
+- `create_registered_model` / `rename_registered_model`: Write/update `M#NAME_REV` item with `gsi5sk = REV#<rev(lower(name))>`
+
+- [ ] **Step 1: Write failing tests**
+
+Test NAME_REV item exists after create. Test GSI5 query `begins_with("REV#...")` returns matching items. Test rename updates NAME_REV.
+
+- [ ] **Step 2: Add NAME_REV writes**
+- [ ] **Step 3: Run tests, verify pass**
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "feat: add NAME_REV materialized items for suffix ILIKE"
+```
+
 ---
 
-## Chunk 2: Filter Parser & Query Planner
+## Chunk 3: Filter Parser, Query Planner & Pagination
 
-### Task 6: MLflow filter parser adapter
+### Task 10: MLflow filter parser adapter
 
 **Files:**
 - Create: `src/mlflow_dynamodbstore/dynamodb/search.py`
@@ -241,15 +474,15 @@ git commit -m "feat: wire FTS writes into registry store CRUD operations"
 
 ```python
 # tests/unit/dynamodb/test_search.py
-from mlflow_dynamodbstore.dynamodb.search import parse_filter, FilterPredicate
+from mlflow_dynamodbstore.dynamodb.search import parse_run_filter, parse_experiment_filter, FilterPredicate
 
-class TestFilterParser:
+class TestRunFilterParser:
     def test_empty_filter(self):
-        predicates = parse_filter("")
+        predicates = parse_run_filter("")
         assert predicates == []
 
     def test_attribute_equals(self):
-        predicates = parse_filter("status = 'FINISHED'")
+        predicates = parse_run_filter("status = 'FINISHED'")
         assert len(predicates) == 1
         assert predicates[0].field_type == "attribute"
         assert predicates[0].key == "status"
@@ -257,96 +490,142 @@ class TestFilterParser:
         assert predicates[0].value == "FINISHED"
 
     def test_metric_comparison(self):
-        predicates = parse_filter("metric.accuracy > 0.9")
+        predicates = parse_run_filter("metric.accuracy > 0.9")
         assert predicates[0].field_type == "metric"
         assert predicates[0].key == "accuracy"
         assert predicates[0].op == ">"
         assert predicates[0].value == 0.9
 
     def test_param_like(self):
-        predicates = parse_filter("param.model LIKE '%transformer%'")
+        predicates = parse_run_filter("param.model LIKE '%transformer%'")
         assert predicates[0].field_type == "param"
         assert predicates[0].op == "LIKE"
-        assert predicates[0].value == "%transformer%"
 
     def test_tag_equals(self):
-        predicates = parse_filter("tag.env = 'prod'")
+        predicates = parse_run_filter("tag.env = 'prod'")
         assert predicates[0].field_type == "tag"
 
     def test_compound_and(self):
-        predicates = parse_filter("metric.acc > 0.9 AND param.lr = '0.01'")
+        predicates = parse_run_filter("metric.acc > 0.9 AND param.lr = '0.01'")
         assert len(predicates) == 2
 
     def test_dataset_filter(self):
-        predicates = parse_filter("dataset.name = 'my_data'")
+        predicates = parse_run_filter("dataset.name = 'my_data'")
         assert predicates[0].field_type == "dataset"
+
+    def test_run_name_like(self):
+        predicates = parse_run_filter("run_name LIKE '%pipeline%'")
+        assert predicates[0].field_type == "attribute"
+        assert predicates[0].key == "run_name"
+
+class TestExperimentFilterParser:
+    def test_name_like(self):
+        predicates = parse_experiment_filter("name LIKE 'prod%'")
+        assert predicates[0].field_type == "attribute"
+        assert predicates[0].key == "name"
+        assert predicates[0].op == "LIKE"
+
+    def test_tag_filter(self):
+        predicates = parse_experiment_filter("tag.team = 'ml'")
+        assert predicates[0].field_type == "tag"
 ```
 
 - [ ] **Step 2: Run tests, verify fail**
 
-- [ ] **Step 3: Implement filter parser**
+- [ ] **Step 3: Implement filter parsers**
 
-Use MLflow's existing `SearchUtils` to parse the filter string into a structured list of predicates. Our `parse_filter` is an adapter that normalizes MLflow's internal representation into our `FilterPredicate` dataclass for the query planner.
+Use MLflow's existing `SearchUtils` / `SearchExperimentsUtils` to parse the filter string. Our `parse_run_filter` / `parse_experiment_filter` are adapters that normalize MLflow's internal parsed representation into our `FilterPredicate` dataclass.
+
+```python
+@dataclass(frozen=True)
+class FilterPredicate:
+    field_type: str  # "attribute", "metric", "param", "tag", "dataset"
+    key: str
+    op: str  # "=", "!=", ">", ">=", "<", "<=", "LIKE", "ILIKE", "IN", "NOT IN", "IS NULL", "IS NOT NULL"
+    value: Any
+```
 
 - [ ] **Step 4: Run tests, verify pass**
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat: add MLflow filter parser adapter"
+git commit -m "feat: add MLflow filter parser adapters for runs and experiments"
 ```
 
-### Task 7: Query planner
+### Task 11: Query planner
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
-from mlflow_dynamodbstore.dynamodb.search import QueryPlan, plan_query
+from mlflow_dynamodbstore.dynamodb.search import plan_run_query, QueryPlan
 
-class TestQueryPlanner:
+class TestRunQueryPlanner:
     def test_no_filter_uses_base_sk(self):
-        plan = plan_query(entity="run", predicates=[], order_by=None)
-        assert plan.index is None  # base table SK
-        assert plan.scan_forward is False  # default DESC
+        plan = plan_run_query(predicates=[], order_by=None, view_type=ViewType.ACTIVE_ONLY)
+        assert plan.index == "lsi1"  # lifecycle filter
+        assert plan.sk_prefix == "active#"
 
     def test_status_filter_uses_lsi3(self):
-        preds = parse_filter("status = 'FINISHED'")
-        plan = plan_query(entity="run", predicates=preds, order_by=None)
+        preds = parse_run_filter("status = 'FINISHED'")
+        plan = plan_run_query(predicates=preds, order_by=None, view_type=ViewType.ACTIVE_ONLY)
         assert plan.index == "lsi3"
-        assert plan.key_condition_prefix == "FINISHED#"
+        assert plan.sk_prefix == "FINISHED#"
 
     def test_metric_order_uses_rank(self):
-        plan = plan_query(entity="run", predicates=[], order_by=["metric.accuracy DESC"])
+        plan = plan_run_query(predicates=[], order_by=["metric.accuracy DESC"], view_type=ViewType.ACTIVE_ONLY)
         assert plan.strategy == "rank"
         assert plan.rank_key == "accuracy"
 
     def test_dataset_filter_uses_dlink(self):
-        preds = parse_filter("dataset.name = 'my_data'")
-        plan = plan_query(entity="run", predicates=preds, order_by=None)
+        preds = parse_run_filter("dataset.name = 'my_data'")
+        plan = plan_run_query(predicates=preds, order_by=None, view_type=ViewType.ACTIVE_ONLY)
         assert plan.strategy == "dlink"
 
-    def test_like_uses_fts(self):
-        preds = parse_filter("run_name LIKE '%pipeline%'")
-        plan = plan_query(entity="run", predicates=preds, order_by=None)
+    def test_run_name_like_uses_fts(self):
+        preds = parse_run_filter("run_name LIKE '%pipeline%'")
+        plan = plan_run_query(predicates=preds, order_by=None, view_type=ViewType.ACTIVE_ONLY)
         assert plan.strategy == "fts"
 
     def test_tag_filter_denormalized_uses_filter_expression(self):
-        preds = parse_filter("tag.mlflow.user = 'alice'")
-        plan = plan_query(
-            entity="run", predicates=preds, order_by=None,
+        preds = parse_run_filter("tag.mlflow.user = 'alice'")
+        plan = plan_run_query(
+            predicates=preds, order_by=None, view_type=ViewType.ACTIVE_ONLY,
             denormalized_patterns=["mlflow.*"],
         )
-        assert plan.filter_expressions  # uses FilterExpression, not BatchGetItem
+        assert any(fe for fe in plan.filter_expressions)
+
+    def test_order_by_end_time_uses_lsi2(self):
+        plan = plan_run_query(predicates=[], order_by=["end_time ASC"], view_type=ViewType.ACTIVE_ONLY)
+        assert plan.index == "lsi2"
+
+    def test_order_by_duration_uses_lsi5(self):
+        plan = plan_run_query(predicates=[], order_by=["duration DESC"], view_type=ViewType.ACTIVE_ONLY)
+        assert plan.index == "lsi5"
 ```
 
 - [ ] **Step 2: Run tests, verify fail**
 
 - [ ] **Step 3: Implement query planner**
 
-`plan_query()` analyzes predicates and order_by to select the optimal execution strategy:
-1. Check if any predicate can use a specialized index (RANK for metric/param, DLINK for dataset, FTS for LIKE)
-2. Check if order_by maps to an LSI
-3. Remaining predicates become FilterExpressions (for denormalized tags) or post-filters (for BatchGetItem patterns)
-4. Return a `QueryPlan` dataclass with index, key conditions, filter expressions, post-filters, and pagination config
+`plan_run_query()` analyzes predicates and order_by to select the optimal execution strategy:
+1. Check for specialized strategies: RANK (metric/param order), DLINK (dataset filter), FTS (LIKE '%word%')
+2. Check order_by → LSI mapping: end_time→LSI2, status→LSI3, run_name→LSI4, duration→LSI5
+3. Default: lifecycle filter via LSI1 (active#/deleted#)
+4. Classify remaining predicates: FilterExpressions (denormalized tags) vs post-filters (BatchGetItem for non-denormalized tags, params, metrics)
+5. Return `QueryPlan` dataclass
+
+```python
+@dataclass
+class QueryPlan:
+    strategy: str  # "index", "rank", "dlink", "fts"
+    index: str | None  # LSI/GSI name
+    sk_prefix: str | None  # begins_with condition
+    scan_forward: bool
+    filter_expressions: list[str]  # DynamoDB FilterExpression clauses
+    post_filters: list[FilterPredicate]  # Applied in Python after fetch
+    rank_key: str | None  # For strategy="rank"
+    fts_query: str | None  # For strategy="fts"
+```
 
 - [ ] **Step 4: Run tests, verify pass**
 - [ ] **Step 5: Commit**
@@ -355,7 +634,7 @@ class TestQueryPlanner:
 git commit -m "feat: add DynamoDB query planner for MLflow search"
 ```
 
-### Task 8: Pagination engine
+### Task 12: Pagination engine
 
 - [ ] **Step 1: Write failing tests**
 
@@ -381,7 +660,7 @@ class TestPagination:
 
 - [ ] **Step 2: Implement pagination**
 
-Base64-encoded JSON. Include `ExclusiveStartKey` (DynamoDB's `LastEvaluatedKey`), experiment index for multi-experiment queries, and accumulated result count.
+Base64-encoded JSON. Encode DynamoDB's `LastEvaluatedKey`, experiment index for multi-experiment queries, accumulated result count.
 
 - [ ] **Step 3: Run tests, verify pass**
 - [ ] **Step 4: Commit**
@@ -390,13 +669,35 @@ Base64-encoded JSON. Include `ExclusiveStartKey` (DynamoDB's `LastEvaluatedKey`)
 git commit -m "feat: add pagination token encoding/decoding"
 ```
 
+### Task 13: Query executor
+
+Add a `execute_query(table, plan, pk, max_results, page_token)` function that:
+1. Executes the DynamoDB query based on the plan (index selection, key conditions, FilterExpressions)
+2. For RANK strategy: query RANK items, extract run IDs, BatchGetItem run METAs
+3. For DLINK strategy: query DLINK items, extract run IDs, BatchGetItem run METAs
+4. For FTS strategy: query FTS items (word first, fallback to trigram), extract entity IDs, BatchGetItem METAs
+5. Applies post-filters in Python (non-denormalized tag lookups via BatchGetItem, param/metric value checks)
+6. Handles pagination (LastEvaluatedKey → page token)
+
+- [ ] **Step 1: Write failing tests**
+
+Test each execution strategy with actual DynamoDB items (via `@mock_aws`).
+
+- [ ] **Step 2: Implement query executor**
+- [ ] **Step 3: Run tests, verify pass**
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "feat: add query executor for all search strategies"
+```
+
 ---
 
-## Chunk 3: Wire Search into Stores
+## Chunk 4: Wire Search into Stores
 
-### Task 9: search_runs implementation
+### Task 14: Full _search_runs implementation
 
-Modify `tracking_store.py`: replace the basic `_search_runs` stub with the full implementation using the query planner.
+Modify `tracking_store.py`: replace the Plan 1 basic `_search_runs` with the full implementation using parse → plan → execute pipeline.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -419,9 +720,9 @@ class TestSearchRuns:
         tracking_store.log_batch(run1.info.run_id, metrics=[Metric("acc", 0.8, 0, 0)], params=[], tags=[])
         tracking_store.log_batch(run2.info.run_id, metrics=[Metric("acc", 0.95, 0, 0)], params=[], tags=[])
         runs, _ = tracking_store._search_runs([exp_id], "", ViewType.ACTIVE_ONLY, 100, ["metric.acc DESC"], None)
-        assert runs[0].info.run_id == run2.info.run_id  # 0.95 first
+        assert runs[0].info.run_id == run2.info.run_id
 
-    def test_search_by_tag_denormalized(self, tracking_store):
+    def test_search_by_denormalized_tag(self, tracking_store):
         exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
         run1 = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r1")
         tracking_store.set_tag(run1.info.run_id, RunTag("mlflow.user", "alice"))
@@ -429,47 +730,70 @@ class TestSearchRuns:
         assert len(runs) == 1
 
     def test_search_by_dataset(self, tracking_store):
-        # Create run, log_inputs, then search by dataset.name
-        ...
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        run1 = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r1")
+        # log_inputs with dataset...
+        # search by dataset.name = 'my_data'...
 
-    def test_search_by_run_name_like(self, tracking_store):
-        # Create runs with names, search with LIKE '%pipeline%'
-        ...
+    def test_search_run_name_like_word(self, tracking_store):
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="my-pipeline-v1")
+        tracking_store.create_run(exp_id, user_id="u", start_time=1001, tags=[], run_name="other-run")
+        runs, _ = tracking_store._search_runs([exp_id], "run_name LIKE '%pipeline%'", ViewType.ACTIVE_ONLY, 100, None, None)
+        assert len(runs) == 1
 
     def test_search_pagination(self, tracking_store):
-        # Create 30 runs, search with max_results=10, verify page_token works
-        ...
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        for i in range(30):
+            tracking_store.create_run(exp_id, user_id="u", start_time=1000 + i, tags=[], run_name=f"r{i}")
+        runs, token = tracking_store._search_runs([exp_id], "", ViewType.ACTIVE_ONLY, 10, None, None)
+        assert len(runs) == 10
+        assert token is not None
+        runs2, token2 = tracking_store._search_runs([exp_id], "", ViewType.ACTIVE_ONLY, 10, None, token)
+        assert len(runs2) == 10
+        # All run IDs should be different
+        ids1 = {r.info.run_id for r in runs}
+        ids2 = {r.info.run_id for r in runs2}
+        assert ids1.isdisjoint(ids2)
 
     def test_multi_experiment_search(self, tracking_store):
-        # Create runs in 2 experiments, search both, verify merge
-        ...
+        exp1 = tracking_store.create_experiment("exp1", artifact_location="s3://b")
+        exp2 = tracking_store.create_experiment("exp2", artifact_location="s3://b")
+        tracking_store.create_run(exp1, user_id="u", start_time=1000, tags=[], run_name="r1")
+        tracking_store.create_run(exp2, user_id="u", start_time=1001, tags=[], run_name="r2")
+        runs, _ = tracking_store._search_runs([exp1, exp2], "", ViewType.ACTIVE_ONLY, 100, None, None)
+        assert len(runs) == 2
 ```
 
-- [ ] **Step 2: Implement `_search_runs`**
+- [ ] **Step 2: Replace _search_runs implementation**
 
-1. Parse filter_string via `parse_filter`
-2. Plan query via `plan_query`
-3. Execute plan: select index, apply key conditions, filter expressions
-4. For each experiment_id, run the query (parallel if multiple)
-5. Post-filter non-pushable predicates in Python
-6. Apply order_by (if not handled by index)
-7. Handle pagination tokens
-8. Return `(runs, next_page_token)`
+1. Parse filter_string via `parse_run_filter`
+2. Plan query via `plan_run_query`
+3. For each experiment_id: execute query via `execute_query`
+4. Merge results across experiments
+5. Handle pagination tokens
+6. Return `(runs, next_page_token)`
 
 - [ ] **Step 3: Run tests, verify pass**
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Run Plan 1 tests to verify no regressions**
+
+```bash
+uv run pytest tests/unit/test_tracking_store.py tests/integration/test_tracking_crud.py -v
+```
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git commit -m "feat: implement full _search_runs with filter parser and query planner"
 ```
 
-### Task 10: search_experiments full implementation
+### Task 15: Full search_experiments implementation
 
-Upgrade `search_experiments` from the Plan 1 basic version to support `filter_string` and `order_by`.
+Upgrade `search_experiments` to support `filter_string` and `order_by`.
 
 - [ ] **Step 1: Write failing tests**
 
-Test filter by name (LIKE prefix/suffix via GSI5, LIKE '%word%' via FTS on GSI2), filter by tag, order by name/creation_time/last_update_time.
+Test filter by name LIKE 'prefix%' (GSI5 FWD#), LIKE '%suffix' (GSI5 REV#), LIKE '%word%' (FTS via GSI2 FTS_NAMES#). Filter by tag (denormalized: FilterExpression; non-denormalized: BatchGetItem). Order by name (LSI3), creation_time (ULID/GSI2), last_update_time (LSI2). Pagination.
 
 - [ ] **Step 2: Implement using query planner**
 - [ ] **Step 3: Run tests, verify pass**
@@ -479,11 +803,11 @@ Test filter by name (LIKE prefix/suffix via GSI5, LIKE '%word%' via FTS on GSI2)
 git commit -m "feat: upgrade search_experiments with full filter/order_by support"
 ```
 
-### Task 11: search_registered_models and search_model_versions
+### Task 16: Full search_registered_models and search_model_versions
 
 - [ ] **Step 1: Write failing tests**
 
-Test filter by name (LIKE prefix/suffix, LIKE '%word%'), filter by tag, order by name/last_update_time. For model versions: filter by run_id (GSI1 or LSI5), order by version/creation_time/last_update_time.
+Test filter by name LIKE (GSI5 + FTS), filter by tag, order by name/last_update_time. For model versions: filter by run_id (GSI1 cross-model or LSI5 within-model), order by version/creation_time (LSI1)/last_update_time (LSI2). Pagination.
 
 - [ ] **Step 2: Implement using query planner**
 - [ ] **Step 3: Run tests, verify pass**
@@ -495,71 +819,9 @@ git commit -m "feat: add full search to registry store"
 
 ---
 
-## Chunk 4: Tag Denormalization Config + NAME_REV + Integration
+## Chunk 5: Integration Tests + Verification
 
-### Task 12: Tag denormalization config (CONFIG item + pattern matching)
-
-- [ ] **Step 1: Write failing tests**
-
-Test reading denormalize patterns from CONFIG item, merging global + per-experiment patterns, `fnmatch` glob matching, `mlflow.*` always present.
-
-- [ ] **Step 2: Implement pattern reader**
-
-Read `CONFIG#DENORMALIZE_TAGS` and `EXP#<id>#E#DENORMALIZE_TAGS` items, merge, cache. Provide `should_denormalize(experiment_id, tag_key) -> bool`.
-
-- [ ] **Step 3: Run tests, verify pass**
-- [ ] **Step 4: Commit**
-
-```bash
-git commit -m "feat: add tag denormalization pattern config and matching"
-```
-
-### Task 13: NAME_REV materialized items for GSI5 suffix ILIKE
-
-- [ ] **Step 1: Write failing tests**
-
-Test that `create_experiment` writes NAME_REV item with GSI5 reversed name. Test that `rename_experiment` updates NAME_REV. Test GSI5 suffix query `begins_with("REV#...")`.
-
-- [ ] **Step 2: Add NAME_REV writes to create/rename in tracking_store.py and registry_store.py**
-- [ ] **Step 3: Run tests, verify pass**
-- [ ] **Step 4: Commit**
-
-```bash
-git commit -m "feat: add NAME_REV materialized items for suffix ILIKE"
-```
-
-### Task 14: FTS trigram config (CONFIG item)
-
-- [ ] **Step 1: Write failing tests**
-
-Test reading `CONFIG#FTS_TRIGRAM_FIELDS`, default fields list, entity names always have trigrams.
-
-- [ ] **Step 2: Implement trigram config reader**
-
-`should_trigram(field_type) -> bool`. Entity names always return True. Other fields check the CONFIG item.
-
-- [ ] **Step 3: Run tests, verify pass**
-- [ ] **Step 4: Commit**
-
-```bash
-git commit -m "feat: add FTS trigram field configuration"
-```
-
-### Task 15: Cross-partition FTS via GSI2
-
-- [ ] **Step 1: Write failing tests**
-
-Test that experiment name FTS items have `gsi2pk`/`gsi2sk` attributes. Test GSI2 query `FTS_NAMES#<ws>` returns matching experiments by word and trigram.
-
-- [ ] **Step 2: Add GSI2 attributes to experiment/model name FTS items**
-- [ ] **Step 3: Run tests, verify pass**
-- [ ] **Step 4: Commit**
-
-```bash
-git commit -m "feat: add cross-partition FTS via GSI2 for experiment/model names"
-```
-
-### Task 16: Search integration tests
+### Task 17: Search integration tests
 
 **Files:**
 - Create: `tests/integration/test_search_runs.py`
@@ -569,12 +831,16 @@ git commit -m "feat: add cross-partition FTS via GSI2 for experiment/model names
 
 End-to-end search scenarios via moto server:
 - Create experiment + 50 runs with varied metrics/params/tags → search with filters → verify results
-- Pagination: search with max_results=10, follow page tokens
+- Pagination: search with max_results=10, follow page_tokens through all results
 - Order by metric DESC → verify RANK item ordering
-- LIKE '%word%' → verify FTS query
+- LIKE '%word%' → verify FTS query (word-level)
+- LIKE '%part%' → verify FTS trigram query
+- LIKE 'prefix%' / '%suffix' → verify GSI5 FWD#/REV# queries
 - Dataset filter → verify DLINK query
-- Tag filter (denormalized) → verify FilterExpression
+- Tag filter (denormalized mlflow.*) → verify FilterExpression
+- Tag filter (non-denormalized) → verify BatchGetItem + Python filter
 - Multi-experiment search → verify merge
+- Cross-partition experiment name LIKE → verify GSI2 FTS_NAMES#
 
 - [ ] **Step 2: Run integration tests**
 
@@ -588,7 +854,7 @@ uv run pytest tests/integration/test_search_runs.py tests/integration/test_searc
 git commit -m "test: add search integration tests"
 ```
 
-### Task 17: Final verification
+### Task 18: Final verification
 
 - [ ] **Step 1: Run full test suite**
 
@@ -603,7 +869,15 @@ uv run ruff check src/ tests/
 uv run mypy src/mlflow_dynamodbstore/
 ```
 
-- [ ] **Step 3: Commit any fixes**
+- [ ] **Step 3: Run MLflow compatibility tests**
+
+```bash
+uv run pytest tests/compatibility/ -v --tb=short
+```
+
+Check if any previously-failing compatibility tests now pass with search support.
+
+- [ ] **Step 4: Commit any fixes**
 
 ```bash
 git commit -m "chore: fix lint and type errors from Plan 2 verification"

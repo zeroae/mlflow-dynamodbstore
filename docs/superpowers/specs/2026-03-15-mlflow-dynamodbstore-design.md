@@ -374,10 +374,24 @@ import re
 import snowballstemmer
 
 STOP_WORDS = frozenset({
-    "the", "a", "an", "is", "in", "on", "at", "to", "for",
-    "of", "and", "or", "not", "it", "this", "that", "with",
-    "be", "has", "have", "had", "do", "does", "did", "but",
-    "if", "no", "so", "as", "by", "from", "are", "was", "were",
+    # ~150 words — articles, pronouns, prepositions, conjunctions,
+    # be/have/do/modal verbs, common adverbs. Full list in fts.py.
+    "a", "an", "the", "this", "that", "these", "those",
+    "i", "me", "my", "we", "our", "you", "your", "he", "him",
+    "his", "she", "her", "it", "its", "they", "them", "their",
+    "what", "which", "who", "whom",
+    "in", "on", "at", "to", "for", "of", "with", "by", "from",
+    "up", "about", "into", "through", "during", "before", "after",
+    "above", "below", "between", "under", "over", "out", "off",
+    "and", "or", "but", "nor", "so", "not", "if", "as", "than",
+    "be", "am", "is", "are", "was", "were", "been", "being",
+    "has", "have", "had", "do", "does", "did",
+    "will", "would", "shall", "should", "may", "might",
+    "can", "could", "must",
+    "no", "very", "too", "also", "just", "more", "most",
+    "now", "then", "here", "there", "where", "how", "all",
+    "each", "every", "any", "few", "some", "such", "own",
+    # ... (see fts.py for complete list)
 })
 _stemmer = snowballstemmer.stemmer("english")
 
