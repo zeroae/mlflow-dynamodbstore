@@ -4,9 +4,9 @@
 
 **Goal:** Build a functional MLflow plugin (`mlflow-dynamodbstore`) with DynamoDB-backed tracking store (experiments, runs, metrics, params, tags), model registry store, and workspace provider — enough to run `mlflow server` with basic CRUD operations.
 
-**Architecture:** Single DynamoDB table with 4 partition families (EXP#, RM#, WORKSPACE#, USER#), 5 overloaded LSIs, 5 overloaded GSIs, auto-provisioned via DynamoDB `CreateTable` API on first connection. ULID-based IDs with creation-time timestamps. Synchronous materialized views (RANK, DLINK, NAME_REV written inline). FTS deferred to Plan 2.
+**Architecture:** Single DynamoDB table with 4 partition families (EXP#, RM#, WORKSPACE#, USER#), 5 overloaded LSIs, 5 overloaded GSIs, auto-provisioned via CloudFormation stack on first connection. ULID-based IDs with creation-time timestamps. Synchronous materialized views (RANK, DLINK, NAME_REV written inline). FTS deferred to Plan 2.
 
-**Spec deviation:** The spec says "CloudFormation auto-provisioning" but we use the DynamoDB `CreateTable` API directly — simpler, faster, and fully compatible with moto testing (moto's CloudFormation support for complex table schemas can be flaky).
+**Why CloudFormation:** The table is deployed as a CloudFormation stack (`mlflow-dynamodbstore-<table-name>`). This gives us stack-level lifecycle management — `delete-stack` removes the entire system cleanly. The template is embedded as a Python dict in the provisioner. In v2 (zae-mlflow CDK), the same template is extended with Streams + Lambda.
 
 **Tech Stack:** Python 3.11+, uv, hatchling + hatch-vcs, boto3, python-ulid, snowballstemmer, mlflow >= 3.0, moto[server] for testing, pytest, ruff, mypy, mkdocs-material
 
@@ -38,7 +38,7 @@ mlflow-dynamodbstore/
 │   │   ├── keys.py                             # Key builders: pk(), sk(), lsi*(), gsi*() for all entity types
 │   │   ├── schema.py                           # Constants: SK prefixes, GSI names, attribute names
 │   │   ├── table.py                            # DynamoDB table client: get, put, query, update, delete, batch_write
-│   │   ├── provisioner.py                      # Auto-provisioning via CreateTable API
+│   │   ├── provisioner.py                      # CloudFormation auto-provisioning (embedded template)
 │   │   ├── uri.py                              # Parse dynamodb://region/table or dynamodb://endpoint/table
 │   │   ├── search.py                           # (Plan 2) Filter parser, query planner
 │   │   └── fts.py                              # (Plan 2) Tokenizers, FTS query builder
@@ -177,7 +177,7 @@ dev = [
     "pytest-xdist",
     "ruff",
     "mypy",
-    "moto[server,dynamodb]",
+    "moto[server,dynamodb,cloudformation]",
     "requests",
     "pre-commit",
     "diff-cover",
@@ -868,8 +868,8 @@ from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 @pytest.fixture
 def table():
     with mock_aws():
-        from mlflow_dynamodbstore.dynamodb.provisioner import ensure_table_exists
-        ensure_table_exists(table_name="test", region="us-east-1")
+        from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
+        ensure_stack_exists(table_name="test", region="us-east-1")
         t = DynamoDBTable(table_name="test", region="us-east-1")
         yield t
 
@@ -911,7 +911,7 @@ Wrapper around `boto3.client('dynamodb')` that handles:
 - Query with index selection (main table, LSI, GSI)
 - Strongly consistent reads (configurable)
 
-Note: `DynamoDBTable` does NOT create tables. Table creation is owned by `provisioner.py` (Task 10). The table must exist before `DynamoDBTable` is used.
+Note: `DynamoDBTable` does NOT create tables. Table creation is owned by `provisioner.py` (Task 10) via CloudFormation. The table must exist before `DynamoDBTable` is used.
 
 - [ ] **Step 4: Run tests, verify pass**
 
@@ -935,58 +935,99 @@ git commit -m "feat: add DynamoDB table client with batch operations"
 import pytest
 import boto3
 from moto import mock_aws
-from mlflow_dynamodbstore.dynamodb.provisioner import ensure_table_exists
+from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists, get_stack_name
 
 class TestProvisioner:
     @mock_aws
-    def test_creates_table_if_not_exists(self):
-        ensure_table_exists(table_name="test-table", region="us-east-1")
-        client = boto3.client("dynamodb", region_name="us-east-1")
-        tables = client.list_tables()["TableNames"]
+    def test_stack_name(self):
+        assert get_stack_name("my-table") == "mlflow-dynamodbstore-my-table"
+
+    @mock_aws
+    def test_creates_stack_if_not_exists(self):
+        ensure_stack_exists(table_name="test-table", region="us-east-1")
+        cfn = boto3.client("cloudformation", region_name="us-east-1")
+        stacks = cfn.list_stacks(StackStatusFilter=["CREATE_COMPLETE"])["StackSummaries"]
+        stack_names = [s["StackName"] for s in stacks]
+        assert "mlflow-dynamodbstore-test-table" in stack_names
+
+    @mock_aws
+    def test_table_created_by_stack(self):
+        ensure_stack_exists(table_name="test-table", region="us-east-1")
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        tables = ddb.list_tables()["TableNames"]
         assert "test-table" in tables
 
     @mock_aws
     def test_table_has_5_lsis(self):
-        ensure_table_exists(table_name="test-table", region="us-east-1")
-        client = boto3.client("dynamodb", region_name="us-east-1")
-        desc = client.describe_table(TableName="test-table")["Table"]
+        ensure_stack_exists(table_name="test-table", region="us-east-1")
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        desc = ddb.describe_table(TableName="test-table")["Table"]
         lsis = desc.get("LocalSecondaryIndexes", [])
         assert len(lsis) == 5
 
     @mock_aws
     def test_table_has_5_gsis(self):
-        ensure_table_exists(table_name="test-table", region="us-east-1")
-        client = boto3.client("dynamodb", region_name="us-east-1")
-        desc = client.describe_table(TableName="test-table")["Table"]
+        ensure_stack_exists(table_name="test-table", region="us-east-1")
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        desc = ddb.describe_table(TableName="test-table")["Table"]
         gsis = desc.get("GlobalSecondaryIndexes", [])
         assert len(gsis) == 5
 
     @mock_aws
-    def test_idempotent_if_table_exists(self):
-        ensure_table_exists(table_name="test-table", region="us-east-1")
-        ensure_table_exists(table_name="test-table", region="us-east-1")  # no error
+    def test_idempotent_if_stack_exists(self):
+        ensure_stack_exists(table_name="test-table", region="us-east-1")
+        ensure_stack_exists(table_name="test-table", region="us-east-1")  # no error
 
     @mock_aws
     def test_creates_default_workspace(self):
-        ensure_table_exists(table_name="test-table", region="us-east-1")
-        client = boto3.client("dynamodb", region_name="us-east-1")
-        result = client.get_item(
+        ensure_stack_exists(table_name="test-table", region="us-east-1")
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        result = ddb.get_item(
             TableName="test-table",
             Key={"PK": {"S": "WORKSPACE#default"}, "SK": {"S": "META"}},
         )
         assert "Item" in result
+
+    @mock_aws
+    def test_creates_default_experiment(self):
+        ensure_stack_exists(table_name="test-table", region="us-east-1")
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        result = ddb.get_item(
+            TableName="test-table",
+            Key={"PK": {"S": "EXP#0"}, "SK": {"S": "E#META"}},
+        )
+        assert "Item" in result
+        assert result["Item"]["name"]["S"] == "Default"
+
+    @mock_aws
+    def test_delete_stack_removes_table(self):
+        ensure_stack_exists(table_name="test-table", region="us-east-1")
+        cfn = boto3.client("cloudformation", region_name="us-east-1")
+        cfn.delete_stack(StackName="mlflow-dynamodbstore-test-table")
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        tables = ddb.list_tables()["TableNames"]
+        assert "test-table" not in tables
 ```
 
 - [ ] **Step 2: Run tests, verify fail**
 
 - [ ] **Step 3: Implement provisioner**
 
-`ensure_table_exists()` checks if table exists via `describe_table`. If not, creates it using the DynamoDB `CreateTable` API (not CloudFormation) with all 5 LSIs + 5 GSIs, pay-per-request billing, PITR enabled. Seeds:
+`ensure_stack_exists()` checks if CloudFormation stack `mlflow-dynamodbstore-<table-name>` exists. If not, creates it with an embedded CloudFormation template (Python dict → JSON). The template defines:
+- DynamoDB table with 5 LSIs + 5 GSIs, pay-per-request billing, PITR enabled, TTL enabled on `ttl` attribute
+
+After stack creation completes, the provisioner seeds initial data items:
 - `WORKSPACE#default` META item (default workspace)
 - `EXP#0` experiment with name "Default" (MLflow's `DEFAULT_EXPERIMENT_ID = "0"`)
 - `CONFIG#DENORMALIZE_TAGS` with `{"patterns": ["mlflow.*"]}`
 - `CONFIG#TTL_POLICY` with defaults from env vars
 - `CONFIG#FTS_TRIGRAM_FIELDS` with `{"fields": []}`
+
+Helper: `get_stack_name(table_name) -> str` returns `mlflow-dynamodbstore-<table-name>`.
+
+The stack name is deterministic from the table name, so `delete-stack` by name always works.
+
+Note: CloudFormation `create_stack` is synchronous in moto but async in real AWS. The provisioner waits for `stack_create_complete` waiter in production. For moto, the stack is immediately available.
 
 Note: MLflow expects experiment ID "0" to exist as the default experiment. Since we use ULIDs, we hardcode "0" as a special case during provisioning.
 
@@ -1160,7 +1201,7 @@ class TestExperimentCRUD:
 
 - [ ] **Step 3: Implement DynamoDBTrackingStore skeleton + experiment create/get**
 
-Create `DynamoDBTrackingStore` inheriting from `mlflow.store.tracking.abstract_store.AbstractStore`. Implement `__init__` (parse URI, ensure table, init cache), `create_experiment`, `get_experiment`, `get_experiment_by_name`. Use key builders from Task 6 and table client from Task 9.
+Create `DynamoDBTrackingStore` inheriting from `mlflow.store.tracking.abstract_store.AbstractStore`. Implement `__init__` (parse URI, `ensure_stack_exists` for CloudFormation provisioning, init DynamoDBTable client, init cache), `create_experiment`, `get_experiment`, `get_experiment_by_name`. Use key builders from Task 6 and table client from Task 9.
 
 - [ ] **Step 4: Run tests, verify pass**
 
