@@ -42,6 +42,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_FTS_REV_PREFIX,
     SK_MODEL_ALIAS_PREFIX,
     SK_MODEL_META,
+    SK_MODEL_NAME_REV,
     SK_MODEL_TAG_PREFIX,
     SK_VERSION_PREFIX,
     SK_VERSION_TAG_SUFFIX,
@@ -185,6 +186,16 @@ class DynamoDBRegistryStore(AbstractStore):
 
         self._table.put_item(item, condition="attribute_not_exists(PK)")
 
+        # Write NAME_REV item for suffix ILIKE support (GSI5)
+        name_rev_item = {
+            "PK": f"{PK_MODEL_PREFIX}{model_ulid}",
+            "SK": SK_MODEL_NAME_REV,
+            GSI5_PK: f"{GSI5_MODEL_NAMES_PREFIX}{self._workspace}",
+            GSI5_SK: f"REV#{_rev(name.lower())}#{model_ulid}",
+            "name": name,
+        }
+        self._table.put_item(name_rev_item)
+
         # Write tags if provided
         model_tags: list[RegisteredModelTag] = []
         if tags:
@@ -253,6 +264,16 @@ class DynamoDBRegistryStore(AbstractStore):
                 GSI2_SK: f"{now_ms}#{new_name}",
                 GSI3_PK: f"{GSI3_MODEL_NAME_PREFIX}{self._workspace}#{new_name}",
                 GSI5_SK: f"{new_name}#{model_ulid}",
+            },
+        )
+
+        # Update NAME_REV item with new reversed name
+        self._table.update_item(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk=SK_MODEL_NAME_REV,
+            updates={
+                GSI5_SK: f"REV#{_rev(new_name.lower())}#{model_ulid}",
+                "name": new_name,
             },
         )
 

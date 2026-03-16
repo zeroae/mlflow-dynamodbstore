@@ -28,6 +28,7 @@ from mlflow.store.tracking.abstract_store import AbstractStore
 
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
+from mlflow_dynamodbstore.dynamodb.fts import fts_diff, fts_items_for_text
 from mlflow_dynamodbstore.dynamodb.keys import pad_step
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
@@ -52,7 +53,10 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_DATASET_PREFIX,
     SK_DLINK_PREFIX,
     SK_EXPERIMENT_META,
+    SK_EXPERIMENT_NAME_REV,
     SK_EXPERIMENT_TAG_PREFIX,
+    SK_FTS_PREFIX,
+    SK_FTS_REV_PREFIX,
     SK_INPUT_PREFIX,
     SK_INPUT_TAG_SUFFIX,
     SK_METRIC_HISTORY_PREFIX,
@@ -193,10 +197,32 @@ class DynamoDBTrackingStore(AbstractStore):
 
         self._table.put_item(item, condition="attribute_not_exists(PK)")
 
+        # Write NAME_REV item for suffix ILIKE support (GSI5)
+        name_rev_item = {
+            "PK": f"{PK_EXPERIMENT_PREFIX}{exp_id}",
+            "SK": SK_EXPERIMENT_NAME_REV,
+            GSI5_PK: f"{GSI5_EXP_NAMES_PREFIX}{self._workspace}",
+            GSI5_SK: f"REV#{_rev(name.lower())}#{exp_id}",
+            "name": name,
+        }
+        self._table.put_item(name_rev_item)
+
         # Write tags if provided
         if tags:
             for tag in tags:
                 self._write_experiment_tag(exp_id, tag)
+
+        # Write FTS items for experiment name
+        fts_items = fts_items_for_text(
+            pk=f"{PK_EXPERIMENT_PREFIX}{exp_id}",
+            entity_type="E",
+            entity_id=exp_id,
+            field=None,
+            text=name,
+            workspace=self._workspace,
+        )
+        if fts_items:
+            self._table.batch_write(fts_items)
 
         return exp_id
 
@@ -260,6 +286,57 @@ class DynamoDBTrackingStore(AbstractStore):
                 GSI5_SK: f"{new_name}#{experiment_id}",
             },
         )
+
+        # Update NAME_REV item with new reversed name
+        self._table.update_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=SK_EXPERIMENT_NAME_REV,
+            updates={
+                GSI5_SK: f"REV#{_rev(new_name.lower())}#{experiment_id}",
+                "name": new_name,
+            },
+        )
+
+        # Update FTS items for experiment name change
+        levels = ("W", "3")  # always trigram for experiment_name
+        tokens_to_add, tokens_to_remove = fts_diff(old_name, new_name, levels)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        # Delete removed FTS items by looking up via reverse SK prefix
+        if tokens_to_remove:
+            rev_prefix = f"{SK_FTS_REV_PREFIX}E#{experiment_id}#"
+            rev_items = self._table.query(pk=pk, sk_prefix=rev_prefix)
+            for rev_item in rev_items:
+                # Parse level and token from reverse SK: FTS_REV#E#<id>#<level>#<token>
+                rev_sk = rev_item["SK"]
+                # Build the corresponding forward SK to delete it too
+                # rev_sk pattern: FTS_REV#E#<entity_id>#<level>#<token>
+                parts = rev_sk[len(SK_FTS_REV_PREFIX) :].split("#")
+                # parts = ["E", experiment_id, level, token]
+                if len(parts) >= 4:
+                    lvl, tok = parts[2], parts[3]
+                    if (lvl, tok) in tokens_to_remove:
+                        forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#E#{experiment_id}"
+                        self._table.delete_item(pk=pk, sk=forward_sk)
+                        self._table.delete_item(pk=pk, sk=rev_sk)
+
+        # Write new FTS items for added tokens
+        if tokens_to_add:
+            from mlflow_dynamodbstore.dynamodb.schema import GSI2_FTS_NAMES_PREFIX, GSI2_PK, GSI2_SK
+
+            new_fts_items: list[dict[str, Any]] = []
+            for lvl, tok in tokens_to_add:
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#E#{experiment_id}"
+                reverse_sk = f"{SK_FTS_REV_PREFIX}E#{experiment_id}#{lvl}#{tok}"
+                gsi2pk_val = f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}"
+                gsi2sk_val = f"{lvl}#{tok}#E#{experiment_id}"
+                new_fts_items.append(
+                    {"PK": pk, "SK": forward_sk, GSI2_PK: gsi2pk_val, GSI2_SK: gsi2sk_val}
+                )
+                new_fts_items.append(
+                    {"PK": pk, "SK": reverse_sk, GSI2_PK: gsi2pk_val, GSI2_SK: gsi2sk_val}
+                )
+            self._table.batch_write(new_fts_items)
 
         # Invalidate cache
         self._cache.invalidate("exp_name", old_name)
