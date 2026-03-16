@@ -32,9 +32,9 @@ class TestRuns:
         client.log_metric(run.info.run_id, "loss", 0.05)
 
         fetched = client.get_run(run.info.run_id)
-        metrics = {m.key: m.value for m in fetched.data.metrics}
-        assert metrics["accuracy"] == 0.95
-        assert metrics["loss"] == 0.05
+        # REST API returns metrics as dict {key: value}
+        assert fetched.data.metrics["accuracy"] == 0.95
+        assert fetched.data.metrics["loss"] == 0.05
 
     def test_log_params(self, client: MlflowClient, experiment_id):
         run = client.create_run(experiment_id)
@@ -42,8 +42,7 @@ class TestRuns:
         client.log_param(run.info.run_id, "epochs", "100")
 
         fetched = client.get_run(run.info.run_id)
-        params = {p.key: p.value for p in fetched.data.params}
-        assert params["learning_rate"] == "0.01"
+        assert fetched.data.params["learning_rate"] == "0.01"
 
     def test_set_tag(self, client: MlflowClient, experiment_id):
         run = client.create_run(experiment_id)
@@ -62,8 +61,9 @@ class TestRuns:
         )
 
         fetched = client.get_run(run.info.run_id)
-        assert len(fetched.data.metrics) >= 2
-        assert len(fetched.data.params) >= 1
+        assert "m1" in fetched.data.metrics
+        assert "m2" in fetched.data.metrics
+        assert "p1" in fetched.data.params
 
     def test_update_run_status(self, client: MlflowClient, experiment_id):
         run = client.create_run(experiment_id)

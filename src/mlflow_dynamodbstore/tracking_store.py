@@ -144,7 +144,7 @@ def _item_to_run(
         tags=[RunTag(t["key"], t["value"]) for t in tags],
         params=[Param(p["key"], p["value"]) for p in params],
         metrics=[
-            Metric(m["key"], float(m["value"]), m.get("timestamp", 0), m.get("step", 0))
+            Metric(m["key"], float(m["value"]), int(m.get("timestamp", 0)), int(m.get("step", 0)))
             for m in metrics
         ],
     )
@@ -808,9 +808,15 @@ class DynamoDBTrackingStore(AbstractStore):
         return _item_to_run(item, tag_items, param_items, metric_items)
 
     def update_run_info(
-        self, run_id: str, run_status: str, end_time: int, run_name: str
+        self, run_id: str, run_status: str | int, end_time: int, run_name: str
     ) -> RunInfo:
         """Update run status, end_time, and run_name."""
+        from mlflow.entities import RunStatus
+
+        # MLflow may pass status as protobuf enum int (e.g. 3 for FINISHED)
+        if isinstance(run_status, int):
+            run_status = RunStatus.to_string(run_status)
+
         experiment_id = self._resolve_run_experiment(run_id)
 
         # Get current run to compute duration
@@ -1346,15 +1352,18 @@ class DynamoDBTrackingStore(AbstractStore):
             limit=max_results,
         )
 
-        return [
+        from mlflow.store.entities import PagedList
+
+        metrics = [
             Metric(
                 key=item["key"],
                 value=float(item["value"]),
-                timestamp=item.get("timestamp", 0),
-                step=item.get("step", 0),
+                timestamp=int(item.get("timestamp", 0)),
+                step=int(item.get("step", 0)),
             )
             for item in items
         ]
+        return PagedList(metrics, token=None)
 
     def set_tag(self, run_id: str, tag: RunTag) -> None:
         """Set a tag on a run."""
