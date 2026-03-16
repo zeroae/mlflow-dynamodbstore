@@ -6,10 +6,6 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main, 'release/v*', 'release/[0-9]*']
-  workflow_run:
-    workflows: ["Tests"]
-    types: [completed]
-    branches: [main, 'release/v*', 'release/[0-9]*']
 
 permissions:
   contents: write
@@ -22,7 +18,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.event_name != 'workflow_run'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -33,14 +29,11 @@ jobs:
         run: uv python install 3.12
       - name: Install dependencies
         run: uv sync --extra docs --extra dev
-      - name: Build docs (PR check)
-        if: github.event_name == 'pull_request'
+      - name: Build docs
         run: uv run mkdocs build --strict
 
   deploy:
-    if: |
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     concurrency:
       group: gh-pages-write-${{ github.ref }}
@@ -48,7 +41,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
       - name: Set up Python
@@ -64,6 +56,12 @@ jobs:
         run: |
           uv run mike deploy --push --update-aliases dev latest
           uv run mike set-default --push latest
+      - name: Deploy next docs (release branch)
+        if: startsWith(github.ref, 'refs/heads/release/')
+        run: |
+          VERSION=${GITHUB_REF#refs/heads/release/}
+          VERSION=${VERSION#v}
+          uv run mike deploy --push --update-aliases ${VERSION}-dev next
       - name: Deploy versioned docs (tag)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
