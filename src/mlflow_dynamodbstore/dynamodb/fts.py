@@ -183,3 +183,13 @@ def tokenize_words(text: str) -> set[str]:
     words = re.findall(r"[a-z0-9]+", text.lower())
     words = [w for w in words if w not in STOP_WORDS and len(w) > 1]
     return set(_stemmer.stemWords(words))
+
+
+def tokenize_trigrams(text: str) -> set[str]:
+    """Character trigrams for LIKE '%partial%' matches."""
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    grams: set[str] = set()
+    for word in words:
+        for i in range(len(word) - 2):
+            grams.add(word[i : i + 3])
+    return grams

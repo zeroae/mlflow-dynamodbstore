@@ -1,6 +1,6 @@
 """Tests for full-text search tokenizers."""
 
-from mlflow_dynamodbstore.dynamodb.fts import tokenize_words
+from mlflow_dynamodbstore.dynamodb.fts import tokenize_trigrams, tokenize_words
 
 
 class TestWordTokenizer:
@@ -30,4 +30,34 @@ class TestWordTokenizer:
     def test_case_insensitive(self):
         t1 = tokenize_words("Pipeline")
         t2 = tokenize_words("pipeline")
+        assert t1 == t2
+
+
+class TestTrigramTokenizer:
+    def test_basic_trigrams(self):
+        trigrams = tokenize_trigrams("pipeline")
+        assert "pip" in trigrams
+        assert "ipe" in trigrams
+        assert "pel" in trigrams
+        assert "eli" in trigrams
+        assert "lin" in trigrams
+        assert "ine" in trigrams
+        assert len(trigrams) == 6
+
+    def test_short_word_no_trigrams(self):
+        trigrams = tokenize_trigrams("ab")
+        assert len(trigrams) == 0
+
+    def test_three_char_word_one_trigram(self):
+        trigrams = tokenize_trigrams("foo")
+        assert trigrams == {"foo"}
+
+    def test_multi_word(self):
+        trigrams = tokenize_trigrams("foo bar")
+        assert "foo" in trigrams
+        assert "bar" in trigrams
+
+    def test_case_insensitive(self):
+        t1 = tokenize_trigrams("Pipeline")
+        t2 = tokenize_trigrams("pipeline")
         assert t1 == t2
