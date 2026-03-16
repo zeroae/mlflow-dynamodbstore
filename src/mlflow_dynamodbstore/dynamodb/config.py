@@ -22,6 +22,13 @@ _DEFAULT_DENORMALIZE_PATTERNS: list[str] = ["mlflow.*"]
 # ENV var name for overriding denormalize patterns on startup
 _ENV_DENORMALIZE_TAGS = "MLFLOW_DYNAMODB_DENORMALIZE_TAGS"
 
+# ENV var names for TTL policy overrides
+_ENV_SOFT_DELETED_RETENTION_DAYS = "MLFLOW_DYNAMODB_SOFT_DELETED_RETENTION_DAYS"
+_ENV_TRACE_RETENTION_DAYS = "MLFLOW_DYNAMODB_TRACE_RETENTION_DAYS"
+_ENV_METRIC_HISTORY_RETENTION_DAYS = "MLFLOW_DYNAMODB_METRIC_HISTORY_RETENTION_DAYS"
+
+_SECONDS_PER_DAY = 86400
+
 # SK suffix for per-experiment denormalize config
 _SK_EXP_DENORMALIZE_PREFIX = "DENORMALIZE_TAGS#EXP#"
 
@@ -187,6 +194,41 @@ class ConfigReader:
                     policy[key] = int(item[key])
         return policy
 
+    def set_ttl_policy(self, **kwargs: int) -> None:
+        """Update individual fields in the TTL policy and persist to DynamoDB."""
+        policy = self.get_ttl_policy()
+        for key, value in kwargs.items():
+            if key not in self._DEFAULT_TTL_POLICY:
+                raise ValueError(f"Unknown TTL policy field: {key}")
+            policy[key] = int(value)
+        self._table.put_item(
+            {
+                "PK": PK_CONFIG,
+                "SK": CONFIG_TTL_POLICY,
+                **policy,
+            }
+        )
+        self._ttl_policy = policy
+
+    def _ttl_seconds(self, days_key: str) -> int | None:
+        """Return seconds for a TTL policy field, or None if disabled (0)."""
+        days = self.get_ttl_policy()[days_key]
+        if days == 0:
+            return None
+        return days * _SECONDS_PER_DAY
+
+    def get_trace_ttl_seconds(self) -> int | None:
+        """Return trace retention in seconds, or None if disabled (0 days)."""
+        return self._ttl_seconds("trace_retention_days")
+
+    def get_soft_deleted_ttl_seconds(self) -> int | None:
+        """Return soft-deleted retention in seconds, or None if disabled (0 days)."""
+        return self._ttl_seconds("soft_deleted_retention_days")
+
+    def get_metric_history_ttl_seconds(self) -> int | None:
+        """Return metric history retention in seconds, or None if disabled (0 days)."""
+        return self._ttl_seconds("metric_history_retention_days")
+
     # ------------------------------------------------------------------
     # Reconcile from environment
     # ------------------------------------------------------------------
@@ -210,3 +252,17 @@ class ConfigReader:
             # Ensure defaults are persisted (idempotent)
             patterns = self.get_denormalize_patterns()
             self.set_denormalize_patterns(patterns)
+
+        # Reconcile TTL policy from environment variables
+        ttl_env_mapping = {
+            _ENV_SOFT_DELETED_RETENTION_DAYS: "soft_deleted_retention_days",
+            _ENV_TRACE_RETENTION_DAYS: "trace_retention_days",
+            _ENV_METRIC_HISTORY_RETENTION_DAYS: "metric_history_retention_days",
+        }
+        ttl_overrides: dict[str, int] = {}
+        for env_var, policy_key in ttl_env_mapping.items():
+            env_val = os.environ.get(env_var)
+            if env_val is not None:
+                ttl_overrides[policy_key] = int(env_val)
+        if ttl_overrides:
+            self.set_ttl_policy(**ttl_overrides)

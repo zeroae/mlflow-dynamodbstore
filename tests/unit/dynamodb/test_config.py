@@ -75,3 +75,38 @@ class TestConfigReader:
         config_reader.reconcile()
         patterns = config_reader.get_denormalize_patterns()
         assert "mlflow.*" in patterns  # always re-added
+
+
+class TestTTLPolicy:
+    def test_default_ttl_policy(self, config_reader):
+        policy = config_reader.get_ttl_policy()
+        assert policy["soft_deleted_retention_days"] == 90
+        assert policy["trace_retention_days"] == 30
+        assert policy["metric_history_retention_days"] == 365
+
+    def test_set_ttl_policy(self, config_reader):
+        config_reader.set_ttl_policy(soft_deleted_retention_days=60)
+        policy = config_reader.get_ttl_policy()
+        assert policy["soft_deleted_retention_days"] == 60
+
+    def test_ttl_zero_means_disabled(self, config_reader):
+        config_reader.set_ttl_policy(trace_retention_days=0)
+        assert config_reader.get_trace_ttl_seconds() is None  # disabled
+
+    def test_get_trace_ttl_seconds(self, config_reader):
+        ttl = config_reader.get_trace_ttl_seconds()
+        assert ttl == 30 * 86400  # 30 days in seconds
+
+    def test_get_soft_deleted_ttl_seconds(self, config_reader):
+        ttl = config_reader.get_soft_deleted_ttl_seconds()
+        assert ttl == 90 * 86400
+
+    def test_get_metric_history_ttl_seconds(self, config_reader):
+        ttl = config_reader.get_metric_history_ttl_seconds()
+        assert ttl == 365 * 86400
+
+    def test_reconcile_ttl_from_env(self, config_reader, monkeypatch):
+        monkeypatch.setenv("MLFLOW_DYNAMODB_SOFT_DELETED_RETENTION_DAYS", "60")
+        config_reader.reconcile()
+        policy = config_reader.get_ttl_policy()
+        assert policy["soft_deleted_retention_days"] == 60
