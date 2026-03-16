@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mlflow.entities.trace import Trace
+
+    from mlflow_dynamodbstore.xray.client import XRayClient
 
 from mlflow.entities import (
     Assessment,
@@ -152,6 +157,7 @@ class DynamoDBTrackingStore(AbstractStore):
         uri = parse_dynamodb_uri(store_uri)
         ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
+        self._uri = uri
         self._cache = ResolutionCache()
         self._artifact_uri = artifact_uri or ""
         self._workspace = "default"
@@ -1497,6 +1503,124 @@ class DynamoDBTrackingStore(AbstractStore):
             tags=tags,
             client_request_id=meta.get("client_request_id"),
         )
+
+    @property
+    def _xray_client(self) -> XRayClient:
+        """Lazily initialized X-Ray client."""
+        if not hasattr(self, "_xray_client_instance"):
+            from mlflow_dynamodbstore.xray.client import XRayClient
+
+            self._xray_client_instance = XRayClient(
+                region=self._uri.region,
+                endpoint_url=self._uri.endpoint_url,
+            )
+        return self._xray_client_instance
+
+    def get_trace(
+        self,
+        trace_id: str,
+        *,
+        allow_partial: bool = False,
+    ) -> Trace:
+        """Fetch a trace with spans.
+
+        Flow:
+        1. Read trace info (META + tags + metadata + assessments) from DynamoDB
+        2. Check for cached spans: T#<trace_id>#SPANS item
+        3. If cached -> deserialize and use them
+        4. If not cached -> call XRayClient.batch_get_traces([trace_id])
+        5. Convert X-Ray segments -> span dicts via span_converter
+        6. Cache to DynamoDB: T#<trace_id>#SPANS (JSON blob, same TTL as trace)
+        7. Denormalize span attributes on META: span_types, span_statuses, span_names
+        8. Write FTS items for span names
+        9. Return complete Trace
+        """
+        import json as _json
+
+        from mlflow.entities.trace import Trace
+        from mlflow.entities.trace_data import TraceData
+
+        from mlflow_dynamodbstore.xray.span_converter import (
+            convert_xray_trace,
+            span_dicts_to_mlflow_spans,
+        )
+
+        trace_info = self.get_trace_info(trace_id)
+        assert trace_info.trace_location.mlflow_experiment is not None
+        experiment_id = trace_info.trace_location.mlflow_experiment.experiment_id
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}"
+
+        # Check for cached spans
+        spans_sk = f"{SK_TRACE_PREFIX}{trace_id}#SPANS"
+        cached = self._table.get_item(pk=pk, sk=spans_sk)
+
+        span_dicts: list[dict[str, Any]]
+        if cached is not None:
+            span_dicts = _json.loads(cached["data"])
+        else:
+            # Fetch from X-Ray
+            xray_traces = self._xray_client.batch_get_traces([trace_id])
+            if xray_traces:
+                span_dicts = convert_xray_trace(xray_traces[0])
+            else:
+                span_dicts = []
+
+            # Get TTL from META
+            meta = self._table.get_item(pk=pk, sk=sk)
+            ttl = int(meta["ttl"]) if meta and "ttl" in meta else self._get_trace_ttl()
+
+            # Cache the spans
+            spans_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": spans_sk,
+                "data": _json.dumps(span_dicts),
+                "ttl": ttl,
+            }
+            self._table.put_item(spans_item)
+
+            # Denormalize span attributes on META
+            if span_dicts:
+                span_types = set()
+                span_statuses = set()
+                span_names = set()
+                for sd in span_dicts:
+                    if sd.get("span_type"):
+                        span_types.add(sd["span_type"])
+                    if sd.get("status"):
+                        span_statuses.add(sd["status"])
+                    if sd.get("name"):
+                        span_names.add(sd["name"])
+
+                updates: dict[str, Any] = {}
+                if span_types:
+                    updates["span_types"] = span_types
+                if span_statuses:
+                    updates["span_statuses"] = span_statuses
+                if span_names:
+                    updates["span_names"] = span_names
+
+                if updates:
+                    self._table.update_item(pk=pk, sk=sk, updates=updates)
+
+                # Write FTS items for span names
+                if span_names:
+                    span_names_text = " ".join(sorted(span_names))
+                    fts_items = fts_items_for_text(
+                        pk=pk,
+                        entity_type="T",
+                        entity_id=trace_id,
+                        field="spans",
+                        text=span_names_text,
+                    )
+                    for item in fts_items:
+                        item["ttl"] = ttl
+                    self._table.batch_write(fts_items)
+
+        # Convert span dicts to MLflow Span objects
+        spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
+
+        return Trace(info=trace_info, data=TraceData(spans=spans))
 
     def search_traces(
         self,

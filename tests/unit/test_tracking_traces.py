@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import time
+from unittest.mock import MagicMock
 
 import pytest
 from mlflow.entities import (
@@ -1075,3 +1077,218 @@ class TestDeleteTraces:
             trace_ids=["tr-del-0", "tr-del-1", "tr-del-2"],
         )
         assert count == 3
+
+
+# ---------------------------------------------------------------------------
+# get_trace tests (X-Ray span proxy + lazy caching)
+# ---------------------------------------------------------------------------
+
+SAMPLE_XRAY_TRACE = {
+    "Id": "tr-abc123",
+    "Segments": [
+        {
+            "Id": "seg-001",
+            "Document": json.dumps(
+                {
+                    "id": "seg-001",
+                    "name": "ChatModel",
+                    "trace_id": "tr-abc123",
+                    "parent_id": None,
+                    "start_time": 1709251200.0,
+                    "end_time": 1709251200.5,
+                    "annotations": {
+                        "mlflow_spanType": "LLM",
+                        "mlflow_spanName": "ChatModel",
+                        "mlflow_spanStatus": "OK",
+                    },
+                    "metadata": {
+                        "mlflow": {
+                            "inputs": {"prompt": "hi"},
+                            "outputs": {"response": "hello"},
+                        }
+                    },
+                }
+            ),
+        }
+    ],
+}
+
+SAMPLE_XRAY_MULTI_SPAN = {
+    "Id": "tr-abc123",
+    "Segments": [
+        {
+            "Id": "seg-001",
+            "Document": json.dumps(
+                {
+                    "id": "seg-001",
+                    "name": "ChatModel",
+                    "trace_id": "tr-abc123",
+                    "parent_id": None,
+                    "start_time": 1709251200.0,
+                    "end_time": 1709251200.5,
+                    "annotations": {
+                        "mlflow_spanType": "LLM",
+                        "mlflow_spanName": "ChatModel",
+                        "mlflow_spanStatus": "OK",
+                    },
+                    "metadata": {"mlflow": {"inputs": {}, "outputs": {}}},
+                }
+            ),
+        },
+        {
+            "Id": "seg-002",
+            "Document": json.dumps(
+                {
+                    "id": "seg-002",
+                    "name": "Retriever",
+                    "trace_id": "tr-abc123",
+                    "parent_id": "seg-001",
+                    "start_time": 1709251200.1,
+                    "end_time": 1709251200.3,
+                    "annotations": {
+                        "mlflow_spanType": "RETRIEVER",
+                        "mlflow_spanName": "Retriever",
+                        "mlflow_spanStatus": "OK",
+                    },
+                    "metadata": {"mlflow": {"inputs": {}, "outputs": {}}},
+                }
+            ),
+        },
+    ],
+}
+
+
+class TestGetTraceWithSpans:
+    def test_cache_miss_fetches_from_xray(self, tracking_store):
+        """First get_trace -> X-Ray fetch -> cache write -> return spans."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        mock_xray = MagicMock()
+        mock_xray.batch_get_traces.return_value = [SAMPLE_XRAY_TRACE]
+
+        # Inject mock xray client
+        tracking_store._xray_client_instance = mock_xray
+
+        result = tracking_store.get_trace("tr-abc123")
+
+        # Verify X-Ray was called
+        mock_xray.batch_get_traces.assert_called_once_with(["tr-abc123"])
+
+        # Verify return type and data
+        from mlflow.entities.trace import Trace
+
+        assert isinstance(result, Trace)
+        assert result.info.trace_id == "tr-abc123"
+        assert len(result.data.spans) == 1
+
+        span = result.data.spans[0]
+        assert span.name == "ChatModel"
+
+    def test_cache_hit_skips_xray(self, tracking_store):
+        """Second get_trace -> cache hit -> no X-Ray call."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        mock_xray = MagicMock()
+        mock_xray.batch_get_traces.return_value = [SAMPLE_XRAY_TRACE]
+        tracking_store._xray_client_instance = mock_xray
+
+        # First call populates cache
+        tracking_store.get_trace("tr-abc123")
+        assert mock_xray.batch_get_traces.call_count == 1
+
+        # Second call should hit cache, no X-Ray call
+        result = tracking_store.get_trace("tr-abc123")
+        assert mock_xray.batch_get_traces.call_count == 1  # unchanged
+        assert len(result.data.spans) == 1
+
+    def test_span_attributes_denormalized_on_cache(self, tracking_store):
+        """On cache, span_types/statuses/names sets written to META."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        mock_xray = MagicMock()
+        mock_xray.batch_get_traces.return_value = [SAMPLE_XRAY_MULTI_SPAN]
+        tracking_store._xray_client_instance = mock_xray
+
+        tracking_store.get_trace("tr-abc123")
+
+        # Read META and check denormalized span attributes
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123")
+        assert "span_types" in meta
+        assert "span_statuses" in meta
+        assert "span_names" in meta
+
+        # Check actual values (DynamoDB stores sets)
+        assert {"LLM", "RETRIEVER"} == set(meta["span_types"])
+        assert {"OK"} == set(meta["span_statuses"])
+        assert {"ChatModel", "Retriever"} == set(meta["span_names"])
+
+    def test_span_name_fts_on_cache(self, tracking_store):
+        """On cache, FTS items written for span names."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        mock_xray = MagicMock()
+        mock_xray.batch_get_traces.return_value = [SAMPLE_XRAY_TRACE]
+        tracking_store._xray_client_instance = mock_xray
+
+        tracking_store.get_trace("tr-abc123")
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        fts_items = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        span_fts = [i for i in fts_items if "T#tr-abc123#spans" in i["SK"]]
+        assert len(span_fts) > 0, "Expected FTS items for span names"
+
+        # FTS items should have TTL
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123")
+        trace_ttl = int(meta["ttl"])
+        for fts_item in span_fts:
+            assert "ttl" in fts_item
+            assert int(fts_item["ttl"]) == trace_ttl
+
+    def test_xray_returns_empty(self, tracking_store):
+        """If X-Ray returns nothing (expired), return trace without spans."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        mock_xray = MagicMock()
+        mock_xray.batch_get_traces.return_value = []
+        tracking_store._xray_client_instance = mock_xray
+
+        result = tracking_store.get_trace("tr-abc123")
+
+        assert result.info.trace_id == "tr-abc123"
+        assert len(result.data.spans) == 0
+
+    def test_spans_cache_item_has_ttl(self, tracking_store):
+        """Verify the SPANS cache item inherits the trace's TTL."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store._table.put_item(
+            {
+                "PK": PK_CONFIG,
+                "SK": "TTL_POLICY",
+                "trace_retention_days": 7,
+            }
+        )
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        mock_xray = MagicMock()
+        mock_xray.batch_get_traces.return_value = [SAMPLE_XRAY_TRACE]
+        tracking_store._xray_client_instance = mock_xray
+
+        tracking_store.get_trace("tr-abc123")
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        spans_item = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123#SPANS")
+        assert spans_item is not None
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123")
+        assert int(spans_item["ttl"]) == int(meta["ttl"])
