@@ -1,7 +1,7 @@
 """Tests for DynamoDBTrackingStore experiment and run CRUD operations."""
 
 import pytest
-from mlflow.entities import ExperimentTag, RunStatus, RunTag, ViewType
+from mlflow.entities import ExperimentTag, Metric, Param, RunStatus, RunTag, ViewType
 
 
 class TestExperimentCRUD:
@@ -221,3 +221,141 @@ class TestRunCRUD:
         # _search_runs returns a tuple of (runs, next_page_token)
         runs, token = results
         assert len(runs) == 2
+
+
+class TestMetricsParamsTags:
+    def test_log_batch_metrics(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="run",
+        )
+        tracking_store.log_batch(
+            run_id=run.info.run_id,
+            metrics=[
+                Metric("loss", 0.5, 1709251200000, 0),
+                Metric("loss", 0.3, 1709251200001, 1),
+                Metric("accuracy", 0.8, 1709251200000, 0),
+            ],
+            params=[],
+            tags=[],
+        )
+        fetched = tracking_store.get_run(run.info.run_id)
+        # RunData.metrics is a dict {key: value}
+        assert "loss" in fetched.data.metrics
+        assert "accuracy" in fetched.data.metrics
+
+    def test_log_batch_params(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="run",
+        )
+        tracking_store.log_batch(
+            run_id=run.info.run_id,
+            metrics=[],
+            params=[Param("lr", "0.01"), Param("batch_size", "32")],
+            tags=[],
+        )
+        fetched = tracking_store.get_run(run.info.run_id)
+        # RunData.params is a dict {key: value}
+        assert "lr" in fetched.data.params
+        assert "batch_size" in fetched.data.params
+
+    def test_log_batch_tags(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="run",
+        )
+        tracking_store.log_batch(
+            run_id=run.info.run_id,
+            metrics=[],
+            params=[],
+            tags=[RunTag("mlflow.note", "test note")],
+        )
+        fetched = tracking_store.get_run(run.info.run_id)
+        assert "mlflow.note" in fetched.data.tags
+
+    def test_get_metric_history(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="run",
+        )
+        tracking_store.log_batch(
+            run_id=run.info.run_id,
+            metrics=[
+                Metric("loss", 0.5, 1709251200000, 0),
+                Metric("loss", 0.3, 1709251200001, 1),
+                Metric("loss", 0.1, 1709251200002, 2),
+            ],
+            params=[],
+            tags=[],
+        )
+        history = tracking_store.get_metric_history(run.info.run_id, "loss")
+        assert len(history) == 3
+        # Should be ordered by step
+        steps = [m.step for m in history]
+        assert steps == [0, 1, 2]
+
+    def test_set_tag(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="run",
+        )
+        tracking_store.set_tag(run.info.run_id, RunTag("my_tag", "my_value"))
+        fetched = tracking_store.get_run(run.info.run_id)
+        assert fetched.data.tags.get("my_tag") == "my_value"
+
+    def test_delete_tag(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1709251200000,
+            tags=[RunTag("to_delete", "value")],
+            run_name="run",
+        )
+        tracking_store.delete_tag(run.info.run_id, "to_delete")
+        fetched = tracking_store.get_run(run.info.run_id)
+        assert "to_delete" not in fetched.data.tags
+
+    def test_log_batch_with_rank_items(self, tracking_store):
+        """Verify RANK materialized items are written."""
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="run",
+        )
+        tracking_store.log_batch(
+            run_id=run.info.run_id,
+            metrics=[Metric("accuracy", 0.95, 1709251200000, 0)],
+            params=[Param("lr", "0.01")],
+            tags=[],
+        )
+        # Verify RANK items exist by querying directly
+        rank_items = tracking_store._table.query(
+            pk=f"EXP#{exp_id}",
+            sk_prefix="RANK#",
+        )
+        assert len(rank_items) >= 2  # one for metric, one for param

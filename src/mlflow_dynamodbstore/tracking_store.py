@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from decimal import Decimal
 from typing import Any
 
 from mlflow.entities import (
@@ -26,6 +27,7 @@ from mlflow.protos.databricks_pb2 import (
 from mlflow.store.tracking.abstract_store import AbstractStore
 
 from mlflow_dynamodbstore.cache import ResolutionCache
+from mlflow_dynamodbstore.dynamodb.keys import pad_step
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_PK,
@@ -48,8 +50,10 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     PK_EXPERIMENT_PREFIX,
     SK_EXPERIMENT_META,
     SK_EXPERIMENT_TAG_PREFIX,
+    SK_METRIC_HISTORY_PREFIX,
     SK_METRIC_PREFIX,
     SK_PARAM_PREFIX,
+    SK_RANK_PREFIX,
     SK_RUN_PREFIX,
     SK_TAG_PREFIX,
 )
@@ -105,7 +109,8 @@ def _item_to_run(
         tags=[RunTag(t["key"], t["value"]) for t in tags],
         params=[Param(p["key"], p["value"]) for p in params],
         metrics=[
-            Metric(m["key"], m["value"], m.get("timestamp", 0), m.get("step", 0)) for m in metrics
+            Metric(m["key"], float(m["value"]), m.get("timestamp", 0), m.get("step", 0))
+            for m in metrics
         ],
     )
     return Run(run_info=info, run_data=data)
@@ -626,7 +631,89 @@ class DynamoDBTrackingStore(AbstractStore):
         params: list[Param],
         tags: list[RunTag],
     ) -> None:
-        raise MlflowException("Not implemented in Plan 1 — see Task 14")
+        """Log a batch of metrics, params, and tags for a run."""
+        experiment_id = self._resolve_run_experiment(run_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        items: list[dict[str, Any]] = []
+
+        for metric in metrics:
+            # Latest metric item (overwrites previous for same key)
+            latest_sk = f"{SK_RUN_PREFIX}{run_id}{SK_METRIC_PREFIX}{metric.key}"
+            ddb_value = Decimal(str(metric.value))
+            items.append(
+                {
+                    "PK": pk,
+                    "SK": latest_sk,
+                    "key": metric.key,
+                    "value": ddb_value,
+                    "timestamp": metric.timestamp,
+                    "step": metric.step,
+                }
+            )
+
+            # History item (unique per key+step+timestamp)
+            padded = pad_step(metric.step)
+            hist_sk = (
+                f"{SK_RUN_PREFIX}{run_id}{SK_METRIC_HISTORY_PREFIX}"
+                f"{metric.key}#{padded}#{metric.timestamp}"
+            )
+            items.append(
+                {
+                    "PK": pk,
+                    "SK": hist_sk,
+                    "key": metric.key,
+                    "value": ddb_value,
+                    "timestamp": metric.timestamp,
+                    "step": metric.step,
+                }
+            )
+
+            # RANK item for metric (inverted value for descending sort)
+            max_val = 9999999999.9999
+            inv = max_val - float(metric.value)
+            inv_str = f"{inv:020.4f}"
+            rank_sk = f"{SK_RANK_PREFIX}m#{metric.key}#{inv_str}#{run_id}"
+            items.append(
+                {
+                    "PK": pk,
+                    "SK": rank_sk,
+                    "key": metric.key,
+                    "value": ddb_value,
+                    "run_id": run_id,
+                }
+            )
+
+        for param in params:
+            param_sk = f"{SK_RUN_PREFIX}{run_id}{SK_PARAM_PREFIX}{param.key}"
+            items.append(
+                {
+                    "PK": pk,
+                    "SK": param_sk,
+                    "key": param.key,
+                    "value": param.value,
+                }
+            )
+
+            # RANK item for param
+            rank_sk = f"{SK_RANK_PREFIX}p#{param.key}#{param.value}#{run_id}"
+            items.append(
+                {
+                    "PK": pk,
+                    "SK": rank_sk,
+                    "key": param.key,
+                    "value": param.value,
+                    "run_id": run_id,
+                }
+            )
+
+        # Write all items in batch
+        if items:
+            self._table.batch_write(items)
+
+        # Write tags individually (uses put_item)
+        for tag in tags:
+            self._write_run_tag(experiment_id, run_id, tag)
 
     def get_metric_history(
         self,
@@ -634,8 +721,39 @@ class DynamoDBTrackingStore(AbstractStore):
         metric_key: str,
         max_results: int | None = None,
         page_token: str | None = None,
-    ) -> None:
-        raise MlflowException("Not implemented in Plan 1 — see Task 14")
+    ) -> list[Metric]:
+        """Return the history of a metric for a run, ordered by step."""
+        experiment_id = self._resolve_run_experiment(run_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        prefix = f"{SK_RUN_PREFIX}{run_id}{SK_METRIC_HISTORY_PREFIX}{metric_key}#"
+
+        items = self._table.query(
+            pk=pk,
+            sk_prefix=prefix,
+            limit=max_results,
+        )
+
+        return [
+            Metric(
+                key=item["key"],
+                value=float(item["value"]),
+                timestamp=item.get("timestamp", 0),
+                step=item.get("step", 0),
+            )
+            for item in items
+        ]
+
+    def set_tag(self, run_id: str, tag: RunTag) -> None:
+        """Set a tag on a run."""
+        experiment_id = self._resolve_run_experiment(run_id)
+        self._write_run_tag(experiment_id, run_id, tag)
+
+    def delete_tag(self, run_id: str, key: str) -> None:
+        """Delete a tag from a run."""
+        experiment_id = self._resolve_run_experiment(run_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_RUN_PREFIX}{run_id}{SK_TAG_PREFIX}{key}"
+        self._table.delete_item(pk=pk, sk=sk)
 
     def log_inputs(
         self,
