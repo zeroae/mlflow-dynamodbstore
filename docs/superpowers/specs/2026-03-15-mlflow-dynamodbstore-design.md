@@ -344,7 +344,7 @@ attrs: fields = ["run_param_value", "run_tag_value", "trace_tag_value",
                   "trace_metadata_value", "assessment_value", "span_content"]
 ```
 
-Entity names (experiment, run, model) always have trigram indexing enabled — not configurable. Additional fields are opt-in via the config above, seeded from environment variable on first table creation:
+Entity names (experiment, run, model) always have trigram indexing enabled — not configurable. Additional fields are opt-in via the config above, reconciled from environment variable on every server startup (see Auto-Provisioning § Config Reconciliation):
 
 ```bash
 MLFLOW_DYNAMODB_FTS_TRIGRAM_FIELDS=run_param_value,run_tag_value
@@ -757,22 +757,62 @@ MLflow page tokens are opaque strings. Our implementation encodes DynamoDB curso
 
 ## Auto-Provisioning
 
-On first connection, the tracking store checks for table existence and creates it via CloudFormation if missing:
+On first connection, the tracking store provisions the table and reconciles configuration:
 
 ```python
 def __init__(self, store_uri, artifact_uri):
     region, table_name = parse_dynamodb_uri(store_uri)
-    self._ensure_table_exists(region, table_name)
+    self._ensure_stack_exists(region, table_name)   # CloudFormation (first run only)
+    self._reconcile_config(region, table_name)       # Every startup
 ```
 
-The CloudFormation template is embedded as a Python dict in the package. It creates:
+### CloudFormation Stack (first run only)
+
+The CloudFormation template is embedded as a Python dict in the package. Stack name: `mlflow-dynamodbstore-<table-name>`. It creates:
 
 - DynamoDB table with 5 LSIs and 5 GSIs
 - Pay-per-request billing
 - Point-in-time recovery enabled
+- TTL enabled on `ttl` attribute
 - Server-side encryption (AWS owned key)
 
-No Lambda, no Streams, no IAM roles. One resource.
+No Lambda, no Streams, no IAM roles. One resource. `delete-stack` removes everything.
+
+After stack creation, seed initial data items:
+- `WORKSPACE#default` META (default workspace)
+- `EXP#0` experiment with name "Default" (MLflow's `DEFAULT_EXPERIMENT_ID`)
+- `CONFIG#DENORMALIZE_TAGS` with `{"patterns": ["mlflow.*"]}`
+- `CONFIG#TTL_POLICY` with `{"soft_deleted_retention_days": 90, "trace_retention_days": 30, "metric_history_retention_days": 365}`
+- `CONFIG#FTS_TRIGRAM_FIELDS` with `{"fields": []}`
+
+### Config Reconciliation (every startup)
+
+On every server startup (not just first run), the store reads CONFIG items from DynamoDB and reconciles with environment variables. **Env vars override DynamoDB values when set; DynamoDB values persist when env vars are absent.**
+
+```
+For each CONFIG item:
+  1. Read current value from DynamoDB
+  2. Check corresponding env var
+  3. If env var IS set → update DynamoDB item with env var value
+  4. If env var is NOT set → keep existing DynamoDB value
+  5. Cache effective value in memory
+```
+
+| CONFIG Item | Env Var | Default (seed) |
+|------------|---------|---------------|
+| `CONFIG#DENORMALIZE_TAGS` | `MLFLOW_DYNAMODB_DENORMALIZE_TAGS` | `mlflow.*` |
+| `CONFIG#TTL_POLICY` | `MLFLOW_DYNAMODB_SOFT_DELETED_RETENTION_DAYS`, `MLFLOW_DYNAMODB_TRACE_RETENTION_DAYS`, `MLFLOW_DYNAMODB_METRIC_HISTORY_RETENTION_DAYS` | 90, 30, 365 |
+| `CONFIG#FTS_TRIGRAM_FIELDS` | `MLFLOW_DYNAMODB_FTS_TRIGRAM_FIELDS` | (empty) |
+
+This means:
+- **First run, no env vars:** Seeds defaults, uses defaults
+- **First run, with env vars:** Seeds defaults, immediately overridden by env vars, persisted to DynamoDB
+- **Subsequent run, no env vars:** Uses whatever is in DynamoDB (from last override or admin CLI change)
+- **Subsequent run, with env vars:** Overrides DynamoDB with new env var values
+
+The DynamoDB CONFIG items are the **persistent state** (also modifiable via admin CLI). Env vars are **runtime overrides** that take effect on startup and persist to DynamoDB.
+
+`mlflow.*` in `DENORMALIZE_TAGS` is always present — if reconciliation would remove it, it's re-added.
 
 ## Package Structure
 
@@ -1080,7 +1120,7 @@ attrs: {
 }
 ```
 
-Seeded from environment variables on first table creation:
+Reconciled from environment variables on every server startup (see Auto-Provisioning § Config Reconciliation):
 
 ```bash
 MLFLOW_DYNAMODB_SOFT_DELETED_RETENTION_DAYS=90
@@ -1416,7 +1456,7 @@ PK: EXP#<experiment_id> SK: E#DENORMALIZE_TAGS            patterns: ["team.*", "
 
 Patterns are cached in memory per experiment at first access. The `CONFIG#DENORMALIZE_TAGS` item is read once at store initialization. Experiment-specific patterns are read on first access to that experiment.
 
-On first table creation, the global config is seeded from `MLFLOW_DYNAMODB_DENORMALIZE_TAGS` env var (if set), with `mlflow.*` always included.
+The global config is reconciled from `MLFLOW_DYNAMODB_DENORMALIZE_TAGS` env var on every server startup (see Auto-Provisioning § Config Reconciliation). `mlflow.*` is always included.
 
 ### META Item Structure
 

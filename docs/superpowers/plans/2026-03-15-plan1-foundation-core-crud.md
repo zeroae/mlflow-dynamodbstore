@@ -1201,7 +1201,14 @@ class TestExperimentCRUD:
 
 - [ ] **Step 3: Implement DynamoDBTrackingStore skeleton + experiment create/get**
 
-Create `DynamoDBTrackingStore` inheriting from `mlflow.store.tracking.abstract_store.AbstractStore`. Implement `__init__` (parse URI, `ensure_stack_exists` for CloudFormation provisioning, init DynamoDBTable client, init cache), `create_experiment`, `get_experiment`, `get_experiment_by_name`. Use key builders from Task 6 and table client from Task 9.
+Create `DynamoDBTrackingStore` inheriting from `mlflow.store.tracking.abstract_store.AbstractStore`. Implement `__init__`:
+1. Parse URI (`parse_dynamodb_uri`)
+2. `ensure_stack_exists` for CloudFormation provisioning (first run only)
+3. Init `DynamoDBTable` client
+4. Reconcile CONFIG items with env vars (every startup — see Implementation Notes)
+5. Init resolution cache
+
+Then implement `create_experiment`, `get_experiment`, `get_experiment_by_name`. Use key builders from Task 6 and table client from Task 9.
 
 - [ ] **Step 4: Run tests, verify pass**
 
@@ -1565,14 +1572,21 @@ Plan 1 writes RANK and DLINK items synchronously during CRUD operations. These i
 
 MLflow expects experiment ID "0" to exist as the default experiment. The provisioner seeds it during table creation. Since we use ULIDs for all other experiment IDs, "0" is a special case — it's the only non-ULID experiment ID. The tracking store must handle it in `get_experiment("0")`.
 
-### Config items seeded at provisioning
+### Config seeding and reconciliation
 
-The provisioner (Task 10) seeds these CONFIG items:
+**First run (provisioner, Task 10):** Seeds CONFIG items with defaults:
 - `CONFIG#DENORMALIZE_TAGS` → `{"patterns": ["mlflow.*"]}`
 - `CONFIG#TTL_POLICY` → `{"soft_deleted_retention_days": 90, "trace_retention_days": 30, "metric_history_retention_days": 365}`
 - `CONFIG#FTS_TRIGRAM_FIELDS` → `{"fields": []}`
 
-Read from env vars if set, otherwise use defaults.
+**Every startup (store `__init__`):** Reconcile CONFIG items with env vars:
+1. Read each CONFIG item from DynamoDB
+2. Check corresponding env var (`MLFLOW_DYNAMODB_DENORMALIZE_TAGS`, `MLFLOW_DYNAMODB_SOFT_DELETED_RETENTION_DAYS`, etc.)
+3. If env var is set → update DynamoDB item with env var value
+4. If env var is not set → keep existing DynamoDB value
+5. Cache effective config in memory
+
+This means env vars always win at startup and persist to DynamoDB. Admin CLI changes persist until an env var overrides them. `mlflow.*` in DENORMALIZE_TAGS is always present — if reconciliation would remove it, it's re-added.
 
 ### Testing pattern
 
