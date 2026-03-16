@@ -79,7 +79,7 @@ strict = true
 exclude = ["tests/"]
 
 [[tool.mypy.overrides]]
-module = ["ulid.*", "snowballstemmer.*", "moto.*"]
+module = ["ulid.*", "snowballstemmer.*", "moto.*", "boto3", "boto3.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
