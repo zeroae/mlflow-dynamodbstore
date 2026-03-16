@@ -19,7 +19,7 @@ _DEFAULT_ADMIN_USERNAME = "admin"
 _DEFAULT_ADMIN_PASSWORD = "password1234"
 
 
-def create_app(app: Flask) -> Flask:
+def create_app(app: Flask | None = None) -> Flask:
     """Initialize DynamoDB auth on an existing MLflow Flask app.
 
     This function replaces MLflow's default SqlAlchemyStore-based auth
@@ -36,6 +36,11 @@ def create_app(app: Flask) -> Flask:
         MLFLOW_AUTH_ADMIN_PASSWORD: Admin password (default: ``password1234``)
     """
     import mlflow.server.auth as auth_module
+
+    if app is None:
+        from mlflow.server import app as default_app
+
+        app = default_app
 
     store_uri = os.environ.get(_MLFLOW_BACKEND_STORE_URI, "")
     if not store_uri.startswith("dynamodb://"):
