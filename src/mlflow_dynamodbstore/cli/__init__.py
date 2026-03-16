@@ -2,6 +2,7 @@
 
 import click
 
+from mlflow_dynamodbstore.cli.denormalize_tags import denormalize_tags
 from mlflow_dynamodbstore.cli.fts_trigrams import fts_trigrams
 from mlflow_dynamodbstore.cli.ttl_policy import ttl_policy
 
@@ -12,5 +13,6 @@ def cli() -> None:
     pass
 
 
+cli.add_command(denormalize_tags)
 cli.add_command(fts_trigrams)
 cli.add_command(ttl_policy)
