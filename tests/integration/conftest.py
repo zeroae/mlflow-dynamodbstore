@@ -57,3 +57,11 @@ def workspace_store(moto_endpoint):
 
     store = DynamoDBWorkspaceStore(store_uri=f"dynamodb://{moto_endpoint}/test-table")
     return store
+
+
+@pytest.fixture
+def auth_store(moto_endpoint):
+    from mlflow_dynamodbstore.auth.store import DynamoDBAuthStore
+
+    store = DynamoDBAuthStore(store_uri=f"dynamodb://{moto_endpoint}/test-table")
+    return store

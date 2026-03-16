@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mlflow.entities.trace import Trace
+
+    from mlflow_dynamodbstore.xray.client import XRayClient
 
 from mlflow.entities import (
+    Assessment,
     DatasetInput,
     Experiment,
     ExperimentTag,
@@ -16,14 +22,21 @@ from mlflow.entities import (
     RunData,
     RunInfo,
     RunTag,
+    TraceInfo,
+    TraceLocation,
+    TraceLocationType,
+    TraceState,
     ViewType,
 )
+from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
 from mlflow.store.tracking.abstract_store import AbstractStore
+from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
+from mlflow.utils.proto_json_utils import milliseconds_to_proto_timestamp
 
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
@@ -36,9 +49,11 @@ from mlflow_dynamodbstore.dynamodb.fts import (
 from mlflow_dynamodbstore.dynamodb.keys import pad_step
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
+    GSI1_CLIENT_PREFIX,
     GSI1_PK,
     GSI1_RUN_PREFIX,
     GSI1_SK,
+    GSI1_TRACE_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
     GSI2_PK,
@@ -70,6 +85,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_RANK_PREFIX,
     SK_RUN_PREFIX,
     SK_TAG_PREFIX,
+    SK_TRACE_PREFIX,
 )
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
@@ -141,6 +157,7 @@ class DynamoDBTrackingStore(AbstractStore):
         uri = parse_dynamodb_uri(store_uri)
         ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
+        self._uri = uri
         self._cache = ResolutionCache()
         self._artifact_uri = artifact_uri or ""
         self._workspace = "default"
@@ -1326,5 +1343,960 @@ class DynamoDBTrackingStore(AbstractStore):
 
         self._table.batch_write(items)
 
+    # ------------------------------------------------------------------
+    # Trace CRUD
+    # ------------------------------------------------------------------
+
+    def _get_trace_ttl(self) -> int:
+        """Compute TTL epoch from CONFIG#TTL_POLICY.trace_retention_days (default 30)."""
+        days = self._config.get_ttl_policy()["trace_retention_days"]
+        return int(time.time()) + days * 86400
+
+    def _resolve_trace_experiment(self, trace_id: str) -> str:
+        """Resolve trace_id to experiment_id, using cache then GSI1."""
+        cached = self._cache.get("trace_exp", trace_id)
+        if cached:
+            return cached
+
+        results = self._table.query(
+            pk=f"{GSI1_TRACE_PREFIX}{trace_id}",
+            index_name="gsi1",
+            limit=1,
+        )
+        if not results:
+            raise MlflowException(
+                f"Trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # GSI1 SK is EXP#<exp_id>
+        gsi1sk: str = results[0][GSI1_SK]
+        experiment_id = gsi1sk[len(PK_EXPERIMENT_PREFIX) :]
+        self._cache.put("trace_exp", trace_id, experiment_id)
+        return experiment_id
+
+    def start_trace(self, trace_info: TraceInfo) -> TraceInfo:
+        """Create a trace in DynamoDB from a TraceInfo object."""
+        mlflow_exp = trace_info.trace_location.mlflow_experiment
+        if mlflow_exp is None:
+            raise MlflowException(
+                "TraceInfo must have an MLflow experiment location.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        experiment_id = mlflow_exp.experiment_id
+        trace_id = trace_info.trace_id
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}"
+
+        ttl = self._get_trace_ttl()
+
+        # Extract trace name from trace_metadata or tags
+        trace_name = trace_info.trace_metadata.get(
+            TraceTagKey.TRACE_NAME, ""
+        ) or trace_info.tags.get(TraceTagKey.TRACE_NAME, "")
+        execution_duration = trace_info.execution_duration or 0
+        request_time = trace_info.request_time
+        state_str = str(trace_info.state)
+
+        # Build META item
+        item: dict[str, Any] = {
+            "PK": pk,
+            "SK": sk,
+            "trace_id": trace_id,
+            "experiment_id": experiment_id,
+            "request_time": request_time,
+            "execution_duration": execution_duration,
+            "state": state_str,
+            "ttl": ttl,
+            "tags": {},
+            # LSI attributes
+            LSI1_SK: request_time,
+            LSI2_SK: request_time + execution_duration,
+            LSI3_SK: f"{state_str}#{request_time}",
+            LSI4_SK: trace_name.lower() if trace_name else "~",  # DynamoDB rejects empty strings
+            LSI5_SK: execution_duration,
+            # GSI1: reverse lookup trace_id -> experiment_id
+            GSI1_PK: f"{GSI1_TRACE_PREFIX}{trace_id}",
+            GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+        }
+
+        if trace_info.client_request_id:
+            item["client_request_id"] = trace_info.client_request_id
+
+        self._table.put_item(item, condition="attribute_not_exists(PK)")
+
+        # Cache trace_id -> experiment_id
+        self._cache.put("trace_exp", trace_id, experiment_id)
+
+        # Write CLIENTPTR item if client_request_id is present
+        if trace_info.client_request_id:
+            ptr_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": f"{SK_TRACE_PREFIX}{trace_id}#CLIENTPTR",
+                "ttl": ttl,
+                GSI1_PK: f"{GSI1_CLIENT_PREFIX}{trace_info.client_request_id}",
+                GSI1_SK: f"{GSI1_TRACE_PREFIX}{trace_id}",
+            }
+            self._table.put_item(ptr_item)
+
+        # Write request metadata items
+        if trace_info.trace_metadata:
+            rmeta_items: list[dict[str, Any]] = []
+            for key, value in trace_info.trace_metadata.items():
+                rmeta_items.append(
+                    {
+                        "PK": pk,
+                        "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{key}",
+                        "key": key,
+                        "value": value,
+                        "ttl": ttl,
+                    }
+                )
+            if rmeta_items:
+                self._table.batch_write(rmeta_items)
+
+        # Write initial tag items + denormalization + FTS
+        if trace_info.tags:
+            for tag_key, tag_value in trace_info.tags.items():
+                self._write_trace_tag(experiment_id, trace_id, tag_key, tag_value, ttl)
+
+        return trace_info
+
+    def get_trace_info(self, trace_id: str) -> TraceInfo:
+        """Fetch a trace by ID, reconstructing TraceInfo from DynamoDB items."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}"
+
+        meta = self._table.get_item(pk=pk, sk=sk)
+        if meta is None:
+            raise MlflowException(
+                f"Trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Read tags
+        tag_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#TAG#",
+        )
+        tags = {item["key"]: item["value"] for item in tag_items}
+
+        # Read request metadata
+        rmeta_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#",
+        )
+        trace_metadata = {item["key"]: item["value"] for item in rmeta_items}
+
+        state_str = meta.get("state", "STATE_UNSPECIFIED")
+        state = TraceState(state_str)
+
+        return TraceInfo(
+            trace_id=trace_id,
+            trace_location=TraceLocation(
+                type=TraceLocationType.MLFLOW_EXPERIMENT,
+                mlflow_experiment=MlflowExperimentLocation(experiment_id=experiment_id),
+            ),
+            request_time=int(meta["request_time"]),
+            execution_duration=int(meta.get("execution_duration", 0)),
+            state=state,
+            trace_metadata=trace_metadata,
+            tags=tags,
+            client_request_id=meta.get("client_request_id"),
+        )
+
+    @property
+    def _xray_client(self) -> XRayClient:
+        """Lazily initialized X-Ray client."""
+        if not hasattr(self, "_xray_client_instance"):
+            from mlflow_dynamodbstore.xray.client import XRayClient
+
+            self._xray_client_instance = XRayClient(
+                region=self._uri.region,
+                endpoint_url=self._uri.endpoint_url,
+            )
+        return self._xray_client_instance
+
+    def get_trace(
+        self,
+        trace_id: str,
+        *,
+        allow_partial: bool = False,
+    ) -> Trace:
+        """Fetch a trace with spans.
+
+        Flow:
+        1. Read trace info (META + tags + metadata + assessments) from DynamoDB
+        2. Check for cached spans: T#<trace_id>#SPANS item
+        3. If cached -> deserialize and use them
+        4. If not cached -> call XRayClient.batch_get_traces([trace_id])
+        5. Convert X-Ray segments -> span dicts via span_converter
+        6. Cache to DynamoDB: T#<trace_id>#SPANS (JSON blob, same TTL as trace)
+        7. Denormalize span attributes on META: span_types, span_statuses, span_names
+        8. Write FTS items for span names
+        9. Return complete Trace
+        """
+        import json as _json
+
+        from mlflow.entities.trace import Trace
+        from mlflow.entities.trace_data import TraceData
+
+        from mlflow_dynamodbstore.xray.span_converter import (
+            convert_xray_trace,
+            span_dicts_to_mlflow_spans,
+        )
+
+        trace_info = self.get_trace_info(trace_id)
+        assert trace_info.trace_location.mlflow_experiment is not None
+        experiment_id = trace_info.trace_location.mlflow_experiment.experiment_id
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}"
+
+        # Check for cached spans
+        spans_sk = f"{SK_TRACE_PREFIX}{trace_id}#SPANS"
+        cached = self._table.get_item(pk=pk, sk=spans_sk)
+
+        span_dicts: list[dict[str, Any]]
+        if cached is not None:
+            span_dicts = _json.loads(cached["data"])
+        else:
+            # Fetch from X-Ray
+            xray_traces = self._xray_client.batch_get_traces([trace_id])
+            if xray_traces:
+                span_dicts = convert_xray_trace(xray_traces[0])
+            else:
+                span_dicts = []
+
+            # Get TTL from META
+            meta = self._table.get_item(pk=pk, sk=sk)
+            ttl = int(meta["ttl"]) if meta and "ttl" in meta else self._get_trace_ttl()
+
+            # Cache the spans
+            spans_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": spans_sk,
+                "data": _json.dumps(span_dicts),
+                "ttl": ttl,
+            }
+            self._table.put_item(spans_item)
+
+            # Denormalize span attributes on META
+            if span_dicts:
+                span_types = set()
+                span_statuses = set()
+                span_names = set()
+                for sd in span_dicts:
+                    if sd.get("span_type"):
+                        span_types.add(sd["span_type"])
+                    if sd.get("status"):
+                        span_statuses.add(sd["status"])
+                    if sd.get("name"):
+                        span_names.add(sd["name"])
+
+                updates: dict[str, Any] = {}
+                if span_types:
+                    updates["span_types"] = span_types
+                if span_statuses:
+                    updates["span_statuses"] = span_statuses
+                if span_names:
+                    updates["span_names"] = span_names
+
+                if updates:
+                    self._table.update_item(pk=pk, sk=sk, updates=updates)
+
+                # Write FTS items for span names
+                if span_names:
+                    span_names_text = " ".join(sorted(span_names))
+                    fts_items = fts_items_for_text(
+                        pk=pk,
+                        entity_type="T",
+                        entity_id=trace_id,
+                        field="spans",
+                        text=span_names_text,
+                    )
+                    for item in fts_items:
+                        item["ttl"] = ttl
+                    self._table.batch_write(fts_items)
+
+        # Convert span dicts to MLflow Span objects
+        spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
+
+        return Trace(info=trace_info, data=TraceData(spans=spans))
+
+    def search_traces(
+        self,
+        experiment_ids: list[str] | None = None,
+        filter_string: str | None = None,
+        max_results: int = 100,
+        order_by: list[str] | None = None,
+        page_token: str | None = None,
+        model_id: str | None = None,
+        locations: list[str] | None = None,
+    ) -> tuple[list[TraceInfo], str | None]:
+        """Search traces across experiments using parse -> plan -> execute pipeline.
+
+        For span-level filters (field_type == "span"), uses a hybrid approach:
+        1. Cached traces (those with denormalized span_types/span_names/span_statuses
+           on META) are filtered via DynamoDB.
+        2. Uncached traces are found via X-Ray filter expressions.
+        3. Results are unioned and deduplicated.
+        """
+        from mlflow_dynamodbstore.dynamodb.pagination import (
+            decode_page_token,
+            encode_page_token,
+        )
+        from mlflow_dynamodbstore.dynamodb.search import (
+            execute_trace_query,
+            parse_trace_filter,
+            plan_trace_query,
+        )
+
+        if not experiment_ids:
+            experiment_ids = []
+
+        # 1. Parse filter and split into span vs non-span predicates
+        predicates = parse_trace_filter(filter_string)
+        span_predicates = [p for p in predicates if p.field_type == "span"]
+        non_span_predicates = [p for p in predicates if p.field_type != "span"]
+
+        # 2. Plan query using only non-span predicates
+        plan = plan_trace_query(non_span_predicates, order_by)
+
+        # 3. For each experiment: execute query
+        token_data = decode_page_token(page_token)
+        exp_idx = token_data.get("exp_idx", 0) if token_data else 0
+        inner_token = token_data.get("inner_token") if token_data else None
+
+        traces: list[TraceInfo] = []
+        remaining = max_results
+        next_page_token: str | None = None
+        seen_trace_ids: set[str] = set()
+
+        for i, exp_id in enumerate(experiment_ids[exp_idx:], start=exp_idx):
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            current_token = inner_token if i == exp_idx else None
+
+            # --- Phase 1: DynamoDB query (handles non-span + cached span filters) ---
+            inner_next: str | None = None
+            while remaining > 0:
+                items, inner_next = execute_trace_query(
+                    table=self._table,
+                    plan=plan,
+                    pk=pk,
+                    max_results=remaining if not span_predicates else remaining * 3,
+                    page_token=current_token,
+                    predicates=non_span_predicates,
+                )
+
+                for item in items:
+                    trace_id = item["trace_id"]
+                    if trace_id in seen_trace_ids:
+                        continue
+
+                    # Apply span predicates on cached (denormalized) data
+                    if span_predicates and not self._match_span_predicates_cached(
+                        item, span_predicates
+                    ):
+                        continue
+
+                    seen_trace_ids.add(trace_id)
+                    self._cache.put("trace_exp", trace_id, exp_id)
+                    trace_info = self._build_trace_info(exp_id, trace_id, item)
+                    traces.append(trace_info)
+                    remaining -= 1
+
+                    if remaining <= 0:
+                        break
+
+                if not inner_next:
+                    break
+                current_token = inner_next
+
+            # --- Phase 2: X-Ray fallback for uncached traces with span filters ---
+            if span_predicates and remaining > 0:
+                xray_trace_ids = self._search_xray_for_span_filters(exp_id, span_predicates)
+                for xray_tid in xray_trace_ids:
+                    if remaining <= 0:
+                        break
+                    if xray_tid in seen_trace_ids:
+                        continue
+                    # Verify this trace exists in DynamoDB and belongs to this experiment
+                    meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{xray_tid}")
+                    if meta is None:
+                        continue
+                    # Apply non-span post-filters on this item too
+                    from mlflow_dynamodbstore.dynamodb.search import (
+                        _apply_trace_post_filter,
+                    )
+
+                    if not all(
+                        _apply_trace_post_filter(self._table, pk, xray_tid, meta, p)
+                        for p in non_span_predicates
+                    ):
+                        continue
+
+                    seen_trace_ids.add(xray_tid)
+                    self._cache.put("trace_exp", xray_tid, exp_id)
+                    trace_info = self._build_trace_info(exp_id, xray_tid, meta)
+                    traces.append(trace_info)
+                    remaining -= 1
+
+            if remaining <= 0:
+                if inner_next or i < len(experiment_ids) - 1:
+                    next_page_token = encode_page_token(
+                        {
+                            "exp_idx": i if inner_next else i + 1,
+                            "inner_token": inner_next,
+                        }
+                    )
+                break
+
+            if inner_next:
+                next_page_token = encode_page_token(
+                    {
+                        "exp_idx": i,
+                        "inner_token": inner_next,
+                    }
+                )
+                break
+
+        return traces, next_page_token
+
+    @staticmethod
+    def _match_span_predicates_cached(
+        item: dict[str, Any],
+        span_predicates: list[Any],
+    ) -> bool:
+        """Check span predicates against denormalized span attrs on META item.
+
+        Denormalized fields on META:
+        - span_types: set of span type strings (e.g. {"LLM", "RETRIEVER"})
+        - span_names: set of span name strings (e.g. {"ChatModel", "Retriever"})
+        - span_statuses: set of status strings (e.g. {"OK"})
+
+        Returns True if the item has denormalized data and all predicates match,
+        or False if the item has no denormalized data (uncached).
+        """
+        import fnmatch as _fnmatch
+
+        # Map span predicate keys to denormalized set fields on META
+        span_key_to_field = {
+            "type": "span_types",
+            "name": "span_names",
+            "status": "span_statuses",
+        }
+
+        has_any_denormalized = any(
+            item.get(f) for f in ("span_types", "span_names", "span_statuses")
+        )
+        if not has_any_denormalized:
+            # No cached span data -> cannot match via DynamoDB
+            return False
+
+        for pred in span_predicates:
+            field_name = span_key_to_field.get(pred.key)
+            if not field_name:
+                # Unknown span key, skip (will need X-Ray)
+                return False
+            values = item.get(field_name)
+            if not values:
+                return False
+
+            if pred.op == "=":
+                if pred.value not in values:
+                    return False
+            elif pred.op == "!=":
+                if pred.value in values:
+                    return False
+            elif pred.op in ("LIKE", "ILIKE"):
+                pattern = str(pred.value).replace("%", "*").replace("_", "?")
+                if pred.op == "ILIKE":
+                    pattern = pattern.lower()
+                matched = any(
+                    _fnmatch.fnmatch(v.lower() if pred.op == "ILIKE" else v, pattern)
+                    for v in values
+                )
+                if not matched:
+                    return False
+            else:
+                # Unsupported op for set membership
+                return False
+
+        return True
+
+    def _search_xray_for_span_filters(
+        self,
+        experiment_id: str,
+        span_predicates: list[Any],
+    ) -> list[str]:
+        """Query X-Ray for traces matching span predicates.
+
+        Uses the filter translator to convert span predicates to X-Ray filter
+        expressions, then calls get_trace_summaries.
+
+        Returns a list of trace IDs found via X-Ray.
+        """
+        import datetime
+
+        from mlflow_dynamodbstore.xray.annotation_config import DEFAULT_ANNOTATION_CONFIG
+        from mlflow_dynamodbstore.xray.filter_translator import translate_span_filters
+
+        # Map span predicate keys to annotation config keys
+        span_key_to_annotation = {
+            "type": "mlflow.spanType",
+            "name": "name",
+            "status": "status",
+        }
+
+        # Remap span predicates to use annotation config keys
+        from mlflow_dynamodbstore.dynamodb.search import FilterPredicate
+
+        remapped = []
+        for pred in span_predicates:
+            ann_key = span_key_to_annotation.get(pred.key, pred.key)
+            remapped.append(
+                FilterPredicate(
+                    field_type=pred.field_type,
+                    key=ann_key,
+                    op=pred.op,
+                    value=pred.value,
+                )
+            )
+
+        xray_filter, _remaining = translate_span_filters(remapped, DEFAULT_ANNOTATION_CONFIG)
+        if not xray_filter:
+            return []
+
+        # Use a reasonable time window (last 30 days)
+        end_time = datetime.datetime.now(tz=datetime.UTC)
+        start_time = end_time - datetime.timedelta(days=30)
+
+        try:
+            summaries = self._xray_client.get_trace_summaries(
+                start_time=start_time,
+                end_time=end_time,
+                filter_expression=xray_filter,
+            )
+        except Exception:
+            return []
+
+        return [s["Id"] for s in summaries if "Id" in s]
+
+    def _build_trace_info(
+        self,
+        experiment_id: str,
+        trace_id: str,
+        meta: dict[str, Any],
+    ) -> TraceInfo:
+        """Build a TraceInfo from a META item + sub-item lookups."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        # Read tags
+        tag_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#TAG#",
+        )
+        tags = {item["key"]: item["value"] for item in tag_items}
+
+        # Read request metadata
+        rmeta_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#",
+        )
+        trace_metadata = {item["key"]: item["value"] for item in rmeta_items}
+
+        state_str = meta.get("state", "STATE_UNSPECIFIED")
+        state = TraceState(state_str)
+
+        return TraceInfo(
+            trace_id=trace_id,
+            trace_location=TraceLocation(
+                type=TraceLocationType.MLFLOW_EXPERIMENT,
+                mlflow_experiment=MlflowExperimentLocation(experiment_id=experiment_id),
+            ),
+            request_time=int(meta["request_time"]),
+            execution_duration=int(meta.get("execution_duration", 0)),
+            state=state,
+            trace_metadata=trace_metadata,
+            tags=tags,
+            client_request_id=meta.get("client_request_id"),
+        )
+
+    def _write_trace_tag(
+        self,
+        experiment_id: str,
+        trace_id: str,
+        tag_key: str,
+        tag_value: str,
+        ttl: int,
+    ) -> None:
+        """Write a trace tag item with TTL, optionally denormalize, and write FTS items."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        tag_sk = f"{SK_TRACE_PREFIX}{trace_id}#TAG#{tag_key}"
+
+        # Read existing tag to support FTS diff on overwrite
+        old_tag = self._table.get_item(pk=pk, sk=tag_sk)
+        old_value: str | None = old_tag["value"] if old_tag else None
+
+        item = {
+            "PK": pk,
+            "SK": tag_sk,
+            "key": tag_key,
+            "value": tag_value,
+            "ttl": ttl,
+        }
+        self._table.put_item(item)
+        if self._config.should_denormalize(experiment_id, tag_key):
+            self._denormalize_tag(pk, f"{SK_TRACE_PREFIX}{trace_id}", tag_key, tag_value)
+        # Update FTS items for tag value if configured
+        if self._config.should_trigram("trace_tag_value") and (tag_value or old_value):
+            field_suffix = f"#{tag_key}"
+            entity_prefix = f"T#{trace_id}{field_suffix}"
+            levels = ("W", "3")
+            tokens_to_add, tokens_to_remove = fts_diff(old_value, tag_value, levels)
+
+            # Delete removed FTS items
+            if tokens_to_remove:
+                rev_prefix = f"{SK_FTS_REV_PREFIX}{entity_prefix}#"
+                rev_items = self._table.query(pk=pk, sk_prefix=rev_prefix)
+                for rev_item in rev_items:
+                    rev_sk = rev_item["SK"]
+                    suffix = rev_sk[len(SK_FTS_REV_PREFIX) + len(entity_prefix) + 1 :]
+                    parts = suffix.split("#", 1)
+                    if len(parts) == 2:
+                        lvl, tok = parts[0], parts[1]
+                        if (lvl, tok) in tokens_to_remove:
+                            forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                            self._table.delete_item(pk=pk, sk=forward_sk)
+                            self._table.delete_item(pk=pk, sk=rev_sk)
+
+            # Write new FTS items for added tokens
+            if tokens_to_add:
+                new_fts_items: list[dict[str, Any]] = []
+                for lvl, tok in tokens_to_add:
+                    forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                    reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
+                    new_fts_items.append({"PK": pk, "SK": forward_sk, "ttl": ttl})
+                    new_fts_items.append({"PK": pk, "SK": reverse_sk, "ttl": ttl})
+                self._table.batch_write(new_fts_items)
+
+    def set_trace_tag(self, trace_id: str, key: str, value: str) -> None:
+        """Set a tag on a trace."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        # Read TTL from the trace META item
+        meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+        if meta is None:
+            raise MlflowException(
+                f"Trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        ttl = int(meta.get("ttl", self._get_trace_ttl()))
+        self._write_trace_tag(experiment_id, trace_id, key, value, ttl)
+
+    def delete_trace_tag(self, trace_id: str, key: str) -> None:
+        """Delete a tag from a trace."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#TAG#{key}"
+        self._table.delete_item(pk=pk, sk=sk)
+        if self._config.should_denormalize(experiment_id, key):
+            self._remove_denormalized_tag(pk, f"{SK_TRACE_PREFIX}{trace_id}", key)
+        # Remove FTS items for tag value if FTS was configured
+        if self._config.should_trigram("trace_tag_value"):
+            self._delete_fts_for_entity_field(pk=pk, entity_type="T", entity_id=trace_id, field=key)
+
     def link_traces_to_run(self, trace_ids: list[str], run_id: str) -> None:
-        raise MlflowException("Deferred to Plan 3")
+        """Link traces to a run by writing mlflow.sourceRun request metadata."""
+        for trace_id in trace_ids:
+            experiment_id = self._resolve_trace_experiment(trace_id)
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            # Read TTL from the trace META item
+            meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+            ttl = int(meta["ttl"]) if meta and "ttl" in meta else self._get_trace_ttl()
+            rmeta_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{TraceMetadataKey.SOURCE_RUN}",
+                "key": TraceMetadataKey.SOURCE_RUN,
+                "value": run_id,
+                "ttl": ttl,
+            }
+            self._table.put_item(rmeta_item)
+
+    # ------------------------------------------------------------------
+    # Assessment CRUD
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _assessment_fts_text(assessment: Assessment) -> str | None:
+        """Extract searchable text from an assessment's value (feedback or expectation)."""
+        if assessment.feedback and assessment.feedback.value is not None:
+            val = assessment.feedback.value
+            return str(val) if not isinstance(val, str) else val
+        if assessment.expectation and assessment.expectation.value is not None:
+            val = assessment.expectation.value
+            return str(val) if not isinstance(val, str) else val
+        return None
+
+    def _write_assessment_fts(
+        self,
+        pk: str,
+        trace_id: str,
+        assessment_id: str,
+        text: str,
+        ttl: int,
+    ) -> None:
+        """Write FTS forward + reverse items for an assessment's value text."""
+        field = f"assess_{assessment_id}"
+        fts_items = fts_items_for_text(
+            pk=pk,
+            entity_type="T",
+            entity_id=trace_id,
+            field=field,
+            text=text,
+        )
+        for item in fts_items:
+            item["ttl"] = ttl
+        if fts_items:
+            self._table.batch_write(fts_items)
+
+    def create_assessment(self, assessment: Assessment) -> Assessment:
+        """Create a new assessment for a trace."""
+        trace_id = assessment.trace_id
+        if trace_id is None:
+            raise MlflowException(
+                "Assessment must have a trace_id.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        # Read TTL from the trace META item
+        meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+        if meta is None:
+            raise MlflowException(
+                f"Trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        ttl = int(meta.get("ttl", self._get_trace_ttl()))
+
+        # Generate assessment ID
+        assessment_id = generate_ulid()
+        now_ms = int(time.time() * 1000)
+
+        # Build the assessment item storing the full serialized assessment dict
+        assess_dict = assessment.to_dictionary()
+        assess_dict["assessment_id"] = assessment_id
+        assess_dict["create_time"] = assess_dict.get(
+            "create_time"
+        ) or milliseconds_to_proto_timestamp(now_ms)
+        assess_dict["last_update_time"] = assess_dict.get(
+            "last_update_time"
+        ) or milliseconds_to_proto_timestamp(now_ms)
+
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{assessment_id}"
+        item: dict[str, Any] = {
+            "PK": pk,
+            "SK": sk,
+            "ttl": ttl,
+            "data": assess_dict,
+        }
+        self._table.put_item(item)
+
+        # Write FTS items for the assessment value text
+        fts_text = self._assessment_fts_text(assessment)
+        if fts_text:
+            self._write_assessment_fts(pk, trace_id, assessment_id, fts_text, ttl)
+
+        # Return the assessment with the generated ID
+        result = Assessment.from_dictionary(assess_dict)
+        return result
+
+    def get_assessment(self, trace_id: str, assessment_id: str) -> Assessment:
+        """Fetch an assessment by trace ID and assessment ID."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{assessment_id}"
+
+        item = self._table.get_item(pk=pk, sk=sk)
+        if item is None:
+            raise MlflowException(
+                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        return Assessment.from_dictionary(item["data"])
+
+    def update_assessment(
+        self,
+        trace_id: str,
+        assessment_id: str,
+        name: str | None = None,
+        expectation: str | None = None,
+        feedback: str | None = None,
+        rationale: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> Assessment:
+        """Update mutable fields of an assessment."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{assessment_id}"
+
+        item = self._table.get_item(pk=pk, sk=sk)
+        if item is None:
+            raise MlflowException(
+                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        ttl = int(item.get("ttl", self._get_trace_ttl()))
+
+        assess_dict = item["data"]
+
+        # Capture old text for FTS diff
+        old_assessment = Assessment.from_dictionary(assess_dict)
+        old_fts_text = self._assessment_fts_text(old_assessment)
+
+        # Apply updates
+        now_ms = int(time.time() * 1000)
+        assess_dict["last_update_time"] = milliseconds_to_proto_timestamp(now_ms)
+
+        if name is not None:
+            assess_dict["assessment_name"] = name
+        if feedback is not None:
+            assess_dict["feedback"] = {"value": feedback}
+            assess_dict.pop("expectation", None)
+        if expectation is not None:
+            assess_dict["expectation"] = {"value": expectation}
+            assess_dict.pop("feedback", None)
+        if rationale is not None:
+            assess_dict["rationale"] = rationale
+        if metadata is not None:
+            assess_dict["metadata"] = metadata
+
+        # Write updated item
+        item["data"] = assess_dict
+        self._table.put_item(item)
+
+        # FTS diff
+        updated_assessment = Assessment.from_dictionary(assess_dict)
+        new_fts_text = self._assessment_fts_text(updated_assessment)
+        field = f"assess_{assessment_id}"
+
+        if old_fts_text or new_fts_text:
+            levels = ("W", "3")
+            tokens_to_add, tokens_to_remove = fts_diff(old_fts_text, new_fts_text or "", levels)
+            field_suffix = f"#{field}"
+            entity_prefix = f"T#{trace_id}{field_suffix}"
+
+            # Delete removed FTS items
+            if tokens_to_remove:
+                rev_prefix = f"{SK_FTS_REV_PREFIX}{entity_prefix}#"
+                rev_items = self._table.query(pk=pk, sk_prefix=rev_prefix)
+                for rev_item in rev_items:
+                    rev_sk = rev_item["SK"]
+                    suffix = rev_sk[len(SK_FTS_REV_PREFIX) + len(entity_prefix) + 1 :]
+                    parts = suffix.split("#", 1)
+                    if len(parts) == 2:
+                        lvl, tok = parts[0], parts[1]
+                        if (lvl, tok) in tokens_to_remove:
+                            forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                            self._table.delete_item(pk=pk, sk=forward_sk)
+                            self._table.delete_item(pk=pk, sk=rev_sk)
+
+            # Write new FTS items
+            if tokens_to_add:
+                new_fts_items: list[dict[str, Any]] = []
+                for lvl, tok in tokens_to_add:
+                    forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                    reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
+                    new_fts_items.append({"PK": pk, "SK": forward_sk, "ttl": ttl})
+                    new_fts_items.append({"PK": pk, "SK": reverse_sk, "ttl": ttl})
+                self._table.batch_write(new_fts_items)
+
+        return updated_assessment
+
+    def delete_assessment(self, trace_id: str, assessment_id: str) -> None:
+        """Delete an assessment and clean up its FTS items."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{assessment_id}"
+
+        item = self._table.get_item(pk=pk, sk=sk)
+        if item is None:
+            raise MlflowException(
+                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Delete assessment item
+        self._table.delete_item(pk=pk, sk=sk)
+
+        # Clean up FTS items via reverse index
+        field = f"assess_{assessment_id}"
+        self._delete_fts_for_entity_field(pk=pk, entity_type="T", entity_id=trace_id, field=field)
+
+    def delete_traces(
+        self,
+        experiment_id: str,
+        max_timestamp_millis: int | None = None,
+        max_traces: int | None = None,
+        trace_ids: list[str] | None = None,
+    ) -> int:
+        """Delete traces and all their sub-items (tags, metadata, assessments, FTS)."""
+        if not trace_ids:
+            return 0
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        deleted = 0
+
+        for trace_id in trace_ids:
+            # 1. Query all trace sub-items: SK begins_with T#<trace_id>
+            trace_prefix = f"{SK_TRACE_PREFIX}{trace_id}"
+            trace_items = self._table.query(pk=pk, sk_prefix=trace_prefix)
+
+            # 2. Query FTS_REV items for this trace to find forward FTS items
+            fts_rev_prefix = f"{SK_FTS_REV_PREFIX}T#{trace_id}"
+            fts_rev_items = self._table.query(pk=pk, sk_prefix=fts_rev_prefix)
+
+            # 3. Derive forward FTS SKs from reverse items and delete them
+            for rev_item in fts_rev_items:
+                rev_sk = rev_item["SK"]
+                # Everything after "FTS_REV#"
+                after_rev_prefix = rev_sk[len(SK_FTS_REV_PREFIX) :]
+                # after_rev_prefix: T#<trace_id>[#<field>]#<level>#<token>
+                # We need to split into entity_prefix and level#token.
+                # entity_prefix always starts with T#<trace_id>.
+                # After T#<trace_id>, there may be #<field> or directly #<level>#<token>.
+                # Level is always a single character (W or 3).
+                # So we look for the pattern where after the entity part,
+                # we have #<single_char>#<rest> where single_char is the level.
+                base = f"T#{trace_id}"
+                rest = after_rev_prefix[len(base) :]
+                # rest starts with '#'
+                # Split: could be #<field>#<level>#<token> or #<level>#<token>
+                # Level chars: W, 3
+                parts = rest.lstrip("#").split("#")
+                # Try to find the level marker
+                # If parts[0] is a known level (W or 3), then no field
+                # Otherwise parts[0] is field, parts[1] is level
+                if parts[0] in ("W", "3"):
+                    entity_prefix = base
+                    lvl = parts[0]
+                    tok = "#".join(parts[1:])
+                else:
+                    entity_prefix = f"{base}#{parts[0]}"
+                    lvl = parts[1]
+                    tok = "#".join(parts[2:])
+
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                self._table.delete_item(pk=pk, sk=forward_sk)
+                self._table.delete_item(pk=pk, sk=rev_sk)
+
+            # 4. Delete all trace sub-items (META, tags, RMETA, assessments, CLIENTPTR)
+            for item in trace_items:
+                self._table.delete_item(pk=pk, sk=item["SK"])
+
+            deleted += 1
+
+        return deleted

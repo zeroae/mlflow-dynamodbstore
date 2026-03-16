@@ -8,6 +8,7 @@ import os
 from mlflow_dynamodbstore.dynamodb.schema import (
     CONFIG_DENORMALIZE_TAGS,
     CONFIG_FTS_TRIGRAM_FIELDS,
+    CONFIG_TTL_POLICY,
     PK_CONFIG,
 )
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
@@ -39,6 +40,7 @@ class ConfigReader:
         # In-memory caches
         self._denormalize_patterns: list[str] | None = None
         self._fts_trigram_fields: list[str] | None = None
+        self._ttl_policy: dict[str, int] | None = None
         # Per-experiment denormalize pattern cache: experiment_id -> list[str]
         self._exp_denormalize_patterns: dict[str, list[str]] = {}
 
@@ -158,6 +160,32 @@ class ConfigReader:
         if field_type in _ALWAYS_TRIGRAM_FIELDS:
             return True
         return field_type in self.get_fts_trigram_fields()
+
+    # ------------------------------------------------------------------
+    # TTL policy
+    # ------------------------------------------------------------------
+
+    _DEFAULT_TTL_POLICY: dict[str, int] = {
+        "trace_retention_days": 30,
+        "soft_deleted_retention_days": 90,
+        "metric_history_retention_days": 365,
+    }
+
+    def get_ttl_policy(self) -> dict[str, int]:
+        """Return the TTL policy, loading from DynamoDB if needed."""
+        if self._ttl_policy is None:
+            self._ttl_policy = self._load_ttl_policy()
+        return self._ttl_policy
+
+    def _load_ttl_policy(self) -> dict[str, int]:
+        """Load TTL policy from DynamoDB, falling back to defaults."""
+        item = self._table.get_item(pk=PK_CONFIG, sk=CONFIG_TTL_POLICY)
+        policy = dict(self._DEFAULT_TTL_POLICY)
+        if item:
+            for key in policy:
+                if key in item:
+                    policy[key] = int(item[key])
+        return policy
 
     # ------------------------------------------------------------------
     # Reconcile from environment
