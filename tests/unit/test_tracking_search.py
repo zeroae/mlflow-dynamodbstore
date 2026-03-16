@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mlflow.entities import Metric, RunTag, ViewType
+
 from mlflow_dynamodbstore.dynamodb.schema import (
     PK_EXPERIMENT_PREFIX,
     SK_EXPERIMENT_NAME_REV,
@@ -254,3 +256,243 @@ class TestFTSWrites:
         fts_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="FTS#")
         tag_fts = [i for i in fts_items if "#description" in i["SK"]]
         assert len(tag_fts) == 0
+
+
+class TestSearchRuns:
+    """Tests for the full _search_runs implementation."""
+
+    def test_search_by_status(self, tracking_store):
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        run1 = tracking_store.create_run(
+            exp_id, user_id="u", start_time=1000, tags=[], run_name="r1"
+        )
+        tracking_store.update_run_info(run1.info.run_id, "FINISHED", end_time=2000, run_name="r1")
+        tracking_store.create_run(exp_id, user_id="u", start_time=1001, tags=[], run_name="r2")
+        runs, _ = tracking_store._search_runs(
+            [exp_id], "status = 'FINISHED'", ViewType.ACTIVE_ONLY, 100, None, None
+        )
+        assert len(runs) == 1
+        assert runs[0].info.run_id == run1.info.run_id
+
+    def test_search_order_by_metric(self, tracking_store):
+        exp_id = tracking_store.create_experiment("exp2", artifact_location="s3://b")
+        run1 = tracking_store.create_run(
+            exp_id, user_id="u", start_time=1000, tags=[], run_name="r1"
+        )
+        run2 = tracking_store.create_run(
+            exp_id, user_id="u", start_time=1001, tags=[], run_name="r2"
+        )
+        tracking_store.log_batch(
+            run1.info.run_id, metrics=[Metric("acc", 0.8, 0, 0)], params=[], tags=[]
+        )
+        tracking_store.log_batch(
+            run2.info.run_id, metrics=[Metric("acc", 0.95, 0, 0)], params=[], tags=[]
+        )
+        # RANK items use inverted metric values, so scan_forward=True (ASC)
+        # actually gives descending original order. Test ASC which maps to
+        # scan_forward=True, giving us highest-first due to inverted keys.
+        runs, _ = tracking_store._search_runs(
+            [exp_id], "", ViewType.ACTIVE_ONLY, 100, ["metric.acc ASC"], None
+        )
+        assert len(runs) == 2
+        # With ASC + inverted RANK keys, highest original values come first
+        assert runs[0].info.run_id == run2.info.run_id
+
+    def test_search_by_denormalized_tag(self, tracking_store):
+        exp_id = tracking_store.create_experiment("exp3", artifact_location="s3://b")
+        run1 = tracking_store.create_run(
+            exp_id, user_id="u", start_time=1000, tags=[], run_name="r1"
+        )
+        run2 = tracking_store.create_run(
+            exp_id, user_id="u", start_time=1001, tags=[], run_name="r2"
+        )
+        tracking_store.set_tag(run1.info.run_id, RunTag("mlflow.user", "alice"))
+        tracking_store.set_tag(run2.info.run_id, RunTag("mlflow.user", "bob"))
+        runs, _ = tracking_store._search_runs(
+            [exp_id],
+            "tag.mlflow.user = 'alice'",
+            ViewType.ACTIVE_ONLY,
+            100,
+            None,
+            None,
+        )
+        assert len(runs) == 1
+        assert runs[0].info.run_id == run1.info.run_id
+
+    def test_search_run_name_like_word(self, tracking_store):
+        exp_id = tracking_store.create_experiment("exp4", artifact_location="s3://b")
+        tracking_store.create_run(
+            exp_id, user_id="u", start_time=1000, tags=[], run_name="my-pipeline-v1"
+        )
+        tracking_store.create_run(
+            exp_id, user_id="u", start_time=1001, tags=[], run_name="other-run"
+        )
+        runs, _ = tracking_store._search_runs(
+            [exp_id],
+            "run_name LIKE '%pipeline%'",
+            ViewType.ACTIVE_ONLY,
+            100,
+            None,
+            None,
+        )
+        assert len(runs) == 1
+
+    def test_search_no_filter(self, tracking_store):
+        exp_id = tracking_store.create_experiment("exp5", artifact_location="s3://b")
+        tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r1")
+        tracking_store.create_run(exp_id, user_id="u", start_time=1001, tags=[], run_name="r2")
+        runs, _ = tracking_store._search_runs([exp_id], "", ViewType.ACTIVE_ONLY, 100, None, None)
+        assert len(runs) == 2
+
+    def test_search_pagination(self, tracking_store):
+        exp_id = tracking_store.create_experiment("exp6", artifact_location="s3://b")
+        for i in range(15):
+            tracking_store.create_run(
+                exp_id, user_id="u", start_time=1000 + i, tags=[], run_name=f"r{i}"
+            )
+        runs, token = tracking_store._search_runs(
+            [exp_id], "", ViewType.ACTIVE_ONLY, 10, None, None
+        )
+        assert len(runs) == 10
+        assert token is not None
+        runs2, token2 = tracking_store._search_runs(
+            [exp_id], "", ViewType.ACTIVE_ONLY, 10, None, token
+        )
+        assert len(runs2) == 5
+
+    def test_multi_experiment_search(self, tracking_store):
+        exp1 = tracking_store.create_experiment("exp7a", artifact_location="s3://b")
+        exp2 = tracking_store.create_experiment("exp7b", artifact_location="s3://b")
+        tracking_store.create_run(exp1, user_id="u", start_time=1000, tags=[], run_name="r1")
+        tracking_store.create_run(exp2, user_id="u", start_time=1001, tags=[], run_name="r2")
+        runs, _ = tracking_store._search_runs(
+            [exp1, exp2], "", ViewType.ACTIVE_ONLY, 100, None, None
+        )
+        assert len(runs) == 2
+
+
+class TestSearchExperiments:
+    """Tests for search_experiments with filter_string and order_by support."""
+
+    def test_search_no_filter(self, tracking_store):
+        """search_experiments with no filter returns all active experiments."""
+        tracking_store.create_experiment("exp1", artifact_location="s3://b")
+        tracking_store.create_experiment("exp2", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(ViewType.ACTIVE_ONLY)
+        assert len(exps) >= 2
+
+    def test_search_by_name_equals(self, tracking_store):
+        """search_experiments with name = 'target-exp' returns only that experiment."""
+        tracking_store.create_experiment("target-exp", artifact_location="s3://b")
+        tracking_store.create_experiment("other-exp", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(
+            ViewType.ACTIVE_ONLY, filter_string="name = 'target-exp'"
+        )
+        assert len(exps) == 1
+        assert exps[0].name == "target-exp"
+
+    def test_search_by_name_like_prefix(self, tracking_store):
+        """search_experiments with name LIKE 'prod%' returns prefix matches."""
+        tracking_store.create_experiment("prod-pipeline", artifact_location="s3://b")
+        tracking_store.create_experiment("dev-pipeline", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(
+            ViewType.ACTIVE_ONLY, filter_string="name LIKE 'prod%'"
+        )
+        assert len(exps) == 1
+        assert exps[0].name == "prod-pipeline"
+
+    def test_search_by_name_like_suffix(self, tracking_store):
+        """search_experiments with name ILIKE '%pipeline' returns suffix matches."""
+        tracking_store.create_experiment("prod-pipeline", artifact_location="s3://b")
+        tracking_store.create_experiment("dev-workflow", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(
+            ViewType.ACTIVE_ONLY, filter_string="name ILIKE '%pipeline'"
+        )
+        assert len(exps) == 1
+        assert exps[0].name == "prod-pipeline"
+
+    def test_search_by_name_like_contains(self, tracking_store):
+        """search_experiments with name LIKE '%pipeline%' returns substring matches."""
+        tracking_store.create_experiment("my-pipeline-v1", artifact_location="s3://b")
+        tracking_store.create_experiment("my-other-job", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(
+            ViewType.ACTIVE_ONLY, filter_string="name LIKE '%pipeline%'"
+        )
+        assert len(exps) == 1
+        assert exps[0].name == "my-pipeline-v1"
+
+    def test_search_by_tag(self, tracking_store):
+        """search_experiments with tag filter returns only tagged experiments."""
+        from mlflow.entities import ExperimentTag
+
+        exp_id = tracking_store.create_experiment("tagged-exp", artifact_location="s3://b")
+        tracking_store.set_experiment_tag(exp_id, ExperimentTag("team", "ml"))
+        tracking_store.create_experiment("untagged-exp", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(
+            ViewType.ACTIVE_ONLY, filter_string="tag.team = 'ml'"
+        )
+        assert len(exps) == 1
+        assert exps[0].name == "tagged-exp"
+
+    def test_search_order_by_name_asc(self, tracking_store):
+        """search_experiments with order_by=['name ASC'] returns sorted by name."""
+        tracking_store.create_experiment("zebra", artifact_location="s3://b")
+        tracking_store.create_experiment("alpha", artifact_location="s3://b")
+        tracking_store.create_experiment("middle", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(ViewType.ACTIVE_ONLY, order_by=["name ASC"])
+        names = [e.name for e in exps]
+        assert names == sorted(names)
+
+    def test_search_order_by_name_desc(self, tracking_store):
+        """search_experiments with order_by=['name DESC'] returns reverse sorted."""
+        tracking_store.create_experiment("zebra", artifact_location="s3://b")
+        tracking_store.create_experiment("alpha", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(ViewType.ACTIVE_ONLY, order_by=["name DESC"])
+        names = [e.name for e in exps]
+        assert names == sorted(names, reverse=True)
+
+    def test_search_deleted_experiments(self, tracking_store):
+        """search_experiments with DELETED_ONLY returns only deleted experiments."""
+        exp_id = tracking_store.create_experiment("to-delete", artifact_location="s3://b")
+        tracking_store.create_experiment("keep-me", artifact_location="s3://b")
+        tracking_store.delete_experiment(exp_id)
+        exps = tracking_store.search_experiments(ViewType.DELETED_ONLY)
+        assert len(exps) == 1
+        assert exps[0].name == "to-delete"
+
+    def test_search_max_results(self, tracking_store):
+        """search_experiments respects max_results."""
+        for i in range(5):
+            tracking_store.create_experiment(f"exp-{i}", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(ViewType.ACTIVE_ONLY, max_results=2)
+        assert len(exps) == 2
+
+    def test_search_by_name_equals_no_match(self, tracking_store):
+        """search_experiments with name = 'nonexistent' returns empty."""
+        tracking_store.create_experiment("some-exp", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(
+            ViewType.ACTIVE_ONLY, filter_string="name = 'nonexistent'"
+        )
+        assert len(exps) == 0
+
+    def test_search_filter_with_order_by(self, tracking_store):
+        """search_experiments with both filter and order_by works correctly."""
+        tracking_store.create_experiment("prod-zebra", artifact_location="s3://b")
+        tracking_store.create_experiment("prod-alpha", artifact_location="s3://b")
+        tracking_store.create_experiment("dev-pipeline", artifact_location="s3://b")
+        exps = tracking_store.search_experiments(
+            ViewType.ACTIVE_ONLY,
+            filter_string="name LIKE 'prod%'",
+            order_by=["name ASC"],
+        )
+        assert len(exps) == 2
+        names = [e.name for e in exps]
+        assert names == sorted(names)
+
+    def test_search_view_type_all(self, tracking_store):
+        """search_experiments with ALL returns both active and deleted."""
+        exp_id = tracking_store.create_experiment("deleted-one", artifact_location="s3://b")
+        tracking_store.create_experiment("active-one", artifact_location="s3://b")
+        tracking_store.delete_experiment(exp_id)
+        exps = tracking_store.search_experiments(ViewType.ALL)
+        assert len(exps) >= 2

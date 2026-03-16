@@ -20,7 +20,6 @@ from mlflow.entities import (
 )
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
-    INVALID_PARAMETER_VALUE,
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
@@ -28,7 +27,12 @@ from mlflow.store.tracking.abstract_store import AbstractStore
 
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
-from mlflow_dynamodbstore.dynamodb.fts import fts_diff, fts_items_for_text
+from mlflow_dynamodbstore.dynamodb.fts import (
+    fts_diff,
+    fts_items_for_text,
+    tokenize_trigrams,
+    tokenize_words,
+)
 from mlflow_dynamodbstore.dynamodb.keys import pad_step
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
@@ -67,6 +71,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_RUN_PREFIX,
     SK_TAG_PREFIX,
 )
+from mlflow_dynamodbstore.dynamodb.search import FilterPredicate, _compare, parse_experiment_filter
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
 from mlflow_dynamodbstore.ids import generate_ulid, ulid_from_timestamp
@@ -378,18 +383,43 @@ class DynamoDBTrackingStore(AbstractStore):
         order_by: list[str] | None = None,
         page_token: str | None = None,
     ) -> list[Experiment]:
-        """Search experiments using GSI2."""
-        if filter_string:
-            raise MlflowException(
-                "Filter support requires Plan 2",
-                error_code=INVALID_PARAMETER_VALUE,
-            )
-        if order_by:
-            raise MlflowException(
-                "order_by support requires Plan 2",
-                error_code=INVALID_PARAMETER_VALUE,
-            )
+        """Search experiments with filter and order_by support."""
+        predicates = parse_experiment_filter(filter_string)
 
+        # Classify predicates
+        name_pred = next(
+            (p for p in predicates if p.field_type == "attribute" and p.key == "name"),
+            None,
+        )
+        tag_preds = [p for p in predicates if p.field_type == "tag"]
+
+        if name_pred and name_pred.op == "=":
+            experiments = self._search_experiments_by_name_exact(name_pred.value, view_type)
+        elif name_pred and name_pred.op in ("LIKE", "ILIKE"):
+            experiments = self._search_experiments_by_name_like(
+                name_pred.value, name_pred.op, view_type
+            )
+        else:
+            experiments = self._search_experiments_by_lifecycle(view_type, max_results)
+
+        # Apply tag filters as post-filters
+        if tag_preds:
+            experiments = self._filter_experiments_by_tags(experiments, tag_preds)
+
+        # Apply ordering
+        if order_by:
+            experiments = self._sort_experiments(experiments, order_by)
+
+        return experiments[:max_results] if max_results else experiments
+
+    # ------------------------------------------------------------------
+    # search_experiments helpers
+    # ------------------------------------------------------------------
+
+    def _search_experiments_by_lifecycle(
+        self, view_type: int, max_results: int
+    ) -> list[Experiment]:
+        """Query experiments by lifecycle stage using GSI2."""
         experiments: list[Experiment] = []
 
         if view_type in (ViewType.ACTIVE_ONLY, ViewType.ALL):
@@ -413,7 +443,200 @@ class DynamoDBTrackingStore(AbstractStore):
                 exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
                 experiments.append(self.get_experiment(exp_id))
 
-        return experiments[:max_results] if max_results else experiments
+        return experiments
+
+    def _search_experiments_by_name_exact(self, name: str, view_type: int) -> list[Experiment]:
+        """Exact name lookup via GSI3."""
+        results = self._table.query(
+            pk=f"{GSI3_EXP_NAME_PREFIX}{self._workspace}#{name}",
+            index_name="gsi3",
+            limit=1,
+        )
+        if not results:
+            return []
+
+        exp_id = results[0]["PK"].replace(PK_EXPERIMENT_PREFIX, "")
+        exp = self.get_experiment(exp_id)
+
+        # Filter by view_type
+        if not self._matches_view_type(exp, view_type):
+            return []
+
+        return [exp]
+
+    def _search_experiments_by_name_like(
+        self, pattern: str, op: str, view_type: int
+    ) -> list[Experiment]:
+        """Search experiments by name pattern using GSI5 or FTS.
+
+        Strategies:
+        - 'prefix%': GSI5 begins_with on name
+        - '%suffix': GSI5 reversed name begins_with
+        - '%word%': GSI2 FTS index
+        """
+        is_ilike = op == "ILIKE"
+        stripped = pattern
+
+        has_leading = stripped.startswith("%")
+        has_trailing = stripped.endswith("%")
+        core = stripped.strip("%")
+
+        if not has_leading and has_trailing:
+            # Prefix match: name LIKE 'prod%'
+            return self._search_experiments_by_name_prefix(core, view_type)
+        elif has_leading and not has_trailing:
+            # Suffix match: name ILIKE '%pipeline'
+            return self._search_experiments_by_name_suffix(core, view_type, is_ilike)
+        elif has_leading and has_trailing:
+            # Contains match: name LIKE '%pipeline%'
+            return self._search_experiments_by_name_contains(core, view_type, is_ilike)
+        else:
+            # No wildcards — treat as exact match
+            return self._search_experiments_by_name_exact(core, view_type)
+
+    def _search_experiments_by_name_prefix(self, prefix: str, view_type: int) -> list[Experiment]:
+        """Use GSI5 to find experiments whose name starts with prefix."""
+        items = self._table.query(
+            pk=f"{GSI5_EXP_NAMES_PREFIX}{self._workspace}",
+            sk_prefix=prefix,
+            index_name="gsi5",
+        )
+        experiments: list[Experiment] = []
+        for item in items:
+            # GSI5 SK is "name#exp_id" — skip NAME_REV items (start with "REV#")
+            gsi5sk = item.get(GSI5_SK, "")
+            if gsi5sk.startswith("REV#"):
+                continue
+            exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
+            exp = self.get_experiment(exp_id)
+            if self._matches_view_type(exp, view_type):
+                experiments.append(exp)
+        return experiments
+
+    def _search_experiments_by_name_suffix(
+        self, suffix: str, view_type: int, case_insensitive: bool = True
+    ) -> list[Experiment]:
+        """Use GSI5 NAME_REV items to find experiments whose name ends with suffix."""
+        reversed_suffix = _rev(suffix.lower())
+        items = self._table.query(
+            pk=f"{GSI5_EXP_NAMES_PREFIX}{self._workspace}",
+            sk_prefix=f"REV#{reversed_suffix}",
+            index_name="gsi5",
+        )
+        experiments: list[Experiment] = []
+        for item in items:
+            exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
+            exp = self.get_experiment(exp_id)
+            if self._matches_view_type(exp, view_type):
+                experiments.append(exp)
+        return experiments
+
+    def _search_experiments_by_name_contains(
+        self, substring: str, view_type: int, case_insensitive: bool = False
+    ) -> list[Experiment]:
+        """Use GSI2 FTS index to find experiments whose name contains substring."""
+        # Try word tokens first, then trigrams
+        word_tokens = tokenize_words(substring)
+        exp_ids: set[str] | None = None
+
+        if word_tokens:
+            for token in word_tokens:
+                fts_items = self._table.query(
+                    pk=f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}",
+                    sk_prefix=f"W#{token}#E#",
+                    index_name="gsi2",
+                )
+                ids = set()
+                for item in fts_items:
+                    gsi2sk = item.get(GSI2_SK, "")
+                    # Pattern: W#<token>#E#<exp_id>
+                    parts = gsi2sk.split("#")
+                    for i, part in enumerate(parts):
+                        if part == "E" and i + 1 < len(parts):
+                            ids.add(parts[i + 1])
+                            break
+                exp_ids = ids if exp_ids is None else exp_ids & ids
+        else:
+            # Fallback to trigrams
+            trigram_tokens = tokenize_trigrams(substring)
+            for token in trigram_tokens:
+                fts_items = self._table.query(
+                    pk=f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}",
+                    sk_prefix=f"3#{token}#E#",
+                    index_name="gsi2",
+                )
+                ids = set()
+                for item in fts_items:
+                    gsi2sk = item.get(GSI2_SK, "")
+                    parts = gsi2sk.split("#")
+                    for i, part in enumerate(parts):
+                        if part == "E" and i + 1 < len(parts):
+                            ids.add(parts[i + 1])
+                            break
+                exp_ids = ids if exp_ids is None else exp_ids & ids
+
+        if not exp_ids:
+            return []
+
+        experiments: list[Experiment] = []
+        for exp_id in exp_ids:
+            exp = self.get_experiment(exp_id)
+            if self._matches_view_type(exp, view_type):
+                # Verify the substring actually appears in the name (FTS can have false positives)
+                name = exp.name
+                check_name = name.lower() if case_insensitive else name
+                check_sub = substring.lower() if case_insensitive else substring
+                if check_sub in check_name:
+                    experiments.append(exp)
+        return experiments
+
+    def _filter_experiments_by_tags(
+        self, experiments: list[Experiment], tag_preds: list[FilterPredicate]
+    ) -> list[Experiment]:
+        """Post-filter experiments by tag predicates."""
+        filtered: list[Experiment] = []
+        for exp in experiments:
+            # Experiment.tags is a dict {key: value}
+            tag_map = exp.tags if isinstance(exp.tags, dict) else {}
+            if all(_compare(tag_map.get(pred.key), pred.op, pred.value) for pred in tag_preds):
+                filtered.append(exp)
+        return filtered
+
+    def _sort_experiments(
+        self, experiments: list[Experiment], order_by: list[str]
+    ) -> list[Experiment]:
+        """Sort experiments by the given order_by clauses (Python sort)."""
+        for token in reversed(order_by):
+            token = token.strip()
+            parts = token.rsplit(None, 1)
+            if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
+                key_name = parts[0].strip()
+                reverse = parts[1].upper() == "DESC"
+            else:
+                key_name = token
+                reverse = False
+
+            # Remove "attribute." prefix if present
+            if "." in key_name:
+                _, key_name = key_name.split(".", 1)
+
+            def _sort_key(e: Experiment, k: str = key_name) -> str:
+                val = getattr(e, k, None)
+                return str(val) if val is not None else ""
+
+            experiments = sorted(experiments, key=_sort_key, reverse=reverse)
+        return experiments
+
+    @staticmethod
+    def _matches_view_type(exp: Experiment, view_type: int) -> bool:
+        """Check if an experiment matches the requested view type."""
+        if view_type == ViewType.ALL:
+            return True
+        if view_type == ViewType.ACTIVE_ONLY:
+            return bool(exp.lifecycle_stage == "active")
+        if view_type == ViewType.DELETED_ONLY:
+            return bool(exp.lifecycle_stage == "deleted")
+        return True
 
     # ------------------------------------------------------------------
     # Experiment tags
@@ -635,61 +858,98 @@ class DynamoDBTrackingStore(AbstractStore):
         order_by: list[str],
         page_token: str | None,
     ) -> tuple[list[Run], str | None]:
-        """Search runs across experiments."""
-        if filter_string:
-            raise MlflowException(
-                "Filter support requires Plan 2",
-                error_code=INVALID_PARAMETER_VALUE,
-            )
+        """Search runs across experiments using parse -> plan -> execute pipeline."""
+        from mlflow_dynamodbstore.dynamodb.pagination import (
+            decode_page_token,
+            encode_page_token,
+        )
+        from mlflow_dynamodbstore.dynamodb.search import (
+            execute_query,
+            parse_run_filter,
+            plan_run_query,
+        )
+
+        # 1. Parse filter
+        predicates = parse_run_filter(filter_string)
+
+        # 2. Plan query
+        denormalized_patterns = self._config.get_denormalize_patterns()
+        plan = plan_run_query(predicates, order_by, run_view_type, denormalized_patterns)
+
+        # 3. For each experiment: execute query
+        # Handle multi-experiment pagination
+        token_data = decode_page_token(page_token)
+        exp_idx = token_data.get("exp_idx", 0) if token_data else 0
+        inner_token = token_data.get("inner_token") if token_data else None
 
         runs: list[Run] = []
+        remaining = max_results
+        next_page_token: str | None = None
 
-        for exp_id in experiment_ids:
+        for i, exp_id in enumerate(experiment_ids[exp_idx:], start=exp_idx):
             pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            current_token = inner_token if i == exp_idx else None
 
-            if run_view_type == ViewType.ACTIVE_ONLY:
-                items = self._table.query(
+            # Loop within experiment to handle non-run items in results
+            inner_next: str | None = None
+            while remaining > 0:
+                items, inner_next = execute_query(
+                    table=self._table,
+                    plan=plan,
                     pk=pk,
-                    sk_prefix="active#",
-                    index_name="lsi1",
-                    limit=max_results - len(runs) if max_results else None,
-                )
-            elif run_view_type == ViewType.DELETED_ONLY:
-                items = self._table.query(
-                    pk=pk,
-                    sk_prefix="deleted#",
-                    index_name="lsi1",
-                    limit=max_results - len(runs) if max_results else None,
-                )
-            else:
-                # ALL: query by SK prefix on main table
-                items = self._table.query(
-                    pk=pk,
-                    sk_prefix=SK_RUN_PREFIX,
-                    limit=max_results - len(runs) if max_results else None,
+                    max_results=remaining,
+                    page_token=current_token,
+                    predicates=predicates,
                 )
 
-            for item in items:
-                # Filter out non-run items (experiment meta, tags, etc.)
-                if "run_id" not in item:
-                    continue
-                run_id = item["run_id"]
-                # Cache for later lookups
-                self._cache.put("run_exp", run_id, exp_id)
-                # Build run with tags/params/metrics
-                run_prefix = f"{SK_RUN_PREFIX}{run_id}"
-                tag_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_TAG_PREFIX}")
-                param_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_PARAM_PREFIX}")
-                metric_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}")
-                runs.append(_item_to_run(item, tag_items, param_items, metric_items))
+                for item in items:
+                    if "run_id" not in item:
+                        continue
+                    run_id = item["run_id"]
+                    self._cache.put("run_exp", run_id, exp_id)
 
-                if max_results and len(runs) >= max_results:
+                    # Build full Run with tags/params/metrics
+                    run_prefix = f"{SK_RUN_PREFIX}{run_id}"
+                    tag_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_TAG_PREFIX}")
+                    param_items = self._table.query(
+                        pk=pk, sk_prefix=f"{run_prefix}{SK_PARAM_PREFIX}"
+                    )
+                    metric_items = self._table.query(
+                        pk=pk, sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}"
+                    )
+                    runs.append(_item_to_run(item, tag_items, param_items, metric_items))
+                    remaining -= 1
+
+                    if remaining <= 0:
+                        break
+
+                # If no more pages in this experiment, move on
+                if not inner_next:
                     break
+                # If we still need more, fetch the next page
+                current_token = inner_next
 
-            if max_results and len(runs) >= max_results:
+            if remaining <= 0:
+                # Create pagination token
+                if inner_next or i < len(experiment_ids) - 1:
+                    next_page_token = encode_page_token(
+                        {
+                            "exp_idx": i if inner_next else i + 1,
+                            "inner_token": inner_next,
+                        }
+                    )
                 break
 
-        return runs[:max_results] if max_results else runs, None
+            if inner_next:
+                next_page_token = encode_page_token(
+                    {
+                        "exp_idx": i,
+                        "inner_token": inner_next,
+                    }
+                )
+                break
+
+        return runs, next_page_token
 
     # ------------------------------------------------------------------
     # Run helpers
