@@ -1,12 +1,21 @@
-"""Tests for trace metadata CRUD in DynamoDBTrackingStore."""
+"""Tests for trace metadata CRUD and assessment CRUD in DynamoDBTrackingStore."""
 
 from __future__ import annotations
 
 import time
 
 import pytest
-from mlflow.entities import TraceInfo, TraceLocation, TraceLocationType, TraceState
+from mlflow.entities import (
+    Assessment,
+    AssessmentSource,
+    TraceInfo,
+    TraceLocation,
+    TraceLocationType,
+    TraceState,
+)
+from mlflow.entities.assessment import ExpectationValue, FeedbackValue
 from mlflow.entities.trace_location import MlflowExperimentLocation
+from mlflow.exceptions import MlflowException
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
 
 from mlflow_dynamodbstore.dynamodb.schema import (
@@ -21,6 +30,8 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI5_SK,
     PK_CONFIG,
     PK_EXPERIMENT_PREFIX,
+    SK_FTS_PREFIX,
+    SK_FTS_REV_PREFIX,
     SK_TRACE_PREFIX,
 )
 
@@ -474,7 +485,241 @@ class TestGetTraceInfo:
 
     def test_get_trace_info_not_found(self, tracking_store):
         """get_trace_info raises for nonexistent trace."""
-        from mlflow.exceptions import MlflowException
-
         with pytest.raises(MlflowException, match="does not exist"):
             tracking_store.get_trace_info("tr-nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# Assessment CRUD tests
+# ---------------------------------------------------------------------------
+
+
+def _setup_trace(tracking_store):
+    """Create an experiment and trace, return (experiment_id, trace_id)."""
+    exp_id = _create_experiment(tracking_store)
+    trace_info = _make_trace_info(exp_id)
+    tracking_store.start_trace(trace_info)
+    return exp_id, "tr-abc123"
+
+
+class TestCreateAssessment:
+    def test_create_assessment(self, tracking_store):
+        """Create assessment with ULID ID, verify FTS tokens, verify TTL inheritance."""
+        exp_id, trace_id = _setup_trace(tracking_store)
+
+        assessment = Assessment(
+            name="quality",
+            source=AssessmentSource(source_type="HUMAN", source_id="user1"),
+            trace_id=trace_id,
+            feedback=FeedbackValue(value="good response"),
+        )
+
+        result = tracking_store.create_assessment(assessment)
+
+        # Should have a ULID assessment_id assigned
+        assert result.assessment_id is not None
+        assert len(result.assessment_id) > 0
+        assert result.name == "quality"
+        assert result.trace_id == trace_id
+        assert result.feedback.value == "good response"
+
+        # Verify DynamoDB item exists with correct SK pattern
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        assess_sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{result.assessment_id}"
+        item = tracking_store._table.get_item(pk=pk, sk=assess_sk)
+        assert item is not None
+
+        # Verify assessment item inherits trace TTL
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+        assert "ttl" in item
+        assert int(item["ttl"]) == int(meta["ttl"])
+
+        # Verify FTS tokens exist for the feedback value text
+        fts_items = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        assess_fts = [
+            i for i in fts_items if f"T#{trace_id}#assess_{result.assessment_id}" in i["SK"]
+        ]
+        assert len(assess_fts) > 0, "Expected FTS items for assessment value text"
+
+        # FTS items should also have TTL
+        for fts_item in assess_fts:
+            assert "ttl" in fts_item
+            assert int(fts_item["ttl"]) == int(meta["ttl"])
+
+    def test_create_assessment_with_expectation(self, tracking_store):
+        """Create assessment with expectation value."""
+        exp_id, trace_id = _setup_trace(tracking_store)
+
+        assessment = Assessment(
+            name="expected_output",
+            source=AssessmentSource(source_type="HUMAN", source_id="user1"),
+            trace_id=trace_id,
+            expectation=ExpectationValue(value="the expected answer"),
+        )
+
+        result = tracking_store.create_assessment(assessment)
+        assert result.assessment_id is not None
+        assert result.expectation.value == "the expected answer"
+
+        # Verify FTS tokens for expectation value text
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        fts_items = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        assess_fts = [
+            i for i in fts_items if f"T#{trace_id}#assess_{result.assessment_id}" in i["SK"]
+        ]
+        assert len(assess_fts) > 0
+
+
+class TestUpdateAssessment:
+    def test_update_assessment(self, tracking_store):
+        """Update assessment, verify FTS diff (old tokens removed, new tokens added)."""
+        exp_id, trace_id = _setup_trace(tracking_store)
+
+        # Create initial assessment
+        assessment = Assessment(
+            name="quality",
+            source=AssessmentSource(source_type="HUMAN", source_id="user1"),
+            trace_id=trace_id,
+            feedback=FeedbackValue(value="alpha"),
+        )
+        created = tracking_store.create_assessment(assessment)
+        assessment_id = created.assessment_id
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+
+        # Capture FTS tokens after create
+        fts_after_create = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        old_fts = {
+            i["SK"] for i in fts_after_create if f"T#{trace_id}#assess_{assessment_id}" in i["SK"]
+        }
+        assert len(old_fts) > 0
+
+        # Update with new feedback value
+        updated = tracking_store.update_assessment(
+            trace_id=trace_id,
+            assessment_id=assessment_id,
+            feedback="beta",
+        )
+        assert updated.feedback.value == "beta"
+
+        # Verify FTS diff: old tokens removed, new tokens added
+        fts_after_update = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        new_fts = {
+            i["SK"] for i in fts_after_update if f"T#{trace_id}#assess_{assessment_id}" in i["SK"]
+        }
+        assert old_fts.isdisjoint(new_fts), "Old FTS tokens should be removed on update"
+        assert len(new_fts) > 0, "New FTS tokens should be written"
+
+    def test_update_assessment_name(self, tracking_store):
+        """Update assessment name."""
+        _, trace_id = _setup_trace(tracking_store)
+
+        assessment = Assessment(
+            name="original",
+            source=AssessmentSource(source_type="HUMAN", source_id="user1"),
+            trace_id=trace_id,
+            feedback=FeedbackValue(value="good"),
+        )
+        created = tracking_store.create_assessment(assessment)
+
+        updated = tracking_store.update_assessment(
+            trace_id=trace_id,
+            assessment_id=created.assessment_id,
+            name="renamed",
+        )
+        assert updated.name == "renamed"
+
+        # Verify via get
+        fetched = tracking_store.get_assessment(trace_id, created.assessment_id)
+        assert fetched.name == "renamed"
+
+
+class TestDeleteAssessment:
+    def test_delete_assessment(self, tracking_store):
+        """Delete assessment, verify FTS + FTS_REV cleanup via reverse index query."""
+        exp_id, trace_id = _setup_trace(tracking_store)
+
+        assessment = Assessment(
+            name="quality",
+            source=AssessmentSource(source_type="HUMAN", source_id="user1"),
+            trace_id=trace_id,
+            feedback=FeedbackValue(value="good response"),
+        )
+        created = tracking_store.create_assessment(assessment)
+        assessment_id = created.assessment_id
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+
+        # Verify FTS items exist before delete
+        fts_before = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        assess_fts_before = [
+            i for i in fts_before if f"T#{trace_id}#assess_{assessment_id}" in i["SK"]
+        ]
+        assert len(assess_fts_before) > 0
+
+        # Also verify FTS_REV items exist
+        fts_rev_before = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_REV_PREFIX)
+        assess_rev_before = [
+            i for i in fts_rev_before if f"T#{trace_id}#assess_{assessment_id}" in i["SK"]
+        ]
+        assert len(assess_rev_before) > 0
+
+        # Delete assessment
+        tracking_store.delete_assessment(trace_id, assessment_id)
+
+        # Verify assessment item is gone
+        assess_sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{assessment_id}"
+        item = tracking_store._table.get_item(pk=pk, sk=assess_sk)
+        assert item is None
+
+        # Verify all FTS items cleaned up
+        fts_after = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        assess_fts_after = [
+            i for i in fts_after if f"T#{trace_id}#assess_{assessment_id}" in i["SK"]
+        ]
+        assert len(assess_fts_after) == 0
+
+        # Verify all FTS_REV items cleaned up
+        fts_rev_after = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_REV_PREFIX)
+        assess_rev_after = [
+            i for i in fts_rev_after if f"T#{trace_id}#assess_{assessment_id}" in i["SK"]
+        ]
+        assert len(assess_rev_after) == 0
+
+    def test_delete_nonexistent_assessment(self, tracking_store):
+        """Delete nonexistent assessment raises error."""
+        _, trace_id = _setup_trace(tracking_store)
+
+        with pytest.raises(MlflowException, match="does not exist"):
+            tracking_store.delete_assessment(trace_id, "nonexistent-id")
+
+
+class TestGetAssessment:
+    def test_get_assessment(self, tracking_store):
+        """Get assessment by ID, verify all fields roundtrip."""
+        _, trace_id = _setup_trace(tracking_store)
+
+        assessment = Assessment(
+            name="quality",
+            source=AssessmentSource(source_type="HUMAN", source_id="user1"),
+            trace_id=trace_id,
+            feedback=FeedbackValue(value="good response"),
+            rationale="The response was helpful",
+            metadata={"key1": "val1"},
+        )
+        created = tracking_store.create_assessment(assessment)
+
+        fetched = tracking_store.get_assessment(trace_id, created.assessment_id)
+        assert fetched.assessment_id == created.assessment_id
+        assert fetched.name == "quality"
+        assert fetched.trace_id == trace_id
+        assert fetched.source.source_type == "HUMAN"
+        assert fetched.source.source_id == "user1"
+        assert fetched.feedback.value == "good response"
+        assert fetched.rationale == "The response was helpful"
+        assert fetched.metadata == {"key1": "val1"}
+
+    def test_get_assessment_not_found(self, tracking_store):
+        """Get nonexistent assessment raises error."""
+        _, trace_id = _setup_trace(tracking_store)
+
+        with pytest.raises(MlflowException, match="does not exist"):
+            tracking_store.get_assessment(trace_id, "nonexistent-id")

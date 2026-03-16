@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from mlflow.entities import (
+    Assessment,
     DatasetInput,
     Experiment,
     ExperimentTag,
@@ -30,6 +31,7 @@ from mlflow.protos.databricks_pb2 import (
 )
 from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
+from mlflow.utils.proto_json_utils import milliseconds_to_proto_timestamp
 
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
@@ -1596,3 +1598,211 @@ class DynamoDBTrackingStore(AbstractStore):
                 "ttl": ttl,
             }
             self._table.put_item(rmeta_item)
+
+    # ------------------------------------------------------------------
+    # Assessment CRUD
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _assessment_fts_text(assessment: Assessment) -> str | None:
+        """Extract searchable text from an assessment's value (feedback or expectation)."""
+        if assessment.feedback and assessment.feedback.value is not None:
+            val = assessment.feedback.value
+            return str(val) if not isinstance(val, str) else val
+        if assessment.expectation and assessment.expectation.value is not None:
+            val = assessment.expectation.value
+            return str(val) if not isinstance(val, str) else val
+        return None
+
+    def _write_assessment_fts(
+        self,
+        pk: str,
+        trace_id: str,
+        assessment_id: str,
+        text: str,
+        ttl: int,
+    ) -> None:
+        """Write FTS forward + reverse items for an assessment's value text."""
+        field = f"assess_{assessment_id}"
+        fts_items = fts_items_for_text(
+            pk=pk,
+            entity_type="T",
+            entity_id=trace_id,
+            field=field,
+            text=text,
+        )
+        for item in fts_items:
+            item["ttl"] = ttl
+        if fts_items:
+            self._table.batch_write(fts_items)
+
+    def create_assessment(self, assessment: Assessment) -> Assessment:
+        """Create a new assessment for a trace."""
+        trace_id = assessment.trace_id
+        if trace_id is None:
+            raise MlflowException(
+                "Assessment must have a trace_id.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        # Read TTL from the trace META item
+        meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+        if meta is None:
+            raise MlflowException(
+                f"Trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        ttl = int(meta.get("ttl", self._get_trace_ttl()))
+
+        # Generate assessment ID
+        assessment_id = generate_ulid()
+        now_ms = int(time.time() * 1000)
+
+        # Build the assessment item storing the full serialized assessment dict
+        assess_dict = assessment.to_dictionary()
+        assess_dict["assessment_id"] = assessment_id
+        assess_dict["create_time"] = assess_dict.get("create_time") or now_ms
+        assess_dict["last_update_time"] = assess_dict.get("last_update_time") or now_ms
+
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{assessment_id}"
+        item: dict[str, Any] = {
+            "PK": pk,
+            "SK": sk,
+            "ttl": ttl,
+            "data": assess_dict,
+        }
+        self._table.put_item(item)
+
+        # Write FTS items for the assessment value text
+        fts_text = self._assessment_fts_text(assessment)
+        if fts_text:
+            self._write_assessment_fts(pk, trace_id, assessment_id, fts_text, ttl)
+
+        # Return the assessment with the generated ID
+        result = Assessment.from_dictionary(assess_dict)
+        return result
+
+    def get_assessment(self, trace_id: str, assessment_id: str) -> Assessment:
+        """Fetch an assessment by trace ID and assessment ID."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{assessment_id}"
+
+        item = self._table.get_item(pk=pk, sk=sk)
+        if item is None:
+            raise MlflowException(
+                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        return Assessment.from_dictionary(item["data"])
+
+    def update_assessment(
+        self,
+        trace_id: str,
+        assessment_id: str,
+        name: str | None = None,
+        expectation: str | None = None,
+        feedback: str | None = None,
+        rationale: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> Assessment:
+        """Update mutable fields of an assessment."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{assessment_id}"
+
+        item = self._table.get_item(pk=pk, sk=sk)
+        if item is None:
+            raise MlflowException(
+                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        ttl = int(item.get("ttl", self._get_trace_ttl()))
+
+        assess_dict = item["data"]
+
+        # Capture old text for FTS diff
+        old_assessment = Assessment.from_dictionary(assess_dict)
+        old_fts_text = self._assessment_fts_text(old_assessment)
+
+        # Apply updates
+        now_ms = int(time.time() * 1000)
+        assess_dict["last_update_time"] = milliseconds_to_proto_timestamp(now_ms)
+
+        if name is not None:
+            assess_dict["assessment_name"] = name
+        if feedback is not None:
+            assess_dict["feedback"] = {"value": feedback}
+            assess_dict.pop("expectation", None)
+        if expectation is not None:
+            assess_dict["expectation"] = {"value": expectation}
+            assess_dict.pop("feedback", None)
+        if rationale is not None:
+            assess_dict["rationale"] = rationale
+        if metadata is not None:
+            assess_dict["metadata"] = metadata
+
+        # Write updated item
+        item["data"] = assess_dict
+        self._table.put_item(item)
+
+        # FTS diff
+        updated_assessment = Assessment.from_dictionary(assess_dict)
+        new_fts_text = self._assessment_fts_text(updated_assessment)
+        field = f"assess_{assessment_id}"
+
+        if old_fts_text or new_fts_text:
+            levels = ("W", "3")
+            tokens_to_add, tokens_to_remove = fts_diff(old_fts_text, new_fts_text or "", levels)
+            field_suffix = f"#{field}"
+            entity_prefix = f"T#{trace_id}{field_suffix}"
+
+            # Delete removed FTS items
+            if tokens_to_remove:
+                rev_prefix = f"{SK_FTS_REV_PREFIX}{entity_prefix}#"
+                rev_items = self._table.query(pk=pk, sk_prefix=rev_prefix)
+                for rev_item in rev_items:
+                    rev_sk = rev_item["SK"]
+                    suffix = rev_sk[len(SK_FTS_REV_PREFIX) + len(entity_prefix) + 1 :]
+                    parts = suffix.split("#", 1)
+                    if len(parts) == 2:
+                        lvl, tok = parts[0], parts[1]
+                        if (lvl, tok) in tokens_to_remove:
+                            forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                            self._table.delete_item(pk=pk, sk=forward_sk)
+                            self._table.delete_item(pk=pk, sk=rev_sk)
+
+            # Write new FTS items
+            if tokens_to_add:
+                new_fts_items: list[dict[str, Any]] = []
+                for lvl, tok in tokens_to_add:
+                    forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                    reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
+                    new_fts_items.append({"PK": pk, "SK": forward_sk, "ttl": ttl})
+                    new_fts_items.append({"PK": pk, "SK": reverse_sk, "ttl": ttl})
+                self._table.batch_write(new_fts_items)
+
+        return updated_assessment
+
+    def delete_assessment(self, trace_id: str, assessment_id: str) -> None:
+        """Delete an assessment and clean up its FTS items."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{assessment_id}"
+
+        item = self._table.get_item(pk=pk, sk=sk)
+        if item is None:
+            raise MlflowException(
+                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Delete assessment item
+        self._table.delete_item(pk=pk, sk=sk)
+
+        # Clean up FTS items via reverse index
+        field = f"assess_{assessment_id}"
+        self._delete_fts_for_entity_field(pk=pk, entity_type="T", entity_id=trace_id, field=field)
