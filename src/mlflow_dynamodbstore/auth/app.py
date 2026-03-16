@@ -13,6 +13,8 @@ _logger = logging.getLogger(__name__)
 
 _MLFLOW_AUTH_ADMIN_USERNAME = "MLFLOW_AUTH_ADMIN_USERNAME"
 _MLFLOW_AUTH_ADMIN_PASSWORD = "MLFLOW_AUTH_ADMIN_PASSWORD"
+# MLflow's server passes the backend store URI via this internal env var
+_MLFLOW_SERVER_FILE_STORE = "_MLFLOW_SERVER_FILE_STORE"
 _MLFLOW_BACKEND_STORE_URI = "MLFLOW_BACKEND_STORE_URI"
 
 _DEFAULT_ADMIN_USERNAME = "admin"
@@ -42,10 +44,15 @@ def create_app(app: Flask | None = None) -> Flask:
 
         app = default_app
 
-    store_uri = os.environ.get(_MLFLOW_BACKEND_STORE_URI, "")
+    # MLflow server sets _MLFLOW_SERVER_FILE_STORE in worker subprocesses;
+    # fall back to MLFLOW_BACKEND_STORE_URI for direct usage
+    store_uri = os.environ.get(_MLFLOW_SERVER_FILE_STORE, "") or os.environ.get(
+        _MLFLOW_BACKEND_STORE_URI, ""
+    )
     if not store_uri.startswith("dynamodb://"):
         raise ValueError(
-            f"MLFLOW_BACKEND_STORE_URI must start with 'dynamodb://', got: {store_uri!r}"
+            f"Backend store URI must start with 'dynamodb://', got: {store_uri!r}. "
+            f"Set _MLFLOW_SERVER_FILE_STORE or MLFLOW_BACKEND_STORE_URI."
         )
 
     # Create our DynamoDB-backed auth store
@@ -58,9 +65,13 @@ def create_app(app: Flask | None = None) -> Flask:
     admin_username = os.environ.get(_MLFLOW_AUTH_ADMIN_USERNAME, _DEFAULT_ADMIN_USERNAME)
     admin_password = os.environ.get(_MLFLOW_AUTH_ADMIN_PASSWORD, _DEFAULT_ADMIN_PASSWORD)
 
-    if not dynamodb_store.has_user(admin_username):
+    # Ensure admin user exists (idempotent across concurrent workers)
+    try:
         dynamodb_store.create_user(admin_username, admin_password, is_admin=True)
         _logger.info("Created admin user '%s'.", admin_username)
+    except Exception:
+        # User already exists (race between workers) — safe to ignore
+        pass
 
     # Delegate to MLflow's own create_app for route and hook registration.
     # Since we already replaced the store, MLflow's create_app will use our
