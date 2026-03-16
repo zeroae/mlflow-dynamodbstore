@@ -844,30 +844,107 @@ class DynamoDBTrackingStore(AbstractStore):
         return _item_to_run_info(updated_item)
 
     def delete_run(self, run_id: str) -> None:
-        """Soft-delete a run."""
+        """Soft-delete a run and set TTL on all related items."""
         experiment_id = self._resolve_run_experiment(run_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
 
-        self._table.update_item(
-            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
-            sk=f"{SK_RUN_PREFIX}{run_id}",
-            updates={
-                "lifecycle_stage": "deleted",
-                LSI1_SK: f"deleted#{run_id}",
-            },
+        # Compute TTL if enabled
+        ttl_seconds = self._config.get_soft_deleted_ttl_seconds()
+        ttl_value = int(time.time()) + ttl_seconds if ttl_seconds is not None else None
+
+        # Update run META item
+        updates: dict[str, Any] = {
+            "lifecycle_stage": "deleted",
+            LSI1_SK: f"deleted#{run_id}",
+        }
+        if ttl_value is not None:
+            updates["ttl"] = ttl_value
+
+        self._table.update_item(pk=pk, sk=f"{SK_RUN_PREFIX}{run_id}", updates=updates)
+
+        # Set TTL on related items if enabled
+        if ttl_value is not None:
+            self._set_ttl_on_run_related_items(pk, run_id, ttl_value)
+
+    def _set_ttl_on_run_related_items(self, pk: str, run_id: str, ttl_value: int) -> None:
+        """Set TTL attribute on all items related to a run."""
+        # 1. Children: SK begins_with R#<run_id>#
+        children = self._table.query(pk=pk, sk_prefix=f"{SK_RUN_PREFIX}{run_id}#")
+        for child in children:
+            self._table.update_item(pk=pk, sk=child["SK"], updates={"ttl": ttl_value})
+
+        # 2. RANK items containing run_id
+        rank_items = self._table.query(pk=pk, sk_prefix=SK_RANK_PREFIX)
+        for item in rank_items:
+            if item.get("run_id") == run_id:
+                self._table.update_item(pk=pk, sk=item["SK"], updates={"ttl": ttl_value})
+
+        # 3. FTS_REV items: SK begins_with FTS_REV#R#<run_id>#
+        fts_rev_items = self._table.query(
+            pk=pk, sk_prefix=f"{SK_FTS_REV_PREFIX}{SK_RUN_PREFIX}{run_id}#"
         )
+        for item in fts_rev_items:
+            self._table.update_item(pk=pk, sk=item["SK"], updates={"ttl": ttl_value})
+            # Also update the corresponding forward FTS item
+            # FTS_REV SK pattern: FTS_REV#R#<run_id>#<fts_sk_suffix>
+            # The forward FTS SK contains the run_id
+            fwd_sk = item.get("fwd_sk")
+            if fwd_sk:
+                self._table.update_item(pk=pk, sk=fwd_sk, updates={"ttl": ttl_value})
+
+        # 4. FTS items that contain the run_id in SK (catch any missed by FTS_REV)
+        fts_items = self._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        for item in fts_items:
+            if run_id in item.get("SK", ""):
+                self._table.update_item(pk=pk, sk=item["SK"], updates={"ttl": ttl_value})
 
     def restore_run(self, run_id: str) -> None:
-        """Restore a soft-deleted run."""
+        """Restore a soft-deleted run and remove TTL from all related items."""
         experiment_id = self._resolve_run_experiment(run_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
 
+        # Update run META: restore lifecycle and remove TTL
         self._table.update_item(
-            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            pk=pk,
             sk=f"{SK_RUN_PREFIX}{run_id}",
             updates={
                 "lifecycle_stage": "active",
                 LSI1_SK: f"active#{run_id}",
             },
+            removes=["ttl"],
         )
+
+        # Remove TTL from all related items
+        self._remove_ttl_from_run_related_items(pk, run_id)
+
+    def _remove_ttl_from_run_related_items(self, pk: str, run_id: str) -> None:
+        """Remove TTL attribute from all items related to a run."""
+        # 1. Children: SK begins_with R#<run_id>#
+        children = self._table.query(pk=pk, sk_prefix=f"{SK_RUN_PREFIX}{run_id}#")
+        for child in children:
+            self._table.update_item(pk=pk, sk=child["SK"], removes=["ttl"])
+
+        # 2. RANK items containing run_id
+        rank_items = self._table.query(pk=pk, sk_prefix=SK_RANK_PREFIX)
+        for item in rank_items:
+            if item.get("run_id") == run_id:
+                self._table.update_item(pk=pk, sk=item["SK"], removes=["ttl"])
+
+        # 3. FTS_REV items: SK begins_with FTS_REV#R#<run_id>#
+        fts_rev_items = self._table.query(
+            pk=pk, sk_prefix=f"{SK_FTS_REV_PREFIX}{SK_RUN_PREFIX}{run_id}#"
+        )
+        for item in fts_rev_items:
+            self._table.update_item(pk=pk, sk=item["SK"], removes=["ttl"])
+            fwd_sk = item.get("fwd_sk")
+            if fwd_sk:
+                self._table.update_item(pk=pk, sk=fwd_sk, removes=["ttl"])
+
+        # 4. FTS items that contain the run_id in SK
+        fts_items = self._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        for item in fts_items:
+            if run_id in item.get("SK", ""):
+                self._table.update_item(pk=pk, sk=item["SK"], removes=["ttl"])
 
     def _search_runs(
         self,
