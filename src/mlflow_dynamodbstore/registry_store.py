@@ -23,6 +23,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_PK,
     GSI1_RUN_PREFIX,
     GSI1_SK,
+    GSI2_FTS_NAMES_PREFIX,
     GSI2_MODELS_PREFIX,
     GSI2_PK,
     GSI2_SK,
@@ -357,13 +358,183 @@ class DynamoDBRegistryStore(AbstractStore):
         order_by: list[str] | None = None,
         page_token: str | None = None,
     ) -> list[RegisteredModel]:
-        """Search registered models using GSI2."""
+        """Search registered models with filter and order_by support."""
+        from mlflow_dynamodbstore.dynamodb.search import (
+            _compare,
+            parse_experiment_filter,
+        )
+
+        predicates = parse_experiment_filter(filter_string)
+
+        name_pred = next(
+            (p for p in predicates if p.field_type == "attribute" and p.key == "name"),
+            None,
+        )
+        tag_preds = [p for p in predicates if p.field_type == "tag"]
+
+        if name_pred and name_pred.op == "=":
+            models = self._search_models_by_name_exact(name_pred.value)
+        elif name_pred and name_pred.op in ("LIKE", "ILIKE"):
+            models = self._search_models_by_name_like(name_pred.value, name_pred.op)
+        else:
+            models = self._search_models_by_gsi2()
+
+        # Apply tag filters
+        if tag_preds:
+            models = self._filter_models_by_tags(models, tag_preds, _compare)
+
+        # Apply order_by
+        if order_by:
+            models = self._sort_models(models, order_by)
+
+        if max_results:
+            models = models[:max_results]
+        return models
+
+    def _search_models_by_name_exact(self, name: str) -> list[RegisteredModel]:
+        """Look up a single model by exact name via GSI3."""
+        results = self._table.query(
+            pk=f"{GSI3_MODEL_NAME_PREFIX}{self._workspace}#{name}",
+            index_name="gsi3",
+            limit=1,
+        )
+        if not results:
+            return []
+
+        model_ulid = results[0][GSI3_SK]
+        item = self._table.get_item(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk=SK_MODEL_META,
+        )
+        if item is None:
+            return []
+
+        tags = self._get_model_tags(model_ulid)
+        return [_item_to_registered_model(item, tags)]
+
+    def _search_models_by_name_like(self, pattern: str, op: str) -> list[RegisteredModel]:
+        """Search models by name LIKE pattern using GSI5 or FTS."""
+        import fnmatch as _fnmatch
+
+        # Convert SQL LIKE pattern to fnmatch: % -> *, _ -> ?
+        fn_pattern = pattern.replace("%", "*").replace("_", "?")
+        if op == "ILIKE":
+            fn_pattern = fn_pattern.lower()
+
+        # Prefix-only: use GSI5 begins_with
+        if pattern.endswith("%") and "%" not in pattern[:-1]:
+            prefix = pattern[:-1]
+            items = self._table.query(
+                pk=f"{GSI5_MODEL_NAMES_PREFIX}{self._workspace}",
+                sk_prefix=prefix,
+                index_name="gsi5",
+            )
+            models: list[RegisteredModel] = []
+            for item in items:
+                model_name = item.get("name")
+                if model_name:
+                    model_ulid = item["PK"].replace(PK_MODEL_PREFIX, "")
+                    tags = self._get_model_tags(model_ulid)
+                    models.append(_item_to_registered_model(item, tags))
+            return models
+
+        # Contains pattern (%word%): use FTS via GSI2
+        if pattern.startswith("%") and pattern.endswith("%"):
+            search_term = pattern.strip("%")
+            return self._search_models_by_fts(search_term)
+
+        # General LIKE: fall back to GSI2 scan + Python filter
+        all_models = self._search_models_by_gsi2()
+        return [
+            m
+            for m in all_models
+            if _fnmatch.fnmatch(m.name.lower() if op == "ILIKE" else m.name, fn_pattern)
+        ]
+
+    def _search_models_by_fts(self, search_term: str) -> list[RegisteredModel]:
+        """Search models by FTS tokens via GSI2 cross-partition index."""
+        from mlflow_dynamodbstore.dynamodb.fts import tokenize_trigrams, tokenize_words
+
+        gsi2pk = f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}"
+
+        # Try word tokens first
+        word_tokens = tokenize_words(search_term)
+        if word_tokens:
+            model_ulid_sets: list[set[str]] = []
+            for token in word_tokens:
+                sk_prefix = f"W#{token}#M#"
+                fts_items = self._table.query(
+                    pk=gsi2pk,
+                    sk_prefix=sk_prefix,
+                    index_name="gsi2",
+                )
+                ids = set()
+                for item in fts_items:
+                    gsi2sk = item.get(GSI2_SK, "")
+                    # Pattern: W#<token>#M#<model_ulid>
+                    parts = gsi2sk.split("#")
+                    for i, part in enumerate(parts):
+                        if part == "M" and i + 1 < len(parts):
+                            ids.add(parts[i + 1])
+                            break
+                model_ulid_sets.append(ids)
+
+            if model_ulid_sets:
+                result_ids = model_ulid_sets[0]
+                for s in model_ulid_sets[1:]:
+                    result_ids &= s
+                if result_ids:
+                    return self._fetch_models_by_ulids(list(result_ids))
+
+        # Fallback to trigrams
+        trigram_tokens = tokenize_trigrams(search_term)
+        if trigram_tokens:
+            model_ulid_sets = []
+            for token in trigram_tokens:
+                sk_prefix = f"3#{token}#M#"
+                fts_items = self._table.query(
+                    pk=gsi2pk,
+                    sk_prefix=sk_prefix,
+                    index_name="gsi2",
+                )
+                ids = set()
+                for item in fts_items:
+                    gsi2sk = item.get(GSI2_SK, "")
+                    parts = gsi2sk.split("#")
+                    for i, part in enumerate(parts):
+                        if part == "M" and i + 1 < len(parts):
+                            ids.add(parts[i + 1])
+                            break
+                model_ulid_sets.append(ids)
+
+            if model_ulid_sets:
+                result_ids = model_ulid_sets[0]
+                for s in model_ulid_sets[1:]:
+                    result_ids &= s
+                if result_ids:
+                    return self._fetch_models_by_ulids(list(result_ids))
+
+        return []
+
+    def _fetch_models_by_ulids(self, model_ulids: list[str]) -> list[RegisteredModel]:
+        """Fetch registered models by their ULIDs."""
+        models: list[RegisteredModel] = []
+        for ulid in model_ulids:
+            item = self._table.get_item(
+                pk=f"{PK_MODEL_PREFIX}{ulid}",
+                sk=SK_MODEL_META,
+            )
+            if item is not None:
+                tags = self._get_model_tags(ulid)
+                models.append(_item_to_registered_model(item, tags))
+        return models
+
+    def _search_models_by_gsi2(self) -> list[RegisteredModel]:
+        """List all models via GSI2."""
         items = self._table.query(
             pk=f"{GSI2_MODELS_PREFIX}{self._workspace}",
             index_name="gsi2",
-            limit=max_results,
         )
-
         models: list[RegisteredModel] = []
         for item in items:
             model_name = item.get("name")
@@ -371,6 +542,60 @@ class DynamoDBRegistryStore(AbstractStore):
                 model_ulid = item["PK"].replace(PK_MODEL_PREFIX, "")
                 tags = self._get_model_tags(model_ulid)
                 models.append(_item_to_registered_model(item, tags))
+        return models
+
+    def _filter_models_by_tags(
+        self,
+        models: list[RegisteredModel],
+        tag_preds: list[Any],
+        compare_fn: Any,
+    ) -> list[RegisteredModel]:
+        """Filter models by tag predicates."""
+        filtered: list[RegisteredModel] = []
+        for model in models:
+            # Get tags as a dict
+            tag_dict: dict[str, str] = {}
+            if isinstance(model.tags, dict):
+                tag_dict = model.tags
+            else:
+                for t in model.tags:
+                    tag_dict[t.key] = t.value
+
+            match = True
+            for pred in tag_preds:
+                actual = tag_dict.get(pred.key)
+                if not compare_fn(actual, pred.op, pred.value):
+                    match = False
+                    break
+            if match:
+                filtered.append(model)
+        return filtered
+
+    def _sort_models(
+        self, models: list[RegisteredModel], order_by: list[str]
+    ) -> list[RegisteredModel]:
+        """Sort models by order_by tokens."""
+        if not order_by:
+            return models
+
+        # Parse the first order_by token
+        token = order_by[0].strip()
+        parts = token.rsplit(None, 1)
+        if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
+            key = parts[0].lower()
+            reverse = parts[1].upper() == "DESC"
+        else:
+            key = token.lower()
+            reverse = False
+
+        if key == "name":
+            models = sorted(models, key=lambda m: m.name, reverse=reverse)
+        elif key in ("last_updated_timestamp", "timestamp"):
+            models = sorted(
+                models,
+                key=lambda m: m.last_updated_timestamp or 0,
+                reverse=reverse,
+            )
 
         return models
 
@@ -560,28 +785,99 @@ class DynamoDBRegistryStore(AbstractStore):
         order_by: list[str] | None = None,
         page_token: str | None = None,
     ) -> list[ModelVersion]:
-        """Search model versions across all registered models."""
-        # Get all models in the workspace
+        """Search model versions with filter support."""
+        import re as _re
+
+        model_name: str | None = None
+        run_id_filter: str | None = None
+
+        if filter_string:
+            # Parse name = 'value'
+            name_match = _re.search(r"name\s*=\s*'([^']+)'", filter_string)
+            if name_match:
+                model_name = name_match.group(1)
+
+            # Parse run_id = 'value'
+            run_id_match = _re.search(r"run_id\s*=\s*'([^']+)'", filter_string)
+            if run_id_match:
+                run_id_filter = run_id_match.group(1)
+
+        if model_name:
+            # Targeted: get versions for a specific model
+            try:
+                model_ulid = self._resolve_model_ulid(model_name)
+            except MlflowException:
+                return []
+            versions = self._get_versions_for_model(model_ulid, model_name)
+        elif run_id_filter:
+            # Search by run_id via GSI1
+            versions = self._search_versions_by_run_id(run_id_filter)
+        else:
+            # Default: list all versions across all models
+            versions = self._list_all_versions()
+
+        # Apply run_id post-filter if name was also specified
+        if run_id_filter and model_name:
+            versions = [v for v in versions if v.run_id == run_id_filter]
+
+        if max_results:
+            versions = versions[:max_results]
+        return versions
+
+    def _get_versions_for_model(self, model_ulid: str, model_name: str) -> list[ModelVersion]:
+        """Get all versions for a specific model."""
+        pk = f"{PK_MODEL_PREFIX}{model_ulid}"
+        ver_items = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
+        versions: list[ModelVersion] = []
+        for vi in ver_items:
+            if SK_VERSION_TAG_SUFFIX in vi["SK"]:
+                continue
+            padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
+            tags = self._get_version_tags(model_ulid, padded)
+            versions.append(_item_to_model_version(vi, tags))
+        return versions
+
+    def _search_versions_by_run_id(self, run_id: str) -> list[ModelVersion]:
+        """Search model versions by run_id via GSI1."""
+        items = self._table.query(
+            pk=f"{GSI1_RUN_PREFIX}{run_id}",
+            sk_prefix="MV#",
+            index_name="gsi1",
+        )
+        versions: list[ModelVersion] = []
+        for item in items:
+            # GSI1 SK pattern: MV#<model_ulid>#<padded_version>
+            gsi1_sk = item.get(GSI1_SK, "")
+            parts = gsi1_sk.split("#")
+            if len(parts) >= 3:
+                model_ulid = parts[1]
+                padded = parts[2]
+                vi = self._table.get_item(
+                    pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+                    sk=f"{SK_VERSION_PREFIX}{padded}",
+                )
+                if vi is not None:
+                    tags = self._get_version_tags(model_ulid, padded)
+                    versions.append(_item_to_model_version(vi, tags))
+        return versions
+
+    def _list_all_versions(self) -> list[ModelVersion]:
+        """List all model versions across all models."""
         model_items = self._table.query(
             pk=f"{GSI2_MODELS_PREFIX}{self._workspace}",
             index_name="gsi2",
         )
-
         versions: list[ModelVersion] = []
         for model_item in model_items:
             model_ulid = model_item["PK"].replace(PK_MODEL_PREFIX, "")
             pk = f"{PK_MODEL_PREFIX}{model_ulid}"
             ver_items = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
             for vi in ver_items:
-                # Skip tag items
                 if SK_VERSION_TAG_SUFFIX in vi["SK"]:
                     continue
                 padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
                 tags = self._get_version_tags(model_ulid, padded)
                 versions.append(_item_to_model_version(vi, tags))
-
-        if max_results:
-            versions = versions[:max_results]
         return versions
 
     def get_latest_versions(self, name: str, stages: list[str] | None = None) -> list[ModelVersion]:

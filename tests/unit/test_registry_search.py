@@ -296,3 +296,113 @@ class TestModelNameRev:
         )
         assert name_rev is not None
         assert model_ulid in name_rev["gsi5sk"]
+
+
+class TestSearchRegisteredModels:
+    """Test search_registered_models with filter and order_by support."""
+
+    def test_search_no_filter(self, registry_store):
+        registry_store.create_registered_model("model1")
+        registry_store.create_registered_model("model2")
+        models = registry_store.search_registered_models()
+        assert len(models) >= 2
+
+    def test_search_by_name_equals(self, registry_store):
+        registry_store.create_registered_model("target-model")
+        registry_store.create_registered_model("other-model")
+        models = registry_store.search_registered_models(filter_string="name = 'target-model'")
+        assert len(models) == 1
+        assert models[0].name == "target-model"
+
+    def test_search_by_name_like_prefix(self, registry_store):
+        registry_store.create_registered_model("prod-model")
+        registry_store.create_registered_model("dev-model")
+        models = registry_store.search_registered_models(filter_string="name LIKE 'prod%'")
+        assert len(models) == 1
+        assert models[0].name == "prod-model"
+
+    def test_search_by_name_like_contains(self, registry_store):
+        registry_store.create_registered_model("my-pipeline-model")
+        registry_store.create_registered_model("other-job")
+        models = registry_store.search_registered_models(filter_string="name LIKE '%pipeline%'")
+        assert len(models) == 1
+        assert models[0].name == "my-pipeline-model"
+
+    def test_search_by_tag(self, registry_store):
+        registry_store.create_registered_model("model-a")
+        registry_store.set_registered_model_tag("model-a", RegisteredModelTag("env", "prod"))
+        registry_store.create_registered_model("model-b")
+        registry_store.set_registered_model_tag("model-b", RegisteredModelTag("env", "dev"))
+        models = registry_store.search_registered_models(filter_string="tag.env = 'prod'")
+        assert len(models) == 1
+        assert models[0].name == "model-a"
+
+    def test_search_order_by_name_asc(self, registry_store):
+        registry_store.create_registered_model("zebra-model")
+        registry_store.create_registered_model("alpha-model")
+        models = registry_store.search_registered_models(order_by=["name ASC"])
+        names = [m.name for m in models]
+        assert names == sorted(names)
+
+    def test_search_order_by_name_desc(self, registry_store):
+        registry_store.create_registered_model("alpha-model")
+        registry_store.create_registered_model("zebra-model")
+        models = registry_store.search_registered_models(order_by=["name DESC"])
+        names = [m.name for m in models]
+        assert names == sorted(names, reverse=True)
+
+    def test_search_max_results(self, registry_store):
+        for i in range(5):
+            registry_store.create_registered_model(f"model-{i}")
+        models = registry_store.search_registered_models(max_results=3)
+        assert len(models) == 3
+
+    def test_search_name_equals_not_found(self, registry_store):
+        registry_store.create_registered_model("existing-model")
+        models = registry_store.search_registered_models(filter_string="name = 'nonexistent'")
+        assert len(models) == 0
+
+
+class TestSearchModelVersions:
+    """Test search_model_versions with filter support."""
+
+    def test_search_by_model_name(self, registry_store):
+        registry_store.create_registered_model("model-a")
+        registry_store.create_model_version("model-a", source="s3://a")
+        registry_store.create_registered_model("model-b")
+        registry_store.create_model_version("model-b", source="s3://b")
+        versions = registry_store.search_model_versions(filter_string="name = 'model-a'")
+        assert len(versions) == 1
+        assert versions[0].name == "model-a"
+
+    def test_search_all_versions(self, registry_store):
+        registry_store.create_registered_model("model-c")
+        registry_store.create_model_version("model-c", source="s3://c")
+        registry_store.create_model_version("model-c", source="s3://c2")
+        versions = registry_store.search_model_versions()
+        assert len(versions) >= 2
+
+    def test_search_versions_max_results(self, registry_store):
+        registry_store.create_registered_model("model-d")
+        for i in range(5):
+            registry_store.create_model_version("model-d", source=f"s3://d{i}")
+        versions = registry_store.search_model_versions(max_results=3)
+        assert len(versions) == 3
+
+    def test_search_versions_by_name_multiple_versions(self, registry_store):
+        registry_store.create_registered_model("model-e")
+        registry_store.create_model_version("model-e", source="s3://e1")
+        registry_store.create_model_version("model-e", source="s3://e2")
+        registry_store.create_registered_model("model-f")
+        registry_store.create_model_version("model-f", source="s3://f1")
+        versions = registry_store.search_model_versions(filter_string="name = 'model-e'")
+        assert len(versions) == 2
+        assert all(v.name == "model-e" for v in versions)
+
+    def test_search_versions_by_run_id(self, registry_store):
+        registry_store.create_registered_model("model-g")
+        registry_store.create_model_version("model-g", source="s3://g1", run_id="run-abc")
+        registry_store.create_model_version("model-g", source="s3://g2", run_id="run-def")
+        versions = registry_store.search_model_versions(filter_string="run_id = 'run-abc'")
+        assert len(versions) == 1
+        assert versions[0].run_id == "run-abc"
