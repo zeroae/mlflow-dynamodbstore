@@ -58,6 +58,11 @@ def _rev(s: str) -> str:
     return s[::-1]
 
 
+def _int_or_none(value: Any) -> int | None:
+    """Convert a value to int, or return None if the value is None."""
+    return int(value) if value is not None else None
+
+
 def _item_to_registered_model(
     item: dict[str, Any],
     tags: list[RegisteredModelTag] | None = None,
@@ -65,8 +70,8 @@ def _item_to_registered_model(
     """Convert a DynamoDB item to an MLflow RegisteredModel entity."""
     return RegisteredModel(
         name=item["name"],
-        creation_timestamp=item.get("creation_timestamp"),
-        last_updated_timestamp=item.get("last_updated_timestamp"),
+        creation_timestamp=_int_or_none(item.get("creation_timestamp")),
+        last_updated_timestamp=_int_or_none(item.get("last_updated_timestamp")),
         description=item.get("description", ""),
         tags=tags or [],
     )
@@ -85,8 +90,8 @@ def _item_to_model_version(
     return ModelVersion(
         name=item["name"],
         version=str(int(item["version"])),
-        creation_timestamp=item.get("creation_timestamp", 0),
-        last_updated_timestamp=item.get("last_updated_timestamp"),
+        creation_timestamp=_int_or_none(item.get("creation_timestamp")) or 0,
+        last_updated_timestamp=_int_or_none(item.get("last_updated_timestamp")),
         description=item.get("description", ""),
         source=item.get("source", ""),
         run_id=item.get("run_id", ""),

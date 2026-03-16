@@ -97,6 +97,11 @@ def _rev(s: str) -> str:
     return s[::-1]
 
 
+def _int_or_none(value: Any) -> int | None:
+    """Convert a value to int, or return None if the value is None."""
+    return int(value) if value is not None else None
+
+
 def _item_to_experiment(
     item: dict[str, Any], tags: list[ExperimentTag] | None = None
 ) -> Experiment:
@@ -107,8 +112,8 @@ def _item_to_experiment(
         artifact_location=item.get("artifact_location", ""),
         lifecycle_stage=item.get("lifecycle_stage", "active"),
         tags=tags or [],
-        creation_time=item.get("creation_time"),
-        last_update_time=item.get("last_update_time"),
+        creation_time=_int_or_none(item.get("creation_time")),
+        last_update_time=_int_or_none(item.get("last_update_time")),
     )
 
 
@@ -119,8 +124,8 @@ def _item_to_run_info(item: dict[str, Any]) -> RunInfo:
         experiment_id=item["experiment_id"],
         user_id=item.get("user_id", ""),
         status=item.get("status", "RUNNING"),
-        start_time=item.get("start_time"),
-        end_time=item.get("end_time"),
+        start_time=_int_or_none(item.get("start_time")),
+        end_time=_int_or_none(item.get("end_time")),
         lifecycle_stage=item.get("lifecycle_stage", "active"),
         artifact_uri=item.get("artifact_uri", ""),
         run_name=item.get("run_name", ""),
