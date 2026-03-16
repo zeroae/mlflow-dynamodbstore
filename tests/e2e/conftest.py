@@ -1,18 +1,18 @@
 """E2E test fixtures: mlflow server over HTTP.
 
-Supports three modes:
-1. MLFLOW_TRACKING_URI set: uses existing server (fastest for iteration)
-2. Default: starts moto server + mlflow subprocess (no AWS credentials needed)
-3. E2E_USE_AWS=1: starts mlflow subprocess against real AWS DynamoDB
+Backend selection:
+1. MLFLOW_TRACKING_URI set → uses existing server (fastest for iteration)
+2. AWS credentials available (AWS_PROFILE or env vars) → real AWS DynamoDB
+3. No credentials → moto server (no AWS needed, default in CI)
 
 Local usage (pre-started server):
     MLFLOW_TRACKING_URI=http://127.0.0.1:15123 uv run pytest tests/e2e/ -m e2e -v
 
-Local usage (moto, no AWS needed):
-    uv run pytest tests/e2e/ -m e2e -v
+Local usage (real AWS, auto-detected from AWS_PROFILE):
+    AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run pytest tests/e2e/ -m e2e -v
 
-Local usage (real AWS):
-    E2E_USE_AWS=1 AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run pytest tests/e2e/ -m e2e -v
+Local usage (moto fallback, no AWS):
+    uv run pytest tests/e2e/ -m e2e -v
 """
 
 import os
@@ -50,13 +50,26 @@ def _wait_for_server(url: str, timeout: int = 180) -> None:
     raise RuntimeError(f"Server at {url} did not become ready within {timeout}s")
 
 
+def _has_aws_credentials() -> bool:
+    """Check if real AWS credentials are available."""
+    import boto3
+
+    try:
+        sts = boto3.client("sts", region_name=_REGION)
+        identity = sts.get_caller_identity()
+        print(f"\nAWS identity: {identity['Arn']}")
+        return True
+    except Exception:
+        return False
+
+
 @pytest.fixture(scope="session")
 def mlflow_server():
     """Return tracking URI for an mlflow server.
 
     If MLFLOW_TRACKING_URI is set, uses the existing server.
-    If E2E_USE_AWS is set, starts mlflow against real AWS.
-    Otherwise, starts moto server + mlflow subprocess.
+    If AWS credentials are available, uses real AWS DynamoDB.
+    Otherwise, falls back to moto server.
     """
     existing_uri = os.environ.get("MLFLOW_TRACKING_URI")
     if existing_uri:
@@ -68,12 +81,19 @@ def mlflow_server():
         yield existing_uri
         return
 
-    use_aws = os.environ.get("E2E_USE_AWS", "").strip() == "1"
-
-    if use_aws:
+    if _has_aws_credentials():
         yield from _start_mlflow_aws()
     else:
         yield from _start_mlflow_moto()
+
+
+def pytest_report_header():
+    """Show which backend will be used in the test header."""
+    if os.environ.get("MLFLOW_TRACKING_URI"):
+        return [f"e2e backend: existing server at {os.environ['MLFLOW_TRACKING_URI']}"]
+    if _has_aws_credentials():
+        return ["e2e backend: real AWS DynamoDB"]
+    return ["e2e backend: moto server"]
 
 
 def _start_mlflow_moto():
@@ -147,16 +167,6 @@ def _start_mlflow_moto():
 
 def _start_mlflow_aws():
     """Start mlflow subprocess against real AWS DynamoDB."""
-    import boto3
-
-    # Verify credentials
-    sts = boto3.client("sts", region_name=_REGION)
-    try:
-        identity = sts.get_caller_identity()
-        print(f"\nAWS identity: {identity['Arn']}")
-    except Exception as exc:
-        pytest.skip(f"AWS credentials not available: {exc}")
-
     mlflow_port = _find_free_port()
     store_uri = f"dynamodb://{_REGION}/{_TABLE_NAME}"
 
