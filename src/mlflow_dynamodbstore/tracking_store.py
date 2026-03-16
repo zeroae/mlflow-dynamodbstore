@@ -1663,8 +1663,12 @@ class DynamoDBTrackingStore(AbstractStore):
         # Build the assessment item storing the full serialized assessment dict
         assess_dict = assessment.to_dictionary()
         assess_dict["assessment_id"] = assessment_id
-        assess_dict["create_time"] = assess_dict.get("create_time") or now_ms
-        assess_dict["last_update_time"] = assess_dict.get("last_update_time") or now_ms
+        assess_dict["create_time"] = assess_dict.get(
+            "create_time"
+        ) or milliseconds_to_proto_timestamp(now_ms)
+        assess_dict["last_update_time"] = assess_dict.get(
+            "last_update_time"
+        ) or milliseconds_to_proto_timestamp(now_ms)
 
         sk = f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#{assessment_id}"
         item: dict[str, Any] = {
