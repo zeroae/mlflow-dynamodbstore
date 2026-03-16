@@ -36,6 +36,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_RUN_PREFIX,
     GSI1_SK,
     GSI2_EXPERIMENTS_PREFIX,
+    GSI2_FTS_NAMES_PREFIX,
     GSI2_PK,
     GSI2_SK,
     GSI3_EXP_NAME_PREFIX,
@@ -322,8 +323,6 @@ class DynamoDBTrackingStore(AbstractStore):
 
         # Write new FTS items for added tokens
         if tokens_to_add:
-            from mlflow_dynamodbstore.dynamodb.schema import GSI2_FTS_NAMES_PREFIX, GSI2_PK, GSI2_SK
-
             new_fts_items: list[dict[str, Any]] = []
             for lvl, tok in tokens_to_add:
                 forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#E#{experiment_id}"
@@ -333,9 +332,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 new_fts_items.append(
                     {"PK": pk, "SK": forward_sk, GSI2_PK: gsi2pk_val, GSI2_SK: gsi2sk_val}
                 )
-                new_fts_items.append(
-                    {"PK": pk, "SK": reverse_sk, GSI2_PK: gsi2pk_val, GSI2_SK: gsi2sk_val}
-                )
+                new_fts_items.append({"PK": pk, "SK": reverse_sk})
             self._table.batch_write(new_fts_items)
 
         # Invalidate cache
@@ -503,6 +500,18 @@ class DynamoDBTrackingStore(AbstractStore):
         # Cache run_id -> experiment_id
         self._cache.put("run_exp", run_id, experiment_id)
 
+        # Write FTS items for run name
+        if run_name:
+            run_fts = fts_items_for_text(
+                pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+                entity_type="R",
+                entity_id=run_id,
+                field=None,
+                text=run_name,
+            )
+            if run_fts:
+                self._table.batch_write(run_fts)
+
         return self._build_run(item, tags)
 
     def get_run(self, run_id: str) -> Run:
@@ -574,6 +583,21 @@ class DynamoDBTrackingStore(AbstractStore):
         )
 
         assert updated_item is not None  # update always returns ALL_NEW
+
+        # Update FTS for run name if it changed
+        old_run_name = current.get("run_name", "")
+        if run_name and run_name != old_run_name:
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            self._update_fts_for_rename(
+                pk=pk,
+                entity_type="R",
+                entity_id=run_id,
+                field=None,
+                old_text=old_run_name or None,
+                new_text=run_name,
+                workspace=None,
+            )
+
         return _item_to_run_info(updated_item)
 
     def delete_run(self, run_id: str) -> None:
@@ -705,6 +729,17 @@ class DynamoDBTrackingStore(AbstractStore):
         self._table.put_item(item)
         if self._config.should_denormalize(experiment_id, tag.key):
             self._denormalize_tag(pk, f"{SK_RUN_PREFIX}{run_id}", tag.key, tag.value)
+        # Write FTS items for tag value if configured
+        if self._config.should_trigram("run_tag_value") and tag.value:
+            tag_fts = fts_items_for_text(
+                pk=pk,
+                entity_type="R",
+                entity_id=run_id,
+                field=tag.key,
+                text=tag.value,
+            )
+            if tag_fts:
+                self._table.batch_write(tag_fts)
 
     def _build_run(self, item: dict[str, Any], tags: list[RunTag] | None = None) -> Run:
         """Build a Run entity from an item and optional in-memory tags."""
@@ -732,6 +767,75 @@ class DynamoDBTrackingStore(AbstractStore):
             UpdateExpression="REMOVE #tags.#k",
             ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
         )
+
+    def _delete_fts_for_entity_field(
+        self,
+        pk: str,
+        entity_type: str,
+        entity_id: str,
+        field: str | None,
+    ) -> None:
+        """Delete all FTS items for a given entity + field (e.g. when a tag is deleted)."""
+        field_suffix = f"#{field}" if field else ""
+        entity_prefix = f"{entity_type}#{entity_id}{field_suffix}"
+        rev_prefix = f"{SK_FTS_REV_PREFIX}{entity_prefix}#"
+        rev_items = self._table.query(pk=pk, sk_prefix=rev_prefix)
+        for rev_item in rev_items:
+            rev_sk = rev_item["SK"]
+            suffix = rev_sk[len(SK_FTS_REV_PREFIX) + len(entity_prefix) + 1 :]
+            parts = suffix.split("#", 1)
+            if len(parts) == 2:
+                lvl, tok = parts[0], parts[1]
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                self._table.delete_item(pk=pk, sk=forward_sk)
+            self._table.delete_item(pk=pk, sk=rev_sk)
+
+    def _update_fts_for_rename(
+        self,
+        pk: str,
+        entity_type: str,
+        entity_id: str,
+        field: str | None,
+        old_text: str | None,
+        new_text: str,
+        workspace: str | None,
+    ) -> None:
+        """Compute FTS diff and apply: delete removed token items, write new token items."""
+        levels = ("W", "3")
+        tokens_to_add, tokens_to_remove = fts_diff(old_text, new_text, levels)
+        field_suffix = f"#{field}" if field else ""
+        entity_prefix = f"{entity_type}#{entity_id}{field_suffix}"
+
+        # Delete removed FTS items (both forward and reverse)
+        if tokens_to_remove:
+            rev_prefix = f"{SK_FTS_REV_PREFIX}{entity_prefix}#"
+            rev_items = self._table.query(pk=pk, sk_prefix=rev_prefix)
+            for rev_item in rev_items:
+                rev_sk = rev_item["SK"]
+                # rev_sk: FTS_REV#<entity_type>#<entity_id>[#<field>]#<level>#<token>
+                suffix = rev_sk[len(SK_FTS_REV_PREFIX) + len(entity_prefix) + 1 :]
+                parts = suffix.split("#", 1)
+                if len(parts) == 2:
+                    lvl, tok = parts[0], parts[1]
+                    if (lvl, tok) in tokens_to_remove:
+                        forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                        self._table.delete_item(pk=pk, sk=forward_sk)
+                        self._table.delete_item(pk=pk, sk=rev_sk)
+
+        # Write new FTS items for added tokens
+        if tokens_to_add:
+            add_gsi2 = entity_type in ("E", "M") and workspace is not None
+            new_fts_items: list[dict[str, Any]] = []
+            for lvl, tok in tokens_to_add:
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
+                forward: dict[str, Any] = {"PK": pk, "SK": forward_sk}
+                if add_gsi2:
+                    forward[GSI2_PK] = f"{GSI2_FTS_NAMES_PREFIX}{workspace}"
+                    forward[GSI2_SK] = f"{lvl}#{tok}#{entity_prefix}"
+                new_fts_items.append(forward)
+                new_fts_items.append({"PK": pk, "SK": reverse_sk})
+            self._table.batch_write(new_fts_items)
 
     def log_batch(
         self,
@@ -820,6 +924,23 @@ class DynamoDBTrackingStore(AbstractStore):
         if items:
             self._table.batch_write(items)
 
+        # Write FTS items for param values if configured
+        if self._config.should_trigram("run_param_value"):
+            fts_param_items: list[dict[str, Any]] = []
+            for param in params:
+                if param.value:
+                    fts_param_items.extend(
+                        fts_items_for_text(
+                            pk=pk,
+                            entity_type="R",
+                            entity_id=run_id,
+                            field=param.key,
+                            text=param.value,
+                        )
+                    )
+            if fts_param_items:
+                self._table.batch_write(fts_param_items)
+
         # Write tags individually (uses put_item)
         for tag in tags:
             self._write_run_tag(experiment_id, run_id, tag)
@@ -865,6 +986,9 @@ class DynamoDBTrackingStore(AbstractStore):
         self._table.delete_item(pk=pk, sk=sk)
         if self._config.should_denormalize(experiment_id, key):
             self._remove_denormalized_tag(pk, f"{SK_RUN_PREFIX}{run_id}", key)
+        # Remove FTS items for tag value if FTS was configured
+        if self._config.should_trigram("run_tag_value"):
+            self._delete_fts_for_entity_field(pk=pk, entity_type="R", entity_id=run_id, field=key)
 
     def log_inputs(
         self,
