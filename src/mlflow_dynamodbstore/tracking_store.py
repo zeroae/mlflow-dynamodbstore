@@ -71,7 +71,6 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_RUN_PREFIX,
     SK_TAG_PREFIX,
 )
-from mlflow_dynamodbstore.dynamodb.search import FilterPredicate, _compare, parse_experiment_filter
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
 from mlflow_dynamodbstore.ids import generate_ulid, ulid_from_timestamp
@@ -384,6 +383,8 @@ class DynamoDBTrackingStore(AbstractStore):
         page_token: str | None = None,
     ) -> list[Experiment]:
         """Search experiments with filter and order_by support."""
+        from mlflow_dynamodbstore.dynamodb.search import parse_experiment_filter
+
         predicates = parse_experiment_filter(filter_string)
 
         # Classify predicates
@@ -591,9 +592,11 @@ class DynamoDBTrackingStore(AbstractStore):
         return experiments
 
     def _filter_experiments_by_tags(
-        self, experiments: list[Experiment], tag_preds: list[FilterPredicate]
+        self, experiments: list[Experiment], tag_preds: list[Any]
     ) -> list[Experiment]:
         """Post-filter experiments by tag predicates."""
+        from mlflow_dynamodbstore.dynamodb.search import _compare
+
         filtered: list[Experiment] = []
         for exp in experiments:
             # Experiment.tags is a dict {key: value}
