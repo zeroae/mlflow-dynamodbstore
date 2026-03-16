@@ -21,7 +21,11 @@ dependencies = [
     "boto3",
     "python-ulid>=3.0.0",
     "snowballstemmer",
+    "click>=8.0.0",
 ]
+
+[project.scripts]
+mlflow-dynamodbstore = "mlflow_dynamodbstore.cli:cli"
 
 [project.entry-points."mlflow.tracking_store"]
 dynamodb = "mlflow_dynamodbstore.tracking_store:DynamoDBTrackingStore"
