@@ -2,10 +2,11 @@ name: Tests
 
 on:
   push:
-    branches: [main, 'release/v*']
+    branches: [main, 'release/v*', 'release/[0-9]*']
+    # No paths filter - run on all pushes to ensure workflow_run always triggers
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main, 'release/v*']
+    branches: [main, 'release/v*', 'release/[0-9]*']
     paths: ['src/**', 'tests/**', 'pyproject.toml', 'uv.lock']
   workflow_dispatch:
 
@@ -30,7 +31,24 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
       - name: Run unit tests
-        run: uv run pytest tests/unit/ -m unit --cov=mlflow_dynamodbstore --cov-report=xml -v
+        run: uv run pytest tests/unit/ -m unit --cov=mlflow_dynamodbstore --cov-report=xml --junitxml=junit.xml -o junit_family=legacy -v
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        if: matrix.python-version == '3.12'
+        with:
+          files: coverage.xml
+          flags: unit
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+      - name: Upload test results to Codecov
+        if: "!cancelled() && matrix.python-version == '3.12'"
+        uses: codecov/codecov-action@v5
+        with:
+          files: junit.xml
+          flags: unit
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          fail_ci_if_error: false
 
   integration:
     needs: unit
@@ -43,7 +61,23 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
       - name: Run integration tests
-        run: uv run pytest tests/integration/ -m integration --cov=mlflow_dynamodbstore --cov-report=xml -v
+        run: uv run pytest tests/integration/ -m integration --cov=mlflow_dynamodbstore --cov-report=xml --junitxml=junit.xml -o junit_family=legacy -v
+      - name: Upload integration coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: integration
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+      - name: Upload integration test results to Codecov
+        if: "!cancelled()"
+        uses: codecov/codecov-action@v5
+        with:
+          files: junit.xml
+          flags: integration
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          fail_ci_if_error: false
 
   compatibility:
     needs: unit
@@ -57,4 +91,20 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
       - name: Run compatibility tests
-        run: uv run pytest tests/compatibility/ -m compatibility -v
+        run: uv run pytest tests/compatibility/ -m compatibility --cov=mlflow_dynamodbstore --cov-report=xml --junitxml=junit.xml -o junit_family=legacy -v
+      - name: Upload compatibility coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: compatibility
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+      - name: Upload compatibility test results to Codecov
+        if: "!cancelled()"
+        uses: codecov/codecov-action@v5
+        with:
+          files: junit.xml
+          flags: compatibility
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          fail_ci_if_error: false
