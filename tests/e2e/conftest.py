@@ -165,8 +165,31 @@ def _start_mlflow_moto():
     moto_server.stop()
 
 
+def _delete_stack(table_name: str, region: str) -> None:
+    """Delete the CloudFormation stack and wait for completion."""
+    import boto3
+
+    from mlflow_dynamodbstore.dynamodb.provisioner import get_stack_name
+
+    cfn = boto3.client("cloudformation", region_name=region)
+    stack_name = get_stack_name(table_name)
+    print(f"\nDeleting CloudFormation stack: {stack_name}")
+    try:
+        cfn.delete_stack(StackName=stack_name)
+        cfn.get_waiter("stack_delete_complete").wait(
+            StackName=stack_name,
+            WaiterConfig={"Delay": 5, "MaxAttempts": 120},
+        )
+        print(f"Stack {stack_name} deleted.")
+    except Exception as exc:
+        print(f"Warning: failed to delete stack {stack_name}: {exc}")
+
+
 def _start_mlflow_aws():
-    """Start mlflow subprocess against real AWS DynamoDB."""
+    """Start mlflow subprocess against real AWS DynamoDB.
+
+    Deletes the CloudFormation stack on teardown.
+    """
     mlflow_port = _find_free_port()
     store_uri = f"dynamodb://{_REGION}/{_TABLE_NAME}"
 
@@ -205,6 +228,7 @@ def _start_mlflow_aws():
     except RuntimeError:
         proc.kill()
         log_file.close()
+        _delete_stack(_TABLE_NAME, _REGION)
         with open(_SERVER_LOG) as f:
             raise RuntimeError(f"MLflow server failed to start.\nLog:\n{f.read()}")
 
@@ -217,6 +241,8 @@ def _start_mlflow_aws():
         proc.kill()
         proc.wait()
     log_file.close()
+
+    _delete_stack(_TABLE_NAME, _REGION)
 
 
 @pytest.fixture(scope="session")
