@@ -92,3 +92,6 @@ uv.lock
 
 # Generated version file
 src/mlflow_dynamodbstore/_version.py
+
+# Git worktrees
+.worktrees/
