@@ -3,10 +3,13 @@ from __future__ import annotations
 import fnmatch
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mlflow.entities import ViewType
 from mlflow.utils.search_utils import SearchExperimentsUtils, SearchUtils
+
+if TYPE_CHECKING:
+    from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 
 # MLflow internally uses 'parameter' for the param field type; we normalize to 'param'.
 _TYPE_MAP: dict[str, str] = {
@@ -277,6 +280,368 @@ def plan_run_query(
         filter_expressions=filter_expressions,
         post_filters=post_filters,
     )
+
+
+def _compare(actual: Any, op: str, expected: Any) -> bool:
+    """Evaluate a single comparison predicate."""
+    if actual is None:
+        return op in ("IS NULL", "!=", "NOT IN")
+
+    if op == "=":
+        return bool(actual == expected)
+    if op == "!=":
+        return bool(actual != expected)
+    if op == ">":
+        return bool(actual > expected)
+    if op == ">=":
+        return bool(actual >= expected)
+    if op == "<":
+        return bool(actual < expected)
+    if op == "<=":
+        return bool(actual <= expected)
+    if op == "LIKE":
+        # Convert SQL LIKE to fnmatch: % -> * , _ -> ?
+        pattern = str(expected).replace("%", "*").replace("_", "?")
+        return fnmatch.fnmatch(str(actual), pattern)
+    if op == "ILIKE":
+        pattern = str(expected).lower().replace("%", "*").replace("_", "?")
+        return fnmatch.fnmatch(str(actual).lower(), pattern)
+    if op == "IN":
+        return actual in expected
+    if op == "NOT IN":
+        return actual not in expected
+    if op == "IS NULL":
+        return actual is None
+    if op == "IS NOT NULL":
+        return actual is not None
+    return False
+
+
+def _apply_attribute_filter(item: dict[str, Any], pred: FilterPredicate) -> bool:
+    """Check an attribute-level predicate against a META item."""
+    return _compare(item.get(pred.key), pred.op, pred.value)
+
+
+def _apply_denormalized_tag_filters(
+    item: dict[str, Any],
+    filter_expressions: list[str],
+    predicates: list[FilterPredicate],
+) -> bool:
+    """Apply denormalized tag filter expressions as Python post-filters.
+
+    Matches filter_expression entries against tag predicates to determine
+    which tag key/value to check on the item's embedded ``tags`` map.
+    """
+    if not filter_expressions:
+        return True
+
+    tags = item.get("tags", {})
+    # Build a lookup of denormalized tag predicates for matching
+    tag_preds = [p for p in predicates if p.field_type == "tag"]
+
+    for fe in filter_expressions:
+        # filter_expressions look like: "tags.#mlflow_user = :mlflow_userv"
+        # Find the matching tag predicate by checking if the safe key appears in the FE
+        matched = False
+        for pred in tag_preds:
+            safe_key = pred.key.replace(".", "_").replace("-", "_")
+            if f"#{safe_key}" in fe:
+                actual_value = tags.get(pred.key)
+                if not _compare(actual_value, pred.op, pred.value):
+                    return False
+                matched = True
+                break
+        if not matched:
+            # If we can't find a matching predicate, skip this FE
+            pass
+    return True
+
+
+def _apply_post_filter(
+    table: DynamoDBTable,
+    pk: str,
+    run_id: str,
+    item: dict[str, Any],
+    pred: FilterPredicate,
+) -> bool:
+    """Apply a single post-filter predicate. May require sub-item lookups."""
+    from mlflow_dynamodbstore.dynamodb.schema import (
+        SK_METRIC_PREFIX,
+        SK_PARAM_PREFIX,
+        SK_RUN_PREFIX,
+        SK_TAG_PREFIX,
+    )
+
+    if pred.field_type == "attribute":
+        return _apply_attribute_filter(item, pred)
+
+    # For tag, param, metric: look up the sub-item
+    if pred.field_type == "tag":
+        sk = f"{SK_RUN_PREFIX}{run_id}{SK_TAG_PREFIX}{pred.key}"
+    elif pred.field_type == "param":
+        sk = f"{SK_RUN_PREFIX}{run_id}{SK_PARAM_PREFIX}{pred.key}"
+    elif pred.field_type == "metric":
+        sk = f"{SK_RUN_PREFIX}{run_id}{SK_METRIC_PREFIX}{pred.key}"
+    else:
+        return True  # Unknown type, don't filter
+
+    sub_item = table.get_item(pk, sk)
+    if sub_item is None:
+        # No sub-item means null value
+        return _compare(None, pred.op, pred.value)
+
+    actual = sub_item.get("value")
+    # For metrics, coerce to float for comparison
+    if pred.field_type == "metric" and actual is not None:
+        try:
+            actual = float(actual)
+        except (ValueError, TypeError):
+            pass
+    return _compare(actual, pred.op, pred.value)
+
+
+def _fetch_meta_items(
+    table: DynamoDBTable,
+    pk: str,
+    run_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Fetch run META items by run_id, preserving order."""
+    from mlflow_dynamodbstore.dynamodb.schema import SK_RUN_PREFIX
+
+    items: list[dict[str, Any]] = []
+    for run_id in run_ids:
+        item = table.get_item(pk, f"{SK_RUN_PREFIX}{run_id}")
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def execute_query(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+    max_results: int,
+    page_token: str | None = None,
+    predicates: list[FilterPredicate] | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Execute a DynamoDB query based on a QueryPlan.
+
+    Args:
+        table: DynamoDBTable instance.
+        plan: The QueryPlan describing the execution strategy.
+        pk: The partition key (e.g. ``"EXP#01JQ"``).
+        max_results: Maximum number of run META items to return.
+        page_token: Opaque pagination token from a previous call.
+        predicates: Full list of filter predicates (used for denormalized
+            tag matching against filter_expressions).
+
+    Returns:
+        A tuple ``(items, next_page_token)`` where *items* are run META
+        item dicts and *next_page_token* is ``None`` when there are no
+        more results.
+    """
+    from mlflow_dynamodbstore.dynamodb.pagination import (
+        decode_page_token,
+        encode_page_token,
+    )
+
+    predicates = predicates or []
+    token_data = decode_page_token(page_token)
+    offset = token_data.get("offset", 0) if token_data else 0
+
+    if plan.strategy == "index":
+        items = _execute_index(table, plan, pk, offset, max_results, predicates)
+    elif plan.strategy == "rank":
+        items = _execute_rank(table, plan, pk)
+    elif plan.strategy == "dlink":
+        items = _execute_dlink(table, plan, pk, predicates)
+    elif plan.strategy == "fts":
+        items = _execute_fts(table, plan, pk)
+    else:
+        items = []
+
+    # Apply post-filters
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        run_id = item.get("run_id", "")
+        if all(_apply_post_filter(table, pk, run_id, item, pred) for pred in plan.post_filters):
+            filtered.append(item)
+
+    # Pagination: simple offset-based
+    page = filtered[offset : offset + max_results]
+    has_more = len(filtered) > offset + max_results
+    next_token: str | None = None
+    if has_more:
+        next_token = encode_page_token({"offset": offset + max_results})
+
+    return page, next_token
+
+
+def _execute_index(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+    offset: int,
+    max_results: int,
+    predicates: list[FilterPredicate],
+) -> list[dict[str, Any]]:
+    """Execute an index-based query strategy."""
+    # Fetch more than needed to account for filtering
+    fetch_limit = offset + max_results * 2 if plan.filter_expressions else None
+    items = table.query(
+        pk=pk,
+        sk_prefix=plan.sk_prefix,
+        index_name=plan.index,
+        scan_forward=plan.scan_forward,
+        limit=fetch_limit,
+    )
+
+    # Apply denormalized tag filters
+    if plan.filter_expressions:
+        items = [
+            item
+            for item in items
+            if _apply_denormalized_tag_filters(item, plan.filter_expressions, predicates)
+        ]
+
+    return items
+
+
+def _execute_rank(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+) -> list[dict[str, Any]]:
+    """Execute a rank-based query strategy."""
+    from mlflow_dynamodbstore.dynamodb.schema import SK_RANK_PREFIX
+
+    # Query RANK items: RANK#m#<key># for metrics, RANK#p#<key># for params
+    # Try metrics first, then params
+    for type_prefix in ("m", "p"):
+        sk_prefix = f"{SK_RANK_PREFIX}{type_prefix}#{plan.rank_key}#"
+        rank_items = table.query(
+            pk=pk,
+            sk_prefix=sk_prefix,
+            scan_forward=plan.scan_forward,
+        )
+        if rank_items:
+            break
+    else:
+        return []
+
+    # Extract run_ids from RANK items (preserving order)
+    run_ids = [item["run_id"] for item in rank_items if "run_id" in item]
+    return _fetch_meta_items(table, pk, run_ids)
+
+
+def _execute_dlink(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+    predicates: list[FilterPredicate],
+) -> list[dict[str, Any]]:
+    """Execute a dataset-link query strategy."""
+    from mlflow_dynamodbstore.dynamodb.schema import SK_DLINK_PREFIX
+
+    # Find the dataset predicate to build the SK prefix
+    ds_name = None
+    ds_digest = None
+    for pred in predicates:
+        if pred.field_type == "dataset":
+            if pred.key == "name":
+                ds_name = pred.value
+            elif pred.key == "digest":
+                ds_digest = pred.value
+
+    # Build SK prefix from available dataset info
+    if ds_name and ds_digest:
+        sk_prefix = f"{SK_DLINK_PREFIX}{ds_name}#{ds_digest}#"
+    elif ds_name:
+        sk_prefix = f"{SK_DLINK_PREFIX}{ds_name}#"
+    else:
+        sk_prefix = SK_DLINK_PREFIX
+
+    dlink_items = table.query(pk=pk, sk_prefix=sk_prefix, scan_forward=plan.scan_forward)
+
+    # Extract run_ids from DLINK items
+    run_ids = [item.get("run_id", "") for item in dlink_items if item.get("run_id")]
+    return _fetch_meta_items(table, pk, run_ids)
+
+
+def _execute_fts(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+) -> list[dict[str, Any]]:
+    """Execute a full-text search query strategy."""
+    from mlflow_dynamodbstore.dynamodb.fts import tokenize_trigrams, tokenize_words
+    from mlflow_dynamodbstore.dynamodb.schema import SK_FTS_PREFIX
+
+    if not plan.fts_query:
+        return []
+
+    # Tokenize with word stemmer
+    word_tokens = tokenize_words(plan.fts_query)
+
+    if word_tokens:
+        # For each word token, query FTS items and collect entity IDs
+        entity_id_sets: list[set[str]] = []
+        for token in word_tokens:
+            sk_prefix = f"{SK_FTS_PREFIX}W#{token}#R#"
+            fts_items = table.query(pk=pk, sk_prefix=sk_prefix)
+            # Extract entity_id (run_id) from the SK pattern:
+            # FTS#W#<token>#R#<run_id>
+            ids = set()
+            for item in fts_items:
+                sk = item.get("SK", "")
+                # Parse run_id from SK: FTS#W#<token>#R#<run_id>[#<field>]
+                parts = sk.split("#")
+                # Find the R marker and get the next part
+                for i, part in enumerate(parts):
+                    if part == "R" and i + 1 < len(parts):
+                        ids.add(parts[i + 1])
+                        break
+            entity_id_sets.append(ids)
+
+        if not entity_id_sets:
+            return []
+
+        # AND semantics: intersect all sets
+        result_ids = entity_id_sets[0]
+        for s in entity_id_sets[1:]:
+            result_ids &= s
+
+        if result_ids:
+            return _fetch_meta_items(table, pk, list(result_ids))
+
+    # Fallback to trigrams if no word matches
+    trigram_tokens = tokenize_trigrams(plan.fts_query)
+    if trigram_tokens:
+        entity_id_sets = []
+        for token in trigram_tokens:
+            sk_prefix = f"{SK_FTS_PREFIX}3#{token}#R#"
+            fts_items = table.query(pk=pk, sk_prefix=sk_prefix)
+            ids = set()
+            for item in fts_items:
+                sk = item.get("SK", "")
+                parts = sk.split("#")
+                for i, part in enumerate(parts):
+                    if part == "R" and i + 1 < len(parts):
+                        ids.add(parts[i + 1])
+                        break
+            entity_id_sets.append(ids)
+
+        if not entity_id_sets:
+            return []
+
+        result_ids = entity_id_sets[0]
+        for s in entity_id_sets[1:]:
+            result_ids &= s
+
+        if result_ids:
+            return _fetch_meta_items(table, pk, list(result_ids))
+
+    return []
 
 
 def parse_experiment_filter(filter_string: str | None) -> list[FilterPredicate]:
