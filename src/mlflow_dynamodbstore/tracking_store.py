@@ -42,7 +42,6 @@ from mlflow_dynamodbstore.dynamodb.fts import (
 from mlflow_dynamodbstore.dynamodb.keys import pad_step
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
-    CONFIG_TTL_POLICY,
     GSI1_CLIENT_PREFIX,
     GSI1_PK,
     GSI1_RUN_PREFIX,
@@ -63,7 +62,6 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI3_SK,
     LSI4_SK,
     LSI5_SK,
-    PK_CONFIG,
     PK_EXPERIMENT_PREFIX,
     SK_DATASET_PREFIX,
     SK_DLINK_PREFIX,
@@ -1343,10 +1341,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def _get_trace_ttl(self) -> int:
         """Compute TTL epoch from CONFIG#TTL_POLICY.trace_retention_days (default 30)."""
-        item = self._table.get_item(pk=PK_CONFIG, sk=CONFIG_TTL_POLICY)
-        days = 30
-        if item and "trace_retention_days" in item:
-            days = int(item["trace_retention_days"])
+        days = self._config.get_ttl_policy()["trace_retention_days"]
         return int(time.time()) + days * 86400
 
     def _resolve_trace_experiment(self, trace_id: str) -> str:
@@ -1511,9 +1506,15 @@ class DynamoDBTrackingStore(AbstractStore):
     ) -> None:
         """Write a trace tag item with TTL, optionally denormalize, and write FTS items."""
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        tag_sk = f"{SK_TRACE_PREFIX}{trace_id}#TAG#{tag_key}"
+
+        # Read existing tag to support FTS diff on overwrite
+        old_tag = self._table.get_item(pk=pk, sk=tag_sk)
+        old_value: str | None = old_tag["value"] if old_tag else None
+
         item = {
             "PK": pk,
-            "SK": f"{SK_TRACE_PREFIX}{trace_id}#TAG#{tag_key}",
+            "SK": tag_sk,
             "key": tag_key,
             "value": tag_value,
             "ttl": ttl,
@@ -1521,19 +1522,37 @@ class DynamoDBTrackingStore(AbstractStore):
         self._table.put_item(item)
         if self._config.should_denormalize(experiment_id, tag_key):
             self._denormalize_tag(pk, f"{SK_TRACE_PREFIX}{trace_id}", tag_key, tag_value)
-        # Write FTS items for tag value if configured
-        if self._config.should_trigram("trace_tag_value") and tag_value:
-            tag_fts = fts_items_for_text(
-                pk=pk,
-                entity_type="T",
-                entity_id=trace_id,
-                field=tag_key,
-                text=tag_value,
-            )
-            if tag_fts:
-                for fts_item in tag_fts:
-                    fts_item["ttl"] = ttl
-                self._table.batch_write(tag_fts)
+        # Update FTS items for tag value if configured
+        if self._config.should_trigram("trace_tag_value") and (tag_value or old_value):
+            field_suffix = f"#{tag_key}"
+            entity_prefix = f"T#{trace_id}{field_suffix}"
+            levels = ("W", "3")
+            tokens_to_add, tokens_to_remove = fts_diff(old_value, tag_value, levels)
+
+            # Delete removed FTS items
+            if tokens_to_remove:
+                rev_prefix = f"{SK_FTS_REV_PREFIX}{entity_prefix}#"
+                rev_items = self._table.query(pk=pk, sk_prefix=rev_prefix)
+                for rev_item in rev_items:
+                    rev_sk = rev_item["SK"]
+                    suffix = rev_sk[len(SK_FTS_REV_PREFIX) + len(entity_prefix) + 1 :]
+                    parts = suffix.split("#", 1)
+                    if len(parts) == 2:
+                        lvl, tok = parts[0], parts[1]
+                        if (lvl, tok) in tokens_to_remove:
+                            forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                            self._table.delete_item(pk=pk, sk=forward_sk)
+                            self._table.delete_item(pk=pk, sk=rev_sk)
+
+            # Write new FTS items for added tokens
+            if tokens_to_add:
+                new_fts_items: list[dict[str, Any]] = []
+                for lvl, tok in tokens_to_add:
+                    forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                    reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
+                    new_fts_items.append({"PK": pk, "SK": forward_sk, "ttl": ttl})
+                    new_fts_items.append({"PK": pk, "SK": reverse_sk, "ttl": ttl})
+                self._table.batch_write(new_fts_items)
 
     def set_trace_tag(self, trace_id: str, key: str, value: str) -> None:
         """Set a tag on a trace."""

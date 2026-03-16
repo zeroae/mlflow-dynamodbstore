@@ -92,6 +92,24 @@ class TestStartTrace:
         expected_max = after + 7 * 86400
         assert expected_min <= int(meta["ttl"]) <= expected_max
 
+    def test_ttl_policy_cached_in_config_reader(self, tracking_store):
+        """ConfigReader.get_ttl_policy() caches and returns correct defaults."""
+        policy = tracking_store._config.get_ttl_policy()
+        assert policy["trace_retention_days"] == 30
+        assert policy["soft_deleted_retention_days"] == 90
+        assert policy["metric_history_retention_days"] == 365
+
+        # Write custom policy
+        tracking_store._table.put_item(
+            {
+                "PK": PK_CONFIG,
+                "SK": "TTL_POLICY",
+                "trace_retention_days": 7,
+            }
+        )
+        # Still returns cached value (30)
+        assert tracking_store._config.get_ttl_policy()["trace_retention_days"] == 30
+
     def test_trace_has_default_ttl(self, tracking_store):
         """Without CONFIG#TTL_POLICY, default is 30 days."""
         exp_id = _create_experiment(tracking_store)
@@ -315,6 +333,35 @@ class TestSetTraceTag:
         for fts_item in trace_fts:
             assert "ttl" in fts_item, f"FTS item missing ttl: {fts_item['SK']}"
             assert int(fts_item["ttl"]) == trace_ttl
+
+    def test_trace_tag_overwrite_uses_fts_diff(self, tracking_store):
+        """Overwriting a tag value should remove old FTS tokens and add new ones."""
+        from mlflow_dynamodbstore.dynamodb.schema import SK_FTS_PREFIX
+
+        exp_id = _create_experiment(tracking_store)
+        tracking_store._config.set_fts_trigram_fields(["trace_tag_value"])
+
+        trace_info = _make_trace_info(exp_id, tags={})
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+
+        # Set initial tag value "alpha"
+        tracking_store.set_trace_tag("tr-abc123", "my.tag", "alpha")
+        fts_after_first = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        first_fts = {i["SK"] for i in fts_after_first if "T#tr-abc123#my.tag" in i["SK"]}
+        assert len(first_fts) > 0
+
+        # Overwrite with "beta" -- old "alpha" tokens should be removed
+        tracking_store.set_trace_tag("tr-abc123", "my.tag", "beta")
+        fts_after_second = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        second_fts = {i["SK"] for i in fts_after_second if "T#tr-abc123#my.tag" in i["SK"]}
+
+        # "alpha" and "beta" share no tokens, so old tokens should be gone
+        assert first_fts.isdisjoint(second_fts), (
+            "Old FTS tokens should have been removed on overwrite"
+        )
+        assert len(second_fts) > 0, "New FTS tokens should have been written"
 
 
 class TestDeleteTraceTag:
