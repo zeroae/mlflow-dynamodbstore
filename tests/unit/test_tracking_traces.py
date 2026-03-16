@@ -927,3 +927,151 @@ class TestSearchTraces:
         )
         result_ids = {t.trace_id for t in results}
         assert result_ids == {"tr-search-002", "tr-search-004"}
+
+
+# ---------------------------------------------------------------------------
+# delete_traces tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteTraces:
+    def test_delete_traces_removes_meta(self, tracking_store):
+        """Verify trace META item is deleted."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        # Verify META exists
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123")
+        assert meta is not None
+
+        tracking_store.delete_traces(experiment_id=exp_id, trace_ids=["tr-abc123"])
+
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123")
+        assert meta is None
+
+    def test_delete_traces_removes_tags(self, tracking_store):
+        """Verify trace tag items are deleted."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, tags={"mlflow.user": "alice", "env": "prod"})
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        tags_before = tracking_store._table.query(
+            pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}tr-abc123#TAG#"
+        )
+        assert len(tags_before) >= 2
+
+        tracking_store.delete_traces(experiment_id=exp_id, trace_ids=["tr-abc123"])
+
+        tags_after = tracking_store._table.query(
+            pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}tr-abc123#TAG#"
+        )
+        assert len(tags_after) == 0
+
+    def test_delete_traces_removes_request_metadata(self, tracking_store):
+        """Verify request metadata items are deleted."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "custom_key": "custom_val",
+            },
+        )
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        rmeta_before = tracking_store._table.query(
+            pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}tr-abc123#RMETA#"
+        )
+        assert len(rmeta_before) >= 2
+
+        tracking_store.delete_traces(experiment_id=exp_id, trace_ids=["tr-abc123"])
+
+        rmeta_after = tracking_store._table.query(
+            pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}tr-abc123#RMETA#"
+        )
+        assert len(rmeta_after) == 0
+
+    def test_delete_traces_removes_assessments(self, tracking_store):
+        """Verify assessment items are deleted."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        assessment = Assessment(
+            name="quality",
+            source=AssessmentSource(source_type="HUMAN", source_id="user1"),
+            trace_id="tr-abc123",
+            feedback=FeedbackValue(value="good"),
+        )
+        created = tracking_store.create_assessment(assessment)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        assess_sk = f"{SK_TRACE_PREFIX}tr-abc123#ASSESS#{created.assessment_id}"
+        assert tracking_store._table.get_item(pk=pk, sk=assess_sk) is not None
+
+        tracking_store.delete_traces(experiment_id=exp_id, trace_ids=["tr-abc123"])
+
+        assert tracking_store._table.get_item(pk=pk, sk=assess_sk) is None
+
+    def test_delete_traces_removes_clientptr(self, tracking_store):
+        """Verify CLIENTPTR item is deleted."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, client_request_id="client-req-001")
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        ptr = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123#CLIENTPTR")
+        assert ptr is not None
+
+        tracking_store.delete_traces(experiment_id=exp_id, trace_ids=["tr-abc123"])
+
+        ptr = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123#CLIENTPTR")
+        assert ptr is None
+
+    def test_delete_traces_removes_fts_items(self, tracking_store):
+        """Verify FTS forward + FTS_REV items are cleaned up."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store._config.set_fts_trigram_fields(["trace_tag_value"])
+
+        trace_info = _make_trace_info(exp_id, tags={})
+        tracking_store.start_trace(trace_info)
+        tracking_store.set_trace_tag("tr-abc123", "description", "quantum computing")
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+
+        # Verify FTS items exist
+        fts_before = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        trace_fts_before = [i for i in fts_before if "T#tr-abc123" in i["SK"]]
+        assert len(trace_fts_before) > 0
+
+        fts_rev_before = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_REV_PREFIX)
+        trace_rev_before = [i for i in fts_rev_before if "T#tr-abc123" in i["SK"]]
+        assert len(trace_rev_before) > 0
+
+        tracking_store.delete_traces(experiment_id=exp_id, trace_ids=["tr-abc123"])
+
+        # All FTS items should be gone
+        fts_after = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        trace_fts_after = [i for i in fts_after if "T#tr-abc123" in i["SK"]]
+        assert len(trace_fts_after) == 0
+
+        fts_rev_after = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_REV_PREFIX)
+        trace_rev_after = [i for i in fts_rev_after if "T#tr-abc123" in i["SK"]]
+        assert len(trace_rev_after) == 0
+
+    def test_delete_traces_returns_count(self, tracking_store):
+        """Verify returns count of deleted traces."""
+        exp_id = _create_experiment(tracking_store)
+        for i in range(3):
+            trace_info = _make_trace_info(exp_id, trace_id=f"tr-del-{i}")
+            tracking_store.start_trace(trace_info)
+
+        count = tracking_store.delete_traces(
+            experiment_id=exp_id,
+            trace_ids=["tr-del-0", "tr-del-1", "tr-del-2"],
+        )
+        assert count == 3

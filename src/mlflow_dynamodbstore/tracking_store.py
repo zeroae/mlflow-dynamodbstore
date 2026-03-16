@@ -1941,3 +1941,68 @@ class DynamoDBTrackingStore(AbstractStore):
         # Clean up FTS items via reverse index
         field = f"assess_{assessment_id}"
         self._delete_fts_for_entity_field(pk=pk, entity_type="T", entity_id=trace_id, field=field)
+
+    def delete_traces(
+        self,
+        experiment_id: str,
+        max_timestamp_millis: int | None = None,
+        max_traces: int | None = None,
+        trace_ids: list[str] | None = None,
+    ) -> int:
+        """Delete traces and all their sub-items (tags, metadata, assessments, FTS)."""
+        if not trace_ids:
+            return 0
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        deleted = 0
+
+        for trace_id in trace_ids:
+            # 1. Query all trace sub-items: SK begins_with T#<trace_id>
+            trace_prefix = f"{SK_TRACE_PREFIX}{trace_id}"
+            trace_items = self._table.query(pk=pk, sk_prefix=trace_prefix)
+
+            # 2. Query FTS_REV items for this trace to find forward FTS items
+            fts_rev_prefix = f"{SK_FTS_REV_PREFIX}T#{trace_id}"
+            fts_rev_items = self._table.query(pk=pk, sk_prefix=fts_rev_prefix)
+
+            # 3. Derive forward FTS SKs from reverse items and delete them
+            for rev_item in fts_rev_items:
+                rev_sk = rev_item["SK"]
+                # Everything after "FTS_REV#"
+                after_rev_prefix = rev_sk[len(SK_FTS_REV_PREFIX) :]
+                # after_rev_prefix: T#<trace_id>[#<field>]#<level>#<token>
+                # We need to split into entity_prefix and level#token.
+                # entity_prefix always starts with T#<trace_id>.
+                # After T#<trace_id>, there may be #<field> or directly #<level>#<token>.
+                # Level is always a single character (W or 3).
+                # So we look for the pattern where after the entity part,
+                # we have #<single_char>#<rest> where single_char is the level.
+                base = f"T#{trace_id}"
+                rest = after_rev_prefix[len(base) :]
+                # rest starts with '#'
+                # Split: could be #<field>#<level>#<token> or #<level>#<token>
+                # Level chars: W, 3
+                parts = rest.lstrip("#").split("#")
+                # Try to find the level marker
+                # If parts[0] is a known level (W or 3), then no field
+                # Otherwise parts[0] is field, parts[1] is level
+                if parts[0] in ("W", "3"):
+                    entity_prefix = base
+                    lvl = parts[0]
+                    tok = "#".join(parts[1:])
+                else:
+                    entity_prefix = f"{base}#{parts[0]}"
+                    lvl = parts[1]
+                    tok = "#".join(parts[2:])
+
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                self._table.delete_item(pk=pk, sk=forward_sk)
+                self._table.delete_item(pk=pk, sk=rev_sk)
+
+            # 4. Delete all trace sub-items (META, tags, RMETA, assessments, CLIENTPTR)
+            for item in trace_items:
+                self._table.delete_item(pk=pk, sk=item["SK"])
+
+            deleted += 1
+
+        return deleted
