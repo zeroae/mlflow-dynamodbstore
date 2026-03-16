@@ -1,0 +1,93 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mlflow-dynamodbstore"
+dynamic = ["version"]
+description = "DynamoDB-backed MLflow tracking store, model registry, and auth plugin"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "mlflow>=3.0",
+    "boto3",
+    "python-ulid>=3.0.0",
+    "snowballstemmer",
+]
+
+[project.entry-points."mlflow.tracking_store"]
+dynamodb = "mlflow_dynamodbstore.tracking_store:DynamoDBTrackingStore"
+
+[project.entry-points."mlflow.model_registry_store"]
+dynamodb = "mlflow_dynamodbstore.registry_store:DynamoDBRegistryStore"
+
+[project.entry-points."mlflow.app"]
+dynamodb-auth = "mlflow_dynamodbstore.auth.app:create_app"
+
+[project.entry-points."mlflow.app.client"]
+dynamodb-auth = "mlflow_dynamodbstore.auth.client:DynamoDBAuthClient"
+
+[project.entry-points."mlflow.workspace_provider"]
+dynamodb = "mlflow_dynamodbstore.workspace_store:DynamoDBWorkspaceStore"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-xdist",
+    "ruff",
+    "mypy",
+    "moto[server,dynamodb,cloudformation]",
+    "requests",
+    "pre-commit",
+    "diff-cover",
+]
+docs = [
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings[python]",
+    "mike",
+]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/mlflow_dynamodbstore/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mlflow_dynamodbstore"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+strict = true
+exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+module = ["ulid.*", "snowballstemmer.*", "moto.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: unit tests (moto decorator)",
+    "integration: integration tests (moto server)",
+    "compatibility: MLflow test suite compatibility",
+    "smoke: real DynamoDB (needs AWS creds)",
+]
+addopts = "--strict-markers --import-mode=importlib"
