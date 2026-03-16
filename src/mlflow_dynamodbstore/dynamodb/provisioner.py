@@ -207,8 +207,6 @@ def ensure_stack_exists(
             StackName=stack_name,
             TemplateBody=json.dumps(template),
         )
-        # In moto, stack creation is synchronous.
-        # In real AWS, wait for completion:
-        # cfn.get_waiter('stack_create_complete').wait(StackName=stack_name)
+        cfn.get_waiter("stack_create_complete").wait(StackName=stack_name)
 
     _seed_initial_data(table_name, region, endpoint_url)
