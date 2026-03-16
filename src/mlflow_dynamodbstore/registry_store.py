@@ -7,6 +7,7 @@ from typing import Any
 
 from mlflow.entities.model_registry import RegisteredModel, RegisteredModelTag
 from mlflow.entities.model_registry.model_version import ModelVersion
+from mlflow.entities.model_registry.model_version_tag import ModelVersionTag
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
@@ -30,6 +31,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI3_SK,
     LSI4_SK,
     PK_MODEL_PREFIX,
+    SK_MODEL_ALIAS_PREFIX,
     SK_MODEL_META,
     SK_MODEL_TAG_PREFIX,
 )
@@ -54,6 +56,31 @@ def _item_to_registered_model(
         last_updated_timestamp=item.get("last_updated_timestamp"),
         description=item.get("description", ""),
         tags=tags or [],
+    )
+
+
+def _pad_version(version: str | int) -> str:
+    """Pad a version number to 8 digits."""
+    return f"{int(version):08d}"
+
+
+def _item_to_model_version(
+    item: dict[str, Any],
+    tags: list[ModelVersionTag] | None = None,
+) -> ModelVersion:
+    """Convert a DynamoDB item to an MLflow ModelVersion entity."""
+    return ModelVersion(
+        name=item["name"],
+        version=str(int(item["version"])),
+        creation_timestamp=item.get("creation_timestamp", 0),
+        last_updated_timestamp=item.get("last_updated_timestamp"),
+        description=item.get("description", ""),
+        source=item.get("source", ""),
+        run_id=item.get("run_id", ""),
+        status=item.get("status", "READY"),
+        current_stage=item.get("current_stage", "None"),
+        tags=tags or [],
+        run_link=item.get("run_link", ""),
     )
 
 
@@ -371,14 +398,41 @@ class DynamoDBRegistryStore(AbstractStore):
         raise MlflowException("Deferred to Task 18")
 
     # ------------------------------------------------------------------
-    # Stub methods -- Aliases (Task 19)
+    # Alias operations (Task 19)
     # ------------------------------------------------------------------
 
     def set_registered_model_alias(self, name: str, alias: str, version: str) -> None:
-        raise MlflowException("Deferred to Task 19")
+        """Set an alias pointing to a specific version of a registered model."""
+        model_ulid = self._resolve_model_ulid(name)
+        # Verify the version exists by fetching it (raises if not found)
+        self.get_model_version(name, version)
+        item = {
+            "PK": f"{PK_MODEL_PREFIX}{model_ulid}",
+            "SK": f"{SK_MODEL_ALIAS_PREFIX}{alias}",
+            "alias": alias,
+            "version": version,
+        }
+        self._table.put_item(item)
 
     def delete_registered_model_alias(self, name: str, alias: str) -> None:
-        raise MlflowException("Deferred to Task 19")
+        """Delete an alias from a registered model (no-op if alias does not exist)."""
+        model_ulid = self._resolve_model_ulid(name)
+        self._table.delete_item(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk=f"{SK_MODEL_ALIAS_PREFIX}{alias}",
+        )
 
     def get_model_version_by_alias(self, name: str, alias: str) -> ModelVersion:
-        raise MlflowException("Deferred to Task 19")
+        """Return the model version that the given alias resolves to."""
+        model_ulid = self._resolve_model_ulid(name)
+        item = self._table.get_item(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk=f"{SK_MODEL_ALIAS_PREFIX}{alias}",
+        )
+        if item is None:
+            raise MlflowException(
+                f"Alias '{alias}' not found for model '{name}'.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        version: str = item["version"]
+        return self.get_model_version(name, version)
