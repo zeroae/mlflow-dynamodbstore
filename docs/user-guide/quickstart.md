@@ -27,6 +27,8 @@ This installs the plugin along with MLflow and its dependencies.
 ## Start the Server
 
 ```bash
+export MLFLOW_FLASK_SERVER_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
+
 mlflow server \
   --app-name dynamodb-auth \
   --backend-store-uri dynamodb://us-east-1/my-table \
@@ -35,16 +37,27 @@ mlflow server \
   --port 5000
 ```
 
+!!! warning "Secret Key Required"
+    MLflow 3.x requires `MLFLOW_FLASK_SERVER_SECRET_KEY` for CSRF protection when using auth plugins.
+    Set it to a static value across all server instances. In production, store this in AWS Secrets Manager
+    or a similar service.
+
 On first startup, the plugin creates a CloudFormation stack named `mlflow-dynamodbstore-my-table` that provisions:
 
 - A DynamoDB table with 5 GSIs and 5 LSIs
 - DynamoDB TTL enabled on the `ttl` attribute
 - Pay-per-request billing mode
 
+!!! note "First Startup"
+    The first startup may take 1-2 minutes while CloudFormation creates the DynamoDB table
+    with all 5 GSIs and 5 LSIs.
+
 !!! note "Local Development"
     For local development with DynamoDB Local:
 
     ```bash
+    export MLFLOW_FLASK_SERVER_SECRET_KEY="dev-secret-key"
+
     mlflow server \
       --app-name dynamodb-auth \
       --backend-store-uri dynamodb://localhost:8000/my-table \

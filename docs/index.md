@@ -44,6 +44,8 @@ uv pip install mlflow-dynamodbstore
 ## Quick Start
 
 ```bash
+export MLFLOW_FLASK_SERVER_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
+
 mlflow server \
   --app-name dynamodb-auth \
   --backend-store-uri dynamodb://us-east-1/my-table \

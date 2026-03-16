@@ -24,6 +24,17 @@ dynamodb://http://<host>:<port>/<table-name>
 
 ## Environment Variables
 
+### Server
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MLFLOW_FLASK_SERVER_SECRET_KEY` | **Required** when using `--app-name dynamodb-auth`. Static secret for CSRF protection. Must be consistent across all server instances. | _(none)_ |
+| `MLFLOW_AUTH_ADMIN_USERNAME` | Admin username created on first startup | `admin` |
+| `MLFLOW_AUTH_ADMIN_PASSWORD` | Admin password created on first startup | `password1234` |
+
+!!! danger "Change Default Credentials"
+    Always change the default admin password in production. Set `MLFLOW_AUTH_ADMIN_USERNAME` and `MLFLOW_AUTH_ADMIN_PASSWORD` before first startup.
+
 ### TTL Retention
 
 These variables control how long data is retained before DynamoDB TTL removes it. Set to `0` to disable TTL for a category.
