@@ -1,7 +1,7 @@
-"""Tests for DynamoDBTrackingStore experiment CRUD operations."""
+"""Tests for DynamoDBTrackingStore experiment and run CRUD operations."""
 
 import pytest
-from mlflow.entities import ExperimentTag, ViewType
+from mlflow.entities import ExperimentTag, RunStatus, RunTag, ViewType
 
 
 class TestExperimentCRUD:
@@ -111,3 +111,113 @@ class TestExperimentCRUD:
         results = tracking_store.search_experiments(view_type=ViewType.ACTIVE_ONLY, max_results=3)
         # Should return at most 3 (could include Default)
         assert len(results) <= 3
+
+
+class TestRunCRUD:
+    def test_create_run(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="test-user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="my-run",
+        )
+        assert run is not None
+        assert run.info.experiment_id == exp_id
+        assert run.info.user_id == "test-user"
+        assert run.info.run_name == "my-run"
+        assert run.info.status == "RUNNING"
+        assert len(run.info.run_id) == 26  # ULID
+
+    def test_get_run(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        created_run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="test-user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="my-run",
+        )
+        fetched = tracking_store.get_run(created_run.info.run_id)
+        assert fetched.info.run_id == created_run.info.run_id
+        assert fetched.info.experiment_id == exp_id
+
+    def test_update_run_info(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="test-user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="my-run",
+        )
+        updated = tracking_store.update_run_info(
+            run_id=run.info.run_id,
+            run_status=RunStatus.to_string(RunStatus.FINISHED),
+            end_time=1709251300000,
+            run_name="updated-name",
+        )
+        assert updated.status == "FINISHED"
+        assert updated.end_time == 1709251300000
+        assert updated.run_name == "updated-name"
+
+    def test_delete_and_restore_run(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="test-user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="my-run",
+        )
+        tracking_store.delete_run(run.info.run_id)
+        deleted = tracking_store.get_run(run.info.run_id)
+        assert deleted.info.lifecycle_stage == "deleted"
+
+        tracking_store.restore_run(run.info.run_id)
+        restored = tracking_store.get_run(run.info.run_id)
+        assert restored.info.lifecycle_stage == "active"
+
+    def test_create_run_with_tags(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="test-user",
+            start_time=1709251200000,
+            tags=[RunTag("key1", "val1"), RunTag("key2", "val2")],
+            run_name="my-run",
+        )
+        fetched = tracking_store.get_run(run.info.run_id)
+        assert "key1" in fetched.data.tags
+        assert "key2" in fetched.data.tags
+        assert fetched.data.tags["key1"] == "val1"
+        assert fetched.data.tags["key2"] == "val2"
+
+    def test_search_runs_basic(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="test-user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="run-1",
+        )
+        tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="test-user",
+            start_time=1709251200001,
+            tags=[],
+            run_name="run-2",
+        )
+        results = tracking_store._search_runs(
+            experiment_ids=[exp_id],
+            filter_string="",
+            run_view_type=ViewType.ACTIVE_ONLY,
+            max_results=10,
+            order_by=[],
+            page_token=None,
+        )
+        # _search_runs returns a tuple of (runs, next_page_token)
+        runs, token = results
+        assert len(runs) == 2

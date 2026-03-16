@@ -11,6 +11,9 @@ from mlflow.entities import (
     ExperimentTag,
     Metric,
     Param,
+    Run,
+    RunData,
+    RunInfo,
     RunTag,
     ViewType,
 )
@@ -25,6 +28,9 @@ from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
+    GSI1_PK,
+    GSI1_RUN_PREFIX,
+    GSI1_SK,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_PK,
     GSI2_SK,
@@ -38,13 +44,18 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI2_SK,
     LSI3_SK,
     LSI4_SK,
+    LSI5_SK,
     PK_EXPERIMENT_PREFIX,
     SK_EXPERIMENT_META,
     SK_EXPERIMENT_TAG_PREFIX,
+    SK_METRIC_PREFIX,
+    SK_PARAM_PREFIX,
+    SK_RUN_PREFIX,
+    SK_TAG_PREFIX,
 )
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
-from mlflow_dynamodbstore.ids import generate_ulid
+from mlflow_dynamodbstore.ids import generate_ulid, ulid_from_timestamp
 
 
 def _rev(s: str) -> str:
@@ -65,6 +76,39 @@ def _item_to_experiment(
         creation_time=item.get("creation_time"),
         last_update_time=item.get("last_update_time"),
     )
+
+
+def _item_to_run_info(item: dict[str, Any]) -> RunInfo:
+    """Convert a DynamoDB item to an MLflow RunInfo entity."""
+    return RunInfo(
+        run_id=item["run_id"],
+        experiment_id=item["experiment_id"],
+        user_id=item.get("user_id", ""),
+        status=item.get("status", "RUNNING"),
+        start_time=item.get("start_time"),
+        end_time=item.get("end_time"),
+        lifecycle_stage=item.get("lifecycle_stage", "active"),
+        artifact_uri=item.get("artifact_uri", ""),
+        run_name=item.get("run_name", ""),
+    )
+
+
+def _item_to_run(
+    item: dict[str, Any],
+    tags: list[dict[str, Any]],
+    params: list[dict[str, Any]],
+    metrics: list[dict[str, Any]],
+) -> Run:
+    """Convert DynamoDB items to an MLflow Run entity."""
+    info = _item_to_run_info(item)
+    data = RunData(
+        tags=[RunTag(t["key"], t["value"]) for t in tags],
+        params=[Param(p["key"], p["value"]) for p in params],
+        metrics=[
+            Metric(m["key"], m["value"], m.get("timestamp", 0), m.get("step", 0)) for m in metrics
+        ],
+    )
+    return Run(run_info=info, run_data=data)
 
 
 class DynamoDBTrackingStore(AbstractStore):
@@ -316,6 +360,10 @@ class DynamoDBTrackingStore(AbstractStore):
     # Abstract method implementations — stubs for future tasks
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Run CRUD
+    # ------------------------------------------------------------------
+
     def create_run(
         self,
         experiment_id: str,
@@ -323,20 +371,142 @@ class DynamoDBTrackingStore(AbstractStore):
         start_time: int,
         tags: list[RunTag],
         run_name: str,
-    ) -> None:
-        raise MlflowException("Not implemented in Plan 1 — see Task 13")
+    ) -> Run:
+        """Create a new run within an experiment."""
+        # Verify experiment exists
+        exp = self.get_experiment(experiment_id)
 
-    def get_run(self, run_id: str) -> None:
-        raise MlflowException("Not implemented in Plan 1 — see Task 13")
+        run_id = ulid_from_timestamp(start_time)
+        artifact_uri = f"{exp.artifact_location}/{run_id}/artifacts"
 
-    def update_run_info(self, run_id: str, run_status: str, end_time: int, run_name: str) -> None:
-        raise MlflowException("Not implemented in Plan 1 — see Task 13")
+        item: dict[str, Any] = {
+            "PK": f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            "SK": f"{SK_RUN_PREFIX}{run_id}",
+            "run_id": run_id,
+            "experiment_id": experiment_id,
+            "user_id": user_id,
+            "status": "RUNNING",
+            "start_time": start_time,
+            "run_name": run_name,
+            "lifecycle_stage": "active",
+            "artifact_uri": artifact_uri,
+            # LSI attributes
+            LSI1_SK: f"active#{run_id}",
+            LSI3_SK: f"RUNNING#{run_id}",
+            LSI4_SK: run_name.lower() if run_name else "",
+            # GSI1: reverse lookup run_id -> experiment_id
+            GSI1_PK: f"{GSI1_RUN_PREFIX}{run_id}",
+            GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+        }
+
+        self._table.put_item(item, condition="attribute_not_exists(PK)")
+
+        # Write tags if provided
+        if tags:
+            for tag in tags:
+                self._write_run_tag(experiment_id, run_id, tag)
+
+        # Cache run_id -> experiment_id
+        self._cache.put("run_exp", run_id, experiment_id)
+
+        return self._build_run(item, tags)
+
+    def get_run(self, run_id: str) -> Run:
+        """Fetch a run by ID."""
+        experiment_id = self._resolve_run_experiment(run_id)
+
+        item = self._table.get_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=f"{SK_RUN_PREFIX}{run_id}",
+        )
+        if item is None:
+            raise MlflowException(
+                f"Run '{run_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Query tags, params, metrics for this run
+        run_prefix = f"{SK_RUN_PREFIX}{run_id}"
+        tag_items = self._table.query(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk_prefix=f"{run_prefix}{SK_TAG_PREFIX}",
+        )
+        param_items = self._table.query(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk_prefix=f"{run_prefix}{SK_PARAM_PREFIX}",
+        )
+        metric_items = self._table.query(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}",
+        )
+
+        return _item_to_run(item, tag_items, param_items, metric_items)
+
+    def update_run_info(
+        self, run_id: str, run_status: str, end_time: int, run_name: str
+    ) -> RunInfo:
+        """Update run status, end_time, and run_name."""
+        experiment_id = self._resolve_run_experiment(run_id)
+
+        # Get current run to compute duration
+        current = self._table.get_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=f"{SK_RUN_PREFIX}{run_id}",
+        )
+        if current is None:
+            raise MlflowException(
+                f"Run '{run_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        updates: dict[str, Any] = {
+            "status": run_status,
+            "run_name": run_name,
+            LSI3_SK: f"{run_status}#{run_id}",
+            LSI4_SK: run_name.lower() if run_name else "",
+        }
+
+        if end_time is not None:
+            updates["end_time"] = end_time
+            updates[LSI2_SK] = str(end_time)
+            start_time = current.get("start_time", 0)
+            if start_time:
+                updates[LSI5_SK] = str(end_time - start_time)
+
+        updated_item = self._table.update_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=f"{SK_RUN_PREFIX}{run_id}",
+            updates=updates,
+        )
+
+        assert updated_item is not None  # update always returns ALL_NEW
+        return _item_to_run_info(updated_item)
 
     def delete_run(self, run_id: str) -> None:
-        raise MlflowException("Not implemented in Plan 1 — see Task 13")
+        """Soft-delete a run."""
+        experiment_id = self._resolve_run_experiment(run_id)
+
+        self._table.update_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=f"{SK_RUN_PREFIX}{run_id}",
+            updates={
+                "lifecycle_stage": "deleted",
+                LSI1_SK: f"deleted#{run_id}",
+            },
+        )
 
     def restore_run(self, run_id: str) -> None:
-        raise MlflowException("Not implemented in Plan 1 — see Task 13")
+        """Restore a soft-deleted run."""
+        experiment_id = self._resolve_run_experiment(run_id)
+
+        self._table.update_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=f"{SK_RUN_PREFIX}{run_id}",
+            updates={
+                "lifecycle_stage": "active",
+                LSI1_SK: f"active#{run_id}",
+            },
+        )
 
     def _search_runs(
         self,
@@ -346,8 +516,108 @@ class DynamoDBTrackingStore(AbstractStore):
         max_results: int,
         order_by: list[str],
         page_token: str | None,
-    ) -> None:
-        raise MlflowException("Not implemented in Plan 1 — see Task 13")
+    ) -> tuple[list[Run], str | None]:
+        """Search runs across experiments."""
+        if filter_string:
+            raise MlflowException(
+                "Filter support requires Plan 2",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        runs: list[Run] = []
+
+        for exp_id in experiment_ids:
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+
+            if run_view_type == ViewType.ACTIVE_ONLY:
+                items = self._table.query(
+                    pk=pk,
+                    sk_prefix="active#",
+                    index_name="lsi1",
+                    limit=max_results - len(runs) if max_results else None,
+                )
+            elif run_view_type == ViewType.DELETED_ONLY:
+                items = self._table.query(
+                    pk=pk,
+                    sk_prefix="deleted#",
+                    index_name="lsi1",
+                    limit=max_results - len(runs) if max_results else None,
+                )
+            else:
+                # ALL: query by SK prefix on main table
+                items = self._table.query(
+                    pk=pk,
+                    sk_prefix=SK_RUN_PREFIX,
+                    limit=max_results - len(runs) if max_results else None,
+                )
+
+            for item in items:
+                # Filter out non-run items (experiment meta, tags, etc.)
+                if "run_id" not in item:
+                    continue
+                run_id = item["run_id"]
+                # Cache for later lookups
+                self._cache.put("run_exp", run_id, exp_id)
+                # Build run with tags/params/metrics
+                run_prefix = f"{SK_RUN_PREFIX}{run_id}"
+                tag_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_TAG_PREFIX}")
+                param_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_PARAM_PREFIX}")
+                metric_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}")
+                runs.append(_item_to_run(item, tag_items, param_items, metric_items))
+
+                if max_results and len(runs) >= max_results:
+                    break
+
+            if max_results and len(runs) >= max_results:
+                break
+
+        return runs[:max_results] if max_results else runs, None
+
+    # ------------------------------------------------------------------
+    # Run helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_run_experiment(self, run_id: str) -> str:
+        """Resolve run_id to experiment_id, using cache then GSI1."""
+        cached = self._cache.get("run_exp", run_id)
+        if cached:
+            return cached
+
+        # Look up via GSI1
+        results = self._table.query(
+            pk=f"{GSI1_RUN_PREFIX}{run_id}",
+            index_name="gsi1",
+            limit=1,
+        )
+        if not results:
+            raise MlflowException(
+                f"Run '{run_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        experiment_id: str = results[0]["experiment_id"]
+        self._cache.put("run_exp", run_id, experiment_id)
+        return experiment_id
+
+    def _write_run_tag(self, experiment_id: str, run_id: str, tag: RunTag) -> None:
+        """Write a run tag item."""
+        item = {
+            "PK": f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            "SK": f"{SK_RUN_PREFIX}{run_id}{SK_TAG_PREFIX}{tag.key}",
+            "key": tag.key,
+            "value": tag.value,
+        }
+        self._table.put_item(item)
+
+    def _build_run(self, item: dict[str, Any], tags: list[RunTag] | None = None) -> Run:
+        """Build a Run entity from an item and optional in-memory tags."""
+        info = _item_to_run_info(item)
+        data = RunData(
+            tags=tags or [],
+            params=[],
+            metrics=[],
+        )
+        return Run(run_info=info, run_data=data)
 
     def log_batch(
         self,
