@@ -16,14 +16,20 @@ from mlflow.entities import (
     RunData,
     RunInfo,
     RunTag,
+    TraceInfo,
+    TraceLocation,
+    TraceLocationType,
+    TraceState,
     ViewType,
 )
+from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
 from mlflow.store.tracking.abstract_store import AbstractStore
+from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
 
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
@@ -36,9 +42,12 @@ from mlflow_dynamodbstore.dynamodb.fts import (
 from mlflow_dynamodbstore.dynamodb.keys import pad_step
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
+    CONFIG_TTL_POLICY,
+    GSI1_CLIENT_PREFIX,
     GSI1_PK,
     GSI1_RUN_PREFIX,
     GSI1_SK,
+    GSI1_TRACE_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
     GSI2_PK,
@@ -54,6 +63,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI3_SK,
     LSI4_SK,
     LSI5_SK,
+    PK_CONFIG,
     PK_EXPERIMENT_PREFIX,
     SK_DATASET_PREFIX,
     SK_DLINK_PREFIX,
@@ -70,6 +80,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_RANK_PREFIX,
     SK_RUN_PREFIX,
     SK_TAG_PREFIX,
+    SK_TRACE_PREFIX,
 )
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
@@ -1326,5 +1337,241 @@ class DynamoDBTrackingStore(AbstractStore):
 
         self._table.batch_write(items)
 
+    # ------------------------------------------------------------------
+    # Trace CRUD
+    # ------------------------------------------------------------------
+
+    def _get_trace_ttl(self) -> int:
+        """Compute TTL epoch from CONFIG#TTL_POLICY.trace_retention_days (default 30)."""
+        item = self._table.get_item(pk=PK_CONFIG, sk=CONFIG_TTL_POLICY)
+        days = 30
+        if item and "trace_retention_days" in item:
+            days = int(item["trace_retention_days"])
+        return int(time.time()) + days * 86400
+
+    def _resolve_trace_experiment(self, trace_id: str) -> str:
+        """Resolve trace_id to experiment_id, using cache then GSI1."""
+        cached = self._cache.get("trace_exp", trace_id)
+        if cached:
+            return cached
+
+        results = self._table.query(
+            pk=f"{GSI1_TRACE_PREFIX}{trace_id}",
+            index_name="gsi1",
+            limit=1,
+        )
+        if not results:
+            raise MlflowException(
+                f"Trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # GSI1 SK is EXP#<exp_id>
+        gsi1sk: str = results[0][GSI1_SK]
+        experiment_id = gsi1sk[len(PK_EXPERIMENT_PREFIX) :]
+        self._cache.put("trace_exp", trace_id, experiment_id)
+        return experiment_id
+
+    def start_trace(self, trace_info: TraceInfo) -> TraceInfo:
+        """Create a trace in DynamoDB from a TraceInfo object."""
+        mlflow_exp = trace_info.trace_location.mlflow_experiment
+        if mlflow_exp is None:
+            raise MlflowException(
+                "TraceInfo must have an MLflow experiment location.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        experiment_id = mlflow_exp.experiment_id
+        trace_id = trace_info.trace_id
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}"
+
+        ttl = self._get_trace_ttl()
+
+        # Extract trace name from trace_metadata
+        trace_name = trace_info.trace_metadata.get(TraceTagKey.TRACE_NAME, "")
+        execution_duration = trace_info.execution_duration or 0
+        request_time = trace_info.request_time
+        state_str = str(trace_info.state)
+
+        # Build META item
+        item: dict[str, Any] = {
+            "PK": pk,
+            "SK": sk,
+            "trace_id": trace_id,
+            "experiment_id": experiment_id,
+            "request_time": request_time,
+            "execution_duration": execution_duration,
+            "state": state_str,
+            "ttl": ttl,
+            "tags": {},
+            # LSI attributes
+            LSI1_SK: request_time,
+            LSI2_SK: request_time + execution_duration,
+            LSI3_SK: f"{state_str}#{request_time}",
+            LSI4_SK: trace_name.lower() if trace_name else "",
+            LSI5_SK: execution_duration,
+            # GSI1: reverse lookup trace_id -> experiment_id
+            GSI1_PK: f"{GSI1_TRACE_PREFIX}{trace_id}",
+            GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+        }
+
+        if trace_info.client_request_id:
+            item["client_request_id"] = trace_info.client_request_id
+
+        self._table.put_item(item, condition="attribute_not_exists(PK)")
+
+        # Cache trace_id -> experiment_id
+        self._cache.put("trace_exp", trace_id, experiment_id)
+
+        # Write CLIENTPTR item if client_request_id is present
+        if trace_info.client_request_id:
+            ptr_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": f"{SK_TRACE_PREFIX}{trace_id}#CLIENTPTR",
+                "ttl": ttl,
+                GSI1_PK: f"{GSI1_CLIENT_PREFIX}{trace_info.client_request_id}",
+                GSI1_SK: f"{GSI1_TRACE_PREFIX}{trace_id}",
+            }
+            self._table.put_item(ptr_item)
+
+        # Write request metadata items
+        if trace_info.trace_metadata:
+            rmeta_items: list[dict[str, Any]] = []
+            for key, value in trace_info.trace_metadata.items():
+                rmeta_items.append(
+                    {
+                        "PK": pk,
+                        "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{key}",
+                        "key": key,
+                        "value": value,
+                        "ttl": ttl,
+                    }
+                )
+            if rmeta_items:
+                self._table.batch_write(rmeta_items)
+
+        # Write initial tag items + denormalization + FTS
+        if trace_info.tags:
+            for tag_key, tag_value in trace_info.tags.items():
+                self._write_trace_tag(experiment_id, trace_id, tag_key, tag_value, ttl)
+
+        return trace_info
+
+    def get_trace_info(self, trace_id: str) -> TraceInfo:
+        """Fetch a trace by ID, reconstructing TraceInfo from DynamoDB items."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}"
+
+        meta = self._table.get_item(pk=pk, sk=sk)
+        if meta is None:
+            raise MlflowException(
+                f"Trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Read tags
+        tag_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#TAG#",
+        )
+        tags = {item["key"]: item["value"] for item in tag_items}
+
+        # Read request metadata
+        rmeta_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#",
+        )
+        trace_metadata = {item["key"]: item["value"] for item in rmeta_items}
+
+        state_str = meta.get("state", "STATE_UNSPECIFIED")
+        state = TraceState(state_str)
+
+        return TraceInfo(
+            trace_id=trace_id,
+            trace_location=TraceLocation(
+                type=TraceLocationType.MLFLOW_EXPERIMENT,
+                mlflow_experiment=MlflowExperimentLocation(experiment_id=experiment_id),
+            ),
+            request_time=int(meta["request_time"]),
+            execution_duration=int(meta.get("execution_duration", 0)),
+            state=state,
+            trace_metadata=trace_metadata,
+            tags=tags,
+            client_request_id=meta.get("client_request_id"),
+        )
+
+    def _write_trace_tag(
+        self,
+        experiment_id: str,
+        trace_id: str,
+        tag_key: str,
+        tag_value: str,
+        ttl: int,
+    ) -> None:
+        """Write a trace tag item with TTL, optionally denormalize, and write FTS items."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        item = {
+            "PK": pk,
+            "SK": f"{SK_TRACE_PREFIX}{trace_id}#TAG#{tag_key}",
+            "key": tag_key,
+            "value": tag_value,
+            "ttl": ttl,
+        }
+        self._table.put_item(item)
+        if self._config.should_denormalize(experiment_id, tag_key):
+            self._denormalize_tag(pk, f"{SK_TRACE_PREFIX}{trace_id}", tag_key, tag_value)
+        # Write FTS items for tag value if configured
+        if self._config.should_trigram("trace_tag_value") and tag_value:
+            tag_fts = fts_items_for_text(
+                pk=pk,
+                entity_type="T",
+                entity_id=trace_id,
+                field=tag_key,
+                text=tag_value,
+            )
+            if tag_fts:
+                self._table.batch_write(tag_fts)
+
+    def set_trace_tag(self, trace_id: str, key: str, value: str) -> None:
+        """Set a tag on a trace."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        # Read TTL from the trace META item
+        meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+        if meta is None:
+            raise MlflowException(
+                f"Trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        ttl = int(meta.get("ttl", self._get_trace_ttl()))
+        self._write_trace_tag(experiment_id, trace_id, key, value, ttl)
+
+    def delete_trace_tag(self, trace_id: str, key: str) -> None:
+        """Delete a tag from a trace."""
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#TAG#{key}"
+        self._table.delete_item(pk=pk, sk=sk)
+        if self._config.should_denormalize(experiment_id, key):
+            self._remove_denormalized_tag(pk, f"{SK_TRACE_PREFIX}{trace_id}", key)
+        # Remove FTS items for tag value if FTS was configured
+        if self._config.should_trigram("trace_tag_value"):
+            self._delete_fts_for_entity_field(pk=pk, entity_type="T", entity_id=trace_id, field=key)
+
     def link_traces_to_run(self, trace_ids: list[str], run_id: str) -> None:
-        raise MlflowException("Deferred to Plan 3")
+        """Link traces to a run by writing mlflow.sourceRun request metadata."""
+        for trace_id in trace_ids:
+            experiment_id = self._resolve_trace_experiment(trace_id)
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            # Read TTL from the trace META item
+            meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+            ttl = int(meta["ttl"]) if meta and "ttl" in meta else self._get_trace_ttl()
+            rmeta_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{TraceMetadataKey.SOURCE_RUN}",
+                "key": TraceMetadataKey.SOURCE_RUN,
+                "value": run_id,
+                "ttl": ttl,
+            }
+            self._table.put_item(rmeta_item)
