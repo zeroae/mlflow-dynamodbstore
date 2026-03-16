@@ -48,8 +48,12 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI4_SK,
     LSI5_SK,
     PK_EXPERIMENT_PREFIX,
+    SK_DATASET_PREFIX,
+    SK_DLINK_PREFIX,
     SK_EXPERIMENT_META,
     SK_EXPERIMENT_TAG_PREFIX,
+    SK_INPUT_PREFIX,
+    SK_INPUT_TAG_SUFFIX,
     SK_METRIC_HISTORY_PREFIX,
     SK_METRIC_PREFIX,
     SK_PARAM_PREFIX,
@@ -761,7 +765,72 @@ class DynamoDBTrackingStore(AbstractStore):
         datasets: list[DatasetInput] | None = None,
         models: Any = None,
     ) -> None:
-        raise MlflowException("Not implemented in Plan 1 — see Task 15")
+        """Log dataset inputs for a run."""
+        if not datasets:
+            return
+
+        experiment_id = self._resolve_run_experiment(run_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        items: list[dict[str, Any]] = []
+
+        for dataset_input in datasets:
+            ds = dataset_input.dataset
+            ds_uuid = generate_ulid()
+
+            # Dataset item: PK=EXP#<exp_id>, SK=D#<name>#<digest>
+            items.append(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_PREFIX}{ds.name}#{ds.digest}",
+                    "name": ds.name,
+                    "digest": ds.digest,
+                    "source_type": ds.source_type,
+                    "source": ds.source,
+                    "schema": ds.schema,
+                    "profile": ds.profile,
+                }
+            )
+
+            # Input link item: PK=EXP#<exp_id>, SK=R#<run_id>#INPUT#<ds_uuid>
+            items.append(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_RUN_PREFIX}{run_id}{SK_INPUT_PREFIX}{ds_uuid}",
+                    "dataset_name": ds.name,
+                    "dataset_digest": ds.digest,
+                }
+            )
+
+            # Input tag items and extract context tag
+            context: str | None = None
+            for tag in dataset_input.tags:
+                items.append(
+                    {
+                        "PK": pk,
+                        "SK": (
+                            f"{SK_RUN_PREFIX}{run_id}{SK_INPUT_PREFIX}{ds_uuid}"
+                            f"{SK_INPUT_TAG_SUFFIX}{tag.key}"
+                        ),
+                        "key": tag.key,
+                        "value": tag.value,
+                    }
+                )
+                if tag.key == "mlflow.data.context":
+                    context = tag.value
+
+            # DLINK materialized item: PK=EXP#<exp_id>, SK=DLINK#<name>#<digest>#R#<run_id>
+            dlink_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": f"{SK_DLINK_PREFIX}{ds.name}#{ds.digest}#{SK_RUN_PREFIX}{run_id}",
+                "dataset_name": ds.name,
+                "dataset_digest": ds.digest,
+                "run_id": run_id,
+            }
+            if context is not None:
+                dlink_item["context"] = context
+            items.append(dlink_item)
+
+        self._table.batch_write(items)
 
     def link_traces_to_run(self, trace_ids: list[str], run_id: str) -> None:
         raise MlflowException("Deferred to Plan 3")

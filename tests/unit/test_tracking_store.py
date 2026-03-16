@@ -1,7 +1,17 @@
 """Tests for DynamoDBTrackingStore experiment and run CRUD operations."""
 
 import pytest
-from mlflow.entities import ExperimentTag, Metric, Param, RunStatus, RunTag, ViewType
+from mlflow.entities import (
+    Dataset,
+    DatasetInput,
+    ExperimentTag,
+    InputTag,
+    Metric,
+    Param,
+    RunStatus,
+    RunTag,
+    ViewType,
+)
 
 
 class TestExperimentCRUD:
@@ -359,3 +369,62 @@ class TestMetricsParamsTags:
             sk_prefix="RANK#",
         )
         assert len(rank_items) >= 2  # one for metric, one for param
+
+
+class TestDatasetsInputs:
+    def test_log_inputs(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="run",
+        )
+        dataset = Dataset(
+            name="my-dataset",
+            digest="abc123",
+            source_type="local",
+            source="path/to/data",
+        )
+        dataset_input = DatasetInput(
+            dataset=dataset,
+            tags=[InputTag("mlflow.data.context", "training")],
+        )
+        tracking_store.log_inputs(run.info.run_id, datasets=[dataset_input])
+
+        # Verify dataset item exists
+        ds_items = tracking_store._table.query(
+            pk=f"EXP#{exp_id}",
+            sk_prefix="D#",
+        )
+        assert len(ds_items) >= 1
+
+    def test_log_inputs_creates_dlink(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1709251200000,
+            tags=[],
+            run_name="run",
+        )
+        dataset = Dataset(
+            name="my-dataset",
+            digest="abc123",
+            source_type="local",
+            source="path/to/data",
+        )
+        dataset_input = DatasetInput(
+            dataset=dataset,
+            tags=[InputTag("mlflow.data.context", "training")],
+        )
+        tracking_store.log_inputs(run.info.run_id, datasets=[dataset_input])
+
+        # Verify DLINK materialized item
+        dlink_items = tracking_store._table.query(
+            pk=f"EXP#{exp_id}",
+            sk_prefix="DLINK#",
+        )
+        assert len(dlink_items) == 1
+        assert "training" in str(dlink_items[0].get("context", ""))
