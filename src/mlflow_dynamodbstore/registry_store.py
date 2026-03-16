@@ -17,6 +17,7 @@ from mlflow.store.model_registry.abstract_store import AbstractStore
 
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
+from mlflow_dynamodbstore.dynamodb.fts import fts_items_for_text
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_PK,
@@ -37,6 +38,8 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI4_SK,
     LSI5_SK,
     PK_MODEL_PREFIX,
+    SK_FTS_PREFIX,
+    SK_FTS_REV_PREFIX,
     SK_MODEL_ALIAS_PREFIX,
     SK_MODEL_META,
     SK_MODEL_TAG_PREFIX,
@@ -189,6 +192,17 @@ class DynamoDBRegistryStore(AbstractStore):
                 self._write_model_tag(model_ulid, tag)
                 model_tags.append(tag)
 
+        # Write FTS items for the model name
+        fts_items = fts_items_for_text(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            entity_type="M",
+            entity_id=model_ulid,
+            field=None,
+            text=name,
+            workspace=self._workspace,
+        )
+        self._table.batch_write(fts_items)
+
         self._cache.put("model_name", name, model_ulid)
         return _item_to_registered_model(item, model_tags)
 
@@ -241,6 +255,31 @@ class DynamoDBRegistryStore(AbstractStore):
                 GSI5_SK: f"{new_name}#{model_ulid}",
             },
         )
+
+        # Delete old FTS items by querying the reverse index for this entity
+        pk = f"{PK_MODEL_PREFIX}{model_ulid}"
+        old_rev_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_FTS_REV_PREFIX}M#{model_ulid}",
+        )
+        for rev_item in old_rev_items:
+            self._table.delete_item(pk=pk, sk=rev_item["SK"])
+
+        # Also delete the forward FTS items
+        old_fts_items = self._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        for fts_item in old_fts_items:
+            self._table.delete_item(pk=pk, sk=fts_item["SK"])
+
+        # Write new FTS items for the new name
+        new_fts_items = fts_items_for_text(
+            pk=pk,
+            entity_type="M",
+            entity_id=model_ulid,
+            field=None,
+            text=new_name,
+            workspace=self._workspace,
+        )
+        self._table.batch_write(new_fts_items)
 
         # Invalidate old name cache, cache new name
         self._cache.invalidate("model_name", name)
