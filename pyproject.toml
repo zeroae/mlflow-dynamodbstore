@@ -61,6 +61,7 @@ docs = [
     "mkdocs-material",
     "mkdocstrings[python]",
     "mike",
+    "mkdocs-click",
 ]
 
 [tool.hatch.version]
