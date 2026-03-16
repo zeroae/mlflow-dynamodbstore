@@ -65,9 +65,13 @@ def create_app(app: Flask | None = None) -> Flask:
     admin_username = os.environ.get(_MLFLOW_AUTH_ADMIN_USERNAME, _DEFAULT_ADMIN_USERNAME)
     admin_password = os.environ.get(_MLFLOW_AUTH_ADMIN_PASSWORD, _DEFAULT_ADMIN_PASSWORD)
 
-    if not dynamodb_store.has_user(admin_username):
+    # Ensure admin user exists (idempotent across concurrent workers)
+    try:
         dynamodb_store.create_user(admin_username, admin_password, is_admin=True)
         _logger.info("Created admin user '%s'.", admin_username)
+    except Exception:
+        # User already exists (race between workers) — safe to ignore
+        pass
 
     # Delegate to MLflow's own create_app for route and hook registration.
     # Since we already replaced the store, MLflow's create_app will use our
