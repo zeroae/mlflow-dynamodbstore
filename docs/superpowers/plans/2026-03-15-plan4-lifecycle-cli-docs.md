@@ -490,7 +490,55 @@ git commit -m "feat: add delete-workspace CLI command"
 
 ## Chunk 3: Documentation
 
-### Task 13: User guide documentation
+### Task 13: Align mkdocs.yml with zae-limiter
+
+**Files:**
+- Modify: `mkdocs.yml`
+- Create: `docs/overrides/` directory (for Material theme overrides)
+- Create: `docs/stylesheets/extra.css` (custom color scheme)
+
+Align `mkdocs.yml` with the zae-limiter reference project at `/home/sodre/ghq/github.com/zeroae/zae-limiter/mkdocs.yml`. Key additions:
+
+- [ ] **Step 1: Update mkdocs.yml**
+
+Match zae-limiter's configuration:
+- `custom_dir: docs/overrides` for Material theme overrides
+- `palette` with `primary: custom`, `accent: custom` (custom colors via extra.css)
+- `features`: add `navigation.top`, `navigation.footer`, `content.code.annotate`, `content.action.edit`, `search.suggest`, `search.highlight`
+- `extra_css: [stylesheets/extra.css]` for custom color scheme
+- `mkdocstrings` full options: `ignore_init_summary`, `show_root_full_path: false`, `show_symbol_type_heading`, `show_symbol_type_toc`, `members_order: source`, `merge_init_into_class`, `separate_signature`, `signature_crossrefs`
+- `pymdownx.highlight` with `anchor_linenums`, `line_spans`, `pygments_lang_class`
+- `pymdownx.snippets`
+- `md_in_html`
+- `mkdocs-click` extension (for CLI reference docs)
+- `fence_div_format` (not `fence_code_format`) for mermaid
+- `extra.social` links (GitHub + PyPI)
+- `extra.version.default: latest`
+- `site_url`, `site_author`, `repo_name`, `edit_uri`
+
+- [ ] **Step 2: Copy extra.css from zae-limiter** (or create matching custom color scheme)
+
+```bash
+cp /home/sodre/ghq/github.com/zeroae/zae-limiter/docs/stylesheets/extra.css docs/stylesheets/extra.css
+mkdir -p docs/overrides
+```
+
+- [ ] **Step 3: Add `mkdocs-click` to docs dependencies in pyproject.toml**
+
+- [ ] **Step 4: Verify docs build**
+
+```bash
+uv sync --extra docs
+uv run mkdocs build --strict
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "docs: align mkdocs.yml with zae-limiter theme and plugins"
+```
+
+### Task 14: User guide documentation
 
 **Files:**
 - Modify: `docs/index.md`
@@ -527,7 +575,7 @@ uv run mkdocs build --strict
 git commit -m "docs: add user guide (quickstart, configuration, workspaces, X-Ray)"
 ```
 
-### Task 14: Operator guide documentation
+### Task 15: Operator guide documentation
 
 **Files:**
 - Create: `docs/operator-guide/cli-reference.md`
@@ -558,7 +606,7 @@ v2 path: DynamoDB Streams + Lambda for async materialization (zae-mlflow CDK), O
 git commit -m "docs: add operator guide (CLI, TTL, monitoring, upgrading)"
 ```
 
-### Task 15: Reference documentation
+### Task 16: Reference documentation
 
 **Files:**
 - Modify: `docs/reference/api.md`
@@ -584,7 +632,7 @@ Ensure mkdocstrings generates docs for all public modules: `tracking_store`, `re
 git commit -m "docs: add reference docs (schema, access patterns, API)"
 ```
 
-### Task 16: Contributing guide + ADR
+### Task 17: Contributing guide + ADR
 
 **Files:**
 - Create: `docs/contributing/development.md`
@@ -608,7 +656,7 @@ git commit -m "docs: add contributing guide and architecture decision record"
 
 ## Chunk 4: MLflow Compatibility + Release Prep
 
-### Task 17: MLflow compatibility test gap closure
+### Task 18: MLflow compatibility test gap closure
 
 **Files:**
 - Modify: `tests/compatibility/test_mlflow_tracking.py`
@@ -640,7 +688,7 @@ Document skipped tests (Databricks-specific, gateway-specific) with `@pytest.mar
 git commit -m "test: close MLflow compatibility test gaps"
 ```
 
-### Task 18: CI workflow updates
+### Task 19: CI workflow updates
 
 **Files:**
 - Modify: `.github/workflows/ci-tests.yml`
@@ -667,7 +715,7 @@ Tag push → `uv build` → PyPI publish (OIDC) → GitHub Release with cliff ch
 git commit -m "ci: add docs and release workflows"
 ```
 
-### Task 19: Full lifecycle integration test
+### Task 20: Full lifecycle integration test
 
 **Files:**
 - Create: `tests/integration/test_lifecycle.py`
@@ -696,7 +744,7 @@ End-to-end scenario:
 git commit -m "test: add full lifecycle integration test"
 ```
 
-### Task 20: Release preparation
+### Task 21: Release preparation
 
 - [ ] **Step 1: Run full test suite with coverage**
 

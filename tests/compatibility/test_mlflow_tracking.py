@@ -237,3 +237,133 @@ class TestTrackingCompatibility:
         store.delete_tag(run.info.run_id, "to_delete")
         fetched = store.get_run(run.info.run_id)
         assert "to_delete" not in fetched.data.tags
+
+    # --- Rename experiment contract ---
+
+    def test_rename_experiment(self, store):
+        """rename_experiment must update the experiment name."""
+        exp_id = store.create_experiment("original-name")
+        store.rename_experiment(exp_id, "new-name")
+        exp = store.get_experiment(exp_id)
+        assert exp.name == "new-name"
+
+    def test_rename_experiment_old_name_gone(self, store):
+        """After rename, get_experiment_by_name with old name must return None."""
+        exp_id = store.create_experiment("old-name")
+        store.rename_experiment(exp_id, "renamed")
+        assert store.get_experiment_by_name("old-name") is None
+        assert store.get_experiment_by_name("renamed") is not None
+
+    # --- update_run_info contract ---
+
+    def test_update_run_info_changes_status(self, store):
+        """update_run_info must change run status."""
+        exp_id = store.create_experiment("test")
+        run = store.create_run(exp_id, "user", 1000, [], "run")
+        info = store.update_run_info(run.info.run_id, "FINISHED", 2000, "run")
+        assert info.status == "FINISHED"
+
+    def test_update_run_info_returns_run_info_type(self, store):
+        """update_run_info must return a RunInfo instance."""
+        from mlflow.entities import RunInfo
+
+        exp_id = store.create_experiment("test")
+        run = store.create_run(exp_id, "user", 1000, [], "run")
+        info = store.update_run_info(run.info.run_id, "FINISHED", 2000, "run")
+        assert isinstance(info, RunInfo)
+
+    def test_update_run_info_sets_end_time(self, store):
+        """update_run_info must set end_time on the run."""
+        exp_id = store.create_experiment("test")
+        run = store.create_run(exp_id, "user", 1000, [], "run")
+        store.update_run_info(run.info.run_id, "FINISHED", 2000, "run")
+        fetched = store.get_run(run.info.run_id)
+        assert fetched.info.end_time == 2000
+
+    def test_update_run_info_sets_run_name(self, store):
+        """update_run_info must update the run name."""
+        exp_id = store.create_experiment("test")
+        run = store.create_run(exp_id, "user", 1000, [], "original")
+        store.update_run_info(run.info.run_id, "RUNNING", None, "renamed-run")
+        fetched = store.get_run(run.info.run_id)
+        assert fetched.info.run_name == "renamed-run"
+
+    # --- log_metric / log_param contract ---
+
+    def test_log_metric_single(self, store):
+        """log_metric must record a metric retrievable via get_metric_history."""
+        exp_id = store.create_experiment("test")
+        run = store.create_run(exp_id, "user", 1000, [], "run")
+        store.log_metric(run.info.run_id, Metric("acc", 0.95, 1000, 0))
+        history = store.get_metric_history(run.info.run_id, "acc")
+        assert len(history) == 1
+        assert history[0].value == 0.95
+
+    def test_log_param_single(self, store):
+        """log_param must record a param visible on get_run."""
+        exp_id = store.create_experiment("test")
+        run = store.create_run(exp_id, "user", 1000, [], "run")
+        store.log_param(run.info.run_id, Param("epochs", "10"))
+        fetched = store.get_run(run.info.run_id)
+        assert fetched.data.params["epochs"] == "10"
+
+    # --- Experiment tag contract ---
+
+    def test_set_experiment_tag(self, store):
+        """set_experiment_tag must be visible on the experiment."""
+        from mlflow.entities import ExperimentTag
+
+        exp_id = store.create_experiment("test")
+        store.set_experiment_tag(exp_id, ExperimentTag("env", "staging"))
+        exp = store.get_experiment(exp_id)
+        # MLflow Experiment.tags is a dict {key: value}
+        assert isinstance(exp.tags, dict)
+        assert exp.tags.get("env") == "staging"
+
+    # --- Delete/restore run contract ---
+
+    def test_delete_run_changes_lifecycle_stage(self, store):
+        """delete_run must change lifecycle_stage to 'deleted'."""
+        exp_id = store.create_experiment("test")
+        run = store.create_run(exp_id, "user", 1000, [], "run")
+        store.delete_run(run.info.run_id)
+        fetched = store.get_run(run.info.run_id)
+        assert fetched.info.lifecycle_stage == "deleted"
+
+    def test_restore_run_changes_lifecycle_stage(self, store):
+        """restore_run must change lifecycle_stage back to 'active'."""
+        exp_id = store.create_experiment("test")
+        run = store.create_run(exp_id, "user", 1000, [], "run")
+        store.delete_run(run.info.run_id)
+        store.restore_run(run.info.run_id)
+        fetched = store.get_run(run.info.run_id)
+        assert fetched.info.lifecycle_stage == "active"
+
+    # --- get_nonexistent_run contract ---
+
+    def test_get_nonexistent_run_raises_mlflow_exception(self, store):
+        """Fetching a run that does not exist must raise MlflowException."""
+        with pytest.raises(MlflowException):
+            store.get_run("nonexistent-run-id")
+
+    # --- search_experiments pagination contract ---
+
+    def test_search_experiments_deleted_only(self, store):
+        """DELETED_ONLY view must return only deleted experiments."""
+        exp_id = store.create_experiment("deleted-exp")
+        store.create_experiment("active-exp")
+        store.delete_experiment(exp_id)
+        results = store.search_experiments(view_type=ViewType.DELETED_ONLY)
+        names = [e.name for e in results]
+        assert "deleted-exp" in names
+        assert "active-exp" not in names
+
+    def test_search_experiments_all(self, store):
+        """ALL view must include both active and deleted experiments."""
+        exp_id = store.create_experiment("will-delete")
+        store.create_experiment("stays-active")
+        store.delete_experiment(exp_id)
+        results = store.search_experiments(view_type=ViewType.ALL)
+        names = [e.name for e in results]
+        assert "will-delete" in names
+        assert "stays-active" in names

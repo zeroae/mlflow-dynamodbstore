@@ -1,64 +1,120 @@
 site_name: mlflow-dynamodbstore
+site_url: https://zeroae.github.io/mlflow-dynamodbstore/
 site_description: DynamoDB-backed MLflow tracking store, model registry, and auth plugin
+site_author: ZeroAE
 repo_url: https://github.com/zeroae/mlflow-dynamodbstore
+repo_name: zeroae/mlflow-dynamodbstore
+edit_uri: edit/main/docs/
 
 theme:
   name: material
+  custom_dir: docs/overrides
   palette:
-    - scheme: default
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
-    - scheme: slate
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
   features:
+    - navigation.top
+    - navigation.footer
     - content.code.copy
-    - navigation.tabs
-    - navigation.sections
+    - content.code.annotate
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+  icon:
+    repo: fontawesome/brands/github
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - https://unpkg.com/mermaid@10/dist/mermaid.min.js
 
 plugins:
   - search
   - mkdocstrings:
+      default_handler: python
       handlers:
         python:
           paths: [src]
           options:
             docstring_style: google
+            docstring_options:
+              ignore_init_summary: true
             show_source: true
             show_root_heading: true
-
-markdown_extensions:
-  - admonition
-  - attr_list
-  - tables
-  - toc:
-      permalink: true
-  - pymdownx.details
-  - pymdownx.highlight
-  - pymdownx.inlinehilite
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format
-  - pymdownx.tabbed:
-      alternate_style: true
-  - pymdownx.tasklist:
-      custom_checkbox: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            signature_crossrefs: true
 
 extra:
   version:
     provider: mike
+    default: latest
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/zeroae/mlflow-dynamodbstore
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/mlflow-dynamodbstore/
 
-extra_javascript:
-  - https://unpkg.com/mermaid@10/dist/mermaid.min.js
+markdown_extensions:
+  - attr_list
+  - mkdocs-click
+  - admonition
+  - pymdownx.tasklist:
+      custom_checkbox: true
+      clickable_checkbox: false
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_div_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+  - md_in_html
 
 nav:
   - Home: index.md
   - User Guide:
     - Quickstart: user-guide/quickstart.md
     - Configuration: user-guide/configuration.md
+    - Workspaces: user-guide/workspaces.md
+    - X-Ray Integration: user-guide/xray-integration.md
+  - Operator Guide:
+    - CLI Reference: operator-guide/cli-reference.md
+    - TTL Lifecycle: operator-guide/ttl-lifecycle.md
+    - Monitoring: operator-guide/monitoring.md
+    - Upgrading: operator-guide/upgrading.md
   - Reference:
     - API: reference/api.md
+    - Schema: reference/schema.md
+    - Access Patterns: reference/access-patterns.md
+  - Contributing:
+    - Development: contributing/development.md
+  - ADRs:
+    - Single Table Design: adr/001-single-table-design.md

@@ -192,3 +192,133 @@ class TestRegistryCompatibility:
         store.delete_registered_model_alias("test-model", "prod")
         with pytest.raises(MlflowException):
             store.get_model_version_by_alias("test-model", "prod")
+
+    # --- Rename registered model contract ---
+
+    def test_rename_registered_model(self, store):
+        """rename_registered_model must update the model name."""
+        store.create_registered_model("original-model")
+        model = store.rename_registered_model("original-model", "renamed-model")
+        assert model.name == "renamed-model"
+
+    def test_rename_registered_model_old_name_gone(self, store):
+        """After rename, get_registered_model with old name must raise."""
+        store.create_registered_model("old-model")
+        store.rename_registered_model("old-model", "new-model")
+        with pytest.raises(MlflowException):
+            store.get_registered_model("old-model")
+
+    def test_rename_registered_model_new_name_works(self, store):
+        """After rename, get_registered_model with new name must succeed."""
+        store.create_registered_model("before")
+        store.rename_registered_model("before", "after")
+        model = store.get_registered_model("after")
+        assert model.name == "after"
+
+    # --- Update registered model contract ---
+
+    def test_update_registered_model_description(self, store):
+        """update_registered_model must update the description."""
+        store.create_registered_model("desc-model")
+        model = store.update_registered_model("desc-model", "updated description")
+        assert model.description == "updated description"
+
+    # --- Registered model tags contract ---
+
+    def test_set_registered_model_tag(self, store):
+        """set_registered_model_tag must be visible on get_registered_model."""
+        from mlflow.entities.model_registry import RegisteredModelTag
+
+        store.create_registered_model("tagged-model")
+        store.set_registered_model_tag("tagged-model", RegisteredModelTag("env", "prod"))
+        model = store.get_registered_model("tagged-model")
+        # MLflow RegisteredModel.tags is a dict {key: value}
+        assert isinstance(model.tags, dict)
+        assert model.tags.get("env") == "prod"
+
+    def test_delete_registered_model_tag(self, store):
+        """delete_registered_model_tag must remove the tag."""
+        from mlflow.entities.model_registry import RegisteredModelTag
+
+        store.create_registered_model("tagged-model")
+        store.set_registered_model_tag("tagged-model", RegisteredModelTag("tmp", "val"))
+        store.delete_registered_model_tag("tagged-model", "tmp")
+        model = store.get_registered_model("tagged-model")
+        assert isinstance(model.tags, dict)
+        assert "tmp" not in model.tags
+
+    # --- Model version tags contract ---
+
+    def test_set_model_version_tag(self, store):
+        """set_model_version_tag must be visible on get_model_version."""
+        from mlflow.entities.model_registry.model_version_tag import ModelVersionTag
+
+        store.create_registered_model("mv-tag-model")
+        store.create_model_version("mv-tag-model", source="s3://bucket")
+        store.set_model_version_tag("mv-tag-model", "1", ModelVersionTag("key1", "val1"))
+        mv = store.get_model_version("mv-tag-model", "1")
+        # MLflow ModelVersion.tags is a dict {key: value}
+        assert isinstance(mv.tags, dict)
+        assert mv.tags.get("key1") == "val1"
+
+    def test_delete_model_version_tag(self, store):
+        """delete_model_version_tag must remove the tag."""
+        from mlflow.entities.model_registry.model_version_tag import ModelVersionTag
+
+        store.create_registered_model("mv-tag-model")
+        store.create_model_version("mv-tag-model", source="s3://bucket")
+        store.set_model_version_tag("mv-tag-model", "1", ModelVersionTag("tmp", "val"))
+        store.delete_model_version_tag("mv-tag-model", "1", "tmp")
+        mv = store.get_model_version("mv-tag-model", "1")
+        assert isinstance(mv.tags, dict)
+        assert "tmp" not in mv.tags
+
+    # --- Update model version contract ---
+
+    def test_update_model_version_description(self, store):
+        """update_model_version must update the description."""
+        store.create_registered_model("upd-model")
+        store.create_model_version("upd-model", source="s3://bucket")
+        mv = store.update_model_version("upd-model", "1", "new description")
+        assert mv.description == "new description"
+
+    # --- get_latest_versions contract ---
+
+    def test_get_latest_versions_returns_list(self, store):
+        """get_latest_versions must return a list of ModelVersion."""
+        store.create_registered_model("latest-model")
+        store.create_model_version("latest-model", source="s3://v1")
+        store.create_model_version("latest-model", source="s3://v2")
+        results = store.get_latest_versions("latest-model")
+        assert isinstance(results, list)
+        assert all(isinstance(mv, ModelVersion) for mv in results)
+
+    def test_get_latest_versions_returns_highest_version(self, store):
+        """get_latest_versions must return the highest version per stage."""
+        store.create_registered_model("latest-model")
+        store.create_model_version("latest-model", source="s3://v1")
+        store.create_model_version("latest-model", source="s3://v2")
+        results = store.get_latest_versions("latest-model")
+        # Both versions are in "None" stage, so we should get just the latest
+        assert len(results) == 1
+        assert results[0].version == "2"
+
+    # --- Get nonexistent model version contract ---
+
+    def test_get_nonexistent_model_version_raises(self, store):
+        """Fetching a version that does not exist must raise MlflowException."""
+        store.create_registered_model("my-model")
+        with pytest.raises(MlflowException):
+            store.get_model_version("my-model", "999")
+
+    # --- Copy model version contract ---
+
+    def test_copy_model_version(self, store):
+        """copy_model_version must create a new version in the destination model."""
+        store.create_registered_model("src-model")
+        store.create_registered_model("dst-model")
+        v1 = store.create_model_version("src-model", source="s3://original")
+        copied = store.copy_model_version(v1, "dst-model")
+        assert isinstance(copied, ModelVersion)
+        assert copied.name == "dst-model"
+        assert copied.source == "s3://original"

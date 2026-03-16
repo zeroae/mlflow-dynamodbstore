@@ -21,7 +21,11 @@ dependencies = [
     "boto3",
     "python-ulid>=3.0.0",
     "snowballstemmer",
+    "click>=8.0.0",
 ]
+
+[project.scripts]
+mlflow-dynamodbstore = "mlflow_dynamodbstore.cli:cli"
 
 [project.entry-points."mlflow.tracking_store"]
 dynamodb = "mlflow_dynamodbstore.tracking_store:DynamoDBTrackingStore"
@@ -57,6 +61,7 @@ docs = [
     "mkdocs-material",
     "mkdocstrings[python]",
     "mike",
+    "mkdocs-click",
 ]
 
 [tool.hatch.version]
@@ -71,6 +76,7 @@ packages = ["src/mlflow_dynamodbstore"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+exclude = ["src/mlflow_dynamodbstore/_version.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
