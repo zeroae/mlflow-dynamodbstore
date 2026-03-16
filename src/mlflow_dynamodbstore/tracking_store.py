@@ -360,23 +360,30 @@ class DynamoDBTrackingStore(AbstractStore):
         self._cache.invalidate("exp_name", old_name)
 
     def delete_experiment(self, experiment_id: str) -> None:
-        """Soft-delete an experiment."""
+        """Soft-delete an experiment and set TTL on META only."""
         now_ms = int(time.time() * 1000)
+
+        updates: dict[str, Any] = {
+            "lifecycle_stage": "deleted",
+            "last_update_time": now_ms,
+            LSI1_SK: f"deleted#{experiment_id}",
+            LSI2_SK: str(now_ms),
+            GSI2_PK: f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#deleted",
+        }
+
+        # Compute TTL if enabled
+        ttl_seconds = self._config.get_soft_deleted_ttl_seconds()
+        if ttl_seconds is not None:
+            updates["ttl"] = int(time.time()) + ttl_seconds
 
         self._table.update_item(
             pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
             sk=SK_EXPERIMENT_META,
-            updates={
-                "lifecycle_stage": "deleted",
-                "last_update_time": now_ms,
-                LSI1_SK: f"deleted#{experiment_id}",
-                LSI2_SK: str(now_ms),
-                GSI2_PK: f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#deleted",
-            },
+            updates=updates,
         )
 
     def restore_experiment(self, experiment_id: str) -> None:
-        """Restore a soft-deleted experiment."""
+        """Restore a soft-deleted experiment and remove TTL from META."""
         now_ms = int(time.time() * 1000)
 
         self._table.update_item(
@@ -389,6 +396,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 LSI2_SK: str(now_ms),
                 GSI2_PK: f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#active",
             },
+            removes=["ttl"],
         )
 
     def search_experiments(

@@ -136,3 +136,40 @@ class TestRunTTL:
             f"{PK_EXPERIMENT_PREFIX}{exp_id}", f"{SK_RUN_PREFIX}{run.info.run_id}"
         )
         assert "ttl" not in item  # disabled
+
+
+class TestExperimentTTL:
+    def test_delete_experiment_sets_ttl_on_meta(self, tracking_store):
+        table = tracking_store._table
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        tracking_store.delete_experiment(exp_id)
+        item = table.get_item(f"{PK_EXPERIMENT_PREFIX}{exp_id}", "E#META")
+        assert "ttl" in item
+        assert item["ttl"] > time.time()
+
+    def test_delete_experiment_does_not_set_ttl_on_children(self, tracking_store):
+        table = tracking_store._table
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        run = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r")
+        tracking_store.delete_experiment(exp_id)
+        run_item = table.get_item(
+            f"{PK_EXPERIMENT_PREFIX}{exp_id}", f"{SK_RUN_PREFIX}{run.info.run_id}"
+        )
+        assert "ttl" not in run_item  # children untouched
+
+    def test_restore_experiment_removes_ttl(self, tracking_store):
+        table = tracking_store._table
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        tracking_store.delete_experiment(exp_id)
+        tracking_store.restore_experiment(exp_id)
+        item = table.get_item(f"{PK_EXPERIMENT_PREFIX}{exp_id}", "E#META")
+        assert "ttl" not in item
+
+    def test_experiment_ttl_disabled_when_zero(self, tracking_store):
+        """When soft_deleted_retention_days=0, no TTL set."""
+        table = tracking_store._table
+        tracking_store._config.set_ttl_policy(soft_deleted_retention_days=0)
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        tracking_store.delete_experiment(exp_id)
+        item = table.get_item(f"{PK_EXPERIMENT_PREFIX}{exp_id}", "E#META")
+        assert "ttl" not in item
