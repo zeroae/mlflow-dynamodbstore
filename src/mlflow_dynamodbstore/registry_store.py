@@ -16,6 +16,7 @@ from mlflow.protos.databricks_pb2 import (
 from mlflow.store.model_registry.abstract_store import AbstractStore
 
 from mlflow_dynamodbstore.cache import ResolutionCache
+from mlflow_dynamodbstore.dynamodb.config import ConfigReader
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_PK,
@@ -100,6 +101,8 @@ class DynamoDBRegistryStore(AbstractStore):
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
         self._cache = ResolutionCache()
         self._workspace = "default"
+        self._config = ConfigReader(self._table)
+        self._config.reconcile()
 
     # ------------------------------------------------------------------
     # Name -> ULID resolution
@@ -161,6 +164,7 @@ class DynamoDBRegistryStore(AbstractStore):
             "creation_timestamp": now_ms,
             "last_updated_timestamp": now_ms,
             "workspace": self._workspace,
+            "tags": {},
             # LSI attributes
             LSI2_SK: str(now_ms),
             LSI3_SK: name,
@@ -326,6 +330,12 @@ class DynamoDBRegistryStore(AbstractStore):
             pk=f"{PK_MODEL_PREFIX}{model_ulid}",
             sk=f"{SK_MODEL_TAG_PREFIX}{key}",
         )
+        if self._config.should_denormalize(None, key):
+            self._remove_denormalized_tag(
+                pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+                sk=SK_MODEL_META,
+                tag_key=key,
+            )
 
     def _write_model_tag(self, model_ulid: str, tag: RegisteredModelTag) -> None:
         """Write a model tag item."""
@@ -336,6 +346,13 @@ class DynamoDBRegistryStore(AbstractStore):
             "value": tag.value,
         }
         self._table.put_item(item)
+        if self._config.should_denormalize(None, tag.key):
+            self._denormalize_tag(
+                pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+                sk=SK_MODEL_META,
+                tag_key=tag.key,
+                tag_value=tag.value,
+            )
 
     def _get_model_tags(self, model_ulid: str) -> list[RegisteredModelTag]:
         """Read all tags for a registered model."""
@@ -386,6 +403,7 @@ class DynamoDBRegistryStore(AbstractStore):
             "current_stage": "None",
             "creation_timestamp": now_ms,
             "last_updated_timestamp": now_ms,
+            "tags": {},
             # LSI attributes
             LSI1_SK: str(now_ms),
             LSI2_SK: str(now_ms),
@@ -560,6 +578,12 @@ class DynamoDBRegistryStore(AbstractStore):
             pk=f"{PK_MODEL_PREFIX}{model_ulid}",
             sk=f"{SK_VERSION_PREFIX}{padded}{SK_VERSION_TAG_SUFFIX}{key}",
         )
+        if self._config.should_denormalize(None, key):
+            self._remove_denormalized_tag(
+                pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+                sk=f"{SK_VERSION_PREFIX}{padded}",
+                tag_key=key,
+            )
 
     def get_model_version_download_uri(self, name: str, version: str) -> str:
         """Return the source URI for a model version."""
@@ -622,6 +646,30 @@ class DynamoDBRegistryStore(AbstractStore):
             "value": tag.value,
         }
         self._table.put_item(item)
+        if self._config.should_denormalize(None, tag.key):
+            self._denormalize_tag(
+                pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+                sk=f"{SK_VERSION_PREFIX}{padded_version}",
+                tag_key=tag.key,
+                tag_value=tag.value,
+            )
+
+    def _denormalize_tag(self, pk: str, sk: str, tag_key: str, tag_value: str) -> None:
+        """Update the tags map on an item with a new key-value entry."""
+        self._table._table.update_item(
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression="SET #tags.#k = :v",
+            ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
+            ExpressionAttributeValues={":v": tag_value},
+        )
+
+    def _remove_denormalized_tag(self, pk: str, sk: str, tag_key: str) -> None:
+        """Remove a key from the tags map on an item."""
+        self._table._table.update_item(
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression="REMOVE #tags.#k",
+            ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
+        )
 
     def _get_version_tags(self, model_ulid: str, padded_version: str) -> list[ModelVersionTag]:
         """Read all tags for a model version."""
