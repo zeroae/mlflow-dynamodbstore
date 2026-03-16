@@ -18,6 +18,9 @@ from mlflow.store.model_registry.abstract_store import AbstractStore
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
+    GSI1_PK,
+    GSI1_RUN_PREFIX,
+    GSI1_SK,
     GSI2_MODELS_PREFIX,
     GSI2_PK,
     GSI2_SK,
@@ -27,13 +30,17 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI5_MODEL_NAMES_PREFIX,
     GSI5_PK,
     GSI5_SK,
+    LSI1_SK,
     LSI2_SK,
     LSI3_SK,
     LSI4_SK,
+    LSI5_SK,
     PK_MODEL_PREFIX,
     SK_MODEL_ALIAS_PREFIX,
     SK_MODEL_META,
     SK_MODEL_TAG_PREFIX,
+    SK_VERSION_PREFIX,
+    SK_VERSION_TAG_SUFFIX,
 )
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
@@ -339,7 +346,7 @@ class DynamoDBRegistryStore(AbstractStore):
         return [RegisteredModelTag(item["key"], item["value"]) for item in items]
 
     # ------------------------------------------------------------------
-    # Stub methods -- Model Versions (Task 18)
+    # Model Version CRUD
     # ------------------------------------------------------------------
 
     def create_model_version(
@@ -353,16 +360,120 @@ class DynamoDBRegistryStore(AbstractStore):
         local_model_path: str | None = None,
         model_id: str | None = None,
     ) -> ModelVersion:
-        raise MlflowException("Deferred to Task 18")
+        """Create a new model version under the given registered model."""
+        model_ulid = self._resolve_model_ulid(name)
+        pk = f"{PK_MODEL_PREFIX}{model_ulid}"
+
+        # Determine next version number
+        existing = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
+        # Filter out tag items (V#00000001#TAG#key)
+        version_items = [it for it in existing if SK_VERSION_TAG_SUFFIX not in it["SK"]]
+        next_ver = len(version_items) + 1
+        padded = _pad_version(next_ver)
+
+        now_ms = int(time.time() * 1000)
+
+        item: dict[str, Any] = {
+            "PK": pk,
+            "SK": f"{SK_VERSION_PREFIX}{padded}",
+            "name": name,
+            "version": padded,
+            "source": source or "",
+            "run_id": run_id or "",
+            "run_link": run_link or "",
+            "description": description or "",
+            "status": "READY",
+            "current_stage": "None",
+            "creation_timestamp": now_ms,
+            "last_updated_timestamp": now_ms,
+            # LSI attributes
+            LSI1_SK: str(now_ms),
+            LSI2_SK: str(now_ms),
+            LSI3_SK: f"None#{padded}",
+            LSI4_SK: (source or "").lower(),
+            LSI5_SK: f"{run_id or ''}#{padded}",
+        }
+
+        # GSI1: run linkage (only if run_id provided)
+        if run_id:
+            item[GSI1_PK] = f"{GSI1_RUN_PREFIX}{run_id}"
+            item[GSI1_SK] = f"MV#{model_ulid}#{padded}"
+
+        self._table.put_item(item)
+
+        # Update model's last_updated_timestamp
+        self._table.update_item(
+            pk=pk,
+            sk=SK_MODEL_META,
+            updates={"last_updated_timestamp": now_ms, LSI2_SK: str(now_ms)},
+        )
+
+        # Write tags if provided
+        version_tags: list[ModelVersionTag] = []
+        if tags:
+            for tag in tags:
+                self._write_version_tag(model_ulid, padded, tag)
+                version_tags.append(tag)
+
+        return _item_to_model_version(item, version_tags)
 
     def get_model_version(self, name: str, version: str) -> ModelVersion:
-        raise MlflowException("Deferred to Task 18")
+        """Fetch a model version by name and version number."""
+        model_ulid = self._resolve_model_ulid(name)
+        padded = _pad_version(version)
+
+        item = self._table.get_item(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk=f"{SK_VERSION_PREFIX}{padded}",
+        )
+        if item is None:
+            raise MlflowException(
+                f"Model Version (name={name}, version={version}) not found.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        tags = self._get_version_tags(model_ulid, padded)
+        return _item_to_model_version(item, tags)
 
     def update_model_version(self, name: str, version: str, description: str) -> ModelVersion:
-        raise MlflowException("Deferred to Task 18")
+        """Update a model version's description."""
+        model_ulid = self._resolve_model_ulid(name)
+        padded = _pad_version(version)
+        now_ms = int(time.time() * 1000)
+
+        updated_item = self._table.update_item(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk=f"{SK_VERSION_PREFIX}{padded}",
+            updates={
+                "description": description,
+                "last_updated_timestamp": now_ms,
+                LSI2_SK: str(now_ms),
+            },
+        )
+
+        if updated_item is None:
+            raise MlflowException(
+                f"Model Version (name={name}, version={version}) not found.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        tags = self._get_version_tags(model_ulid, padded)
+        return _item_to_model_version(updated_item, tags)
 
     def delete_model_version(self, name: str, version: str) -> None:
-        raise MlflowException("Deferred to Task 18")
+        """Delete a model version and its tags."""
+        model_ulid = self._resolve_model_ulid(name)
+        padded = _pad_version(version)
+        pk = f"{PK_MODEL_PREFIX}{model_ulid}"
+
+        # Delete version item
+        self._table.delete_item(pk=pk, sk=f"{SK_VERSION_PREFIX}{padded}")
+
+        # Delete version tags
+        tag_prefix = f"{SK_VERSION_PREFIX}{padded}{SK_VERSION_TAG_SUFFIX}"
+        tag_items = self._table.query(pk=pk, sk_prefix=tag_prefix)
+        for tag_item in tag_items:
+            self._table.delete_item(pk=pk, sk=tag_item["SK"])
 
     def search_model_versions(
         self,
@@ -371,19 +482,89 @@ class DynamoDBRegistryStore(AbstractStore):
         order_by: list[str] | None = None,
         page_token: str | None = None,
     ) -> list[ModelVersion]:
-        raise MlflowException("Deferred to Task 18")
+        """Search model versions across all registered models."""
+        # Get all models in the workspace
+        model_items = self._table.query(
+            pk=f"{GSI2_MODELS_PREFIX}{self._workspace}",
+            index_name="gsi2",
+        )
+
+        versions: list[ModelVersion] = []
+        for model_item in model_items:
+            model_ulid = model_item["PK"].replace(PK_MODEL_PREFIX, "")
+            pk = f"{PK_MODEL_PREFIX}{model_ulid}"
+            ver_items = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
+            for vi in ver_items:
+                # Skip tag items
+                if SK_VERSION_TAG_SUFFIX in vi["SK"]:
+                    continue
+                padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
+                tags = self._get_version_tags(model_ulid, padded)
+                versions.append(_item_to_model_version(vi, tags))
+
+        if max_results:
+            versions = versions[:max_results]
+        return versions
 
     def get_latest_versions(self, name: str, stages: list[str] | None = None) -> list[ModelVersion]:
-        raise MlflowException("Deferred to Task 18")
+        """Get the latest version for each requested stage."""
+        model_ulid = self._resolve_model_ulid(name)
+        pk = f"{PK_MODEL_PREFIX}{model_ulid}"
+
+        if not stages:
+            # Get all versions and determine unique stages
+            ver_items = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
+            ver_items = [vi for vi in ver_items if SK_VERSION_TAG_SUFFIX not in vi["SK"]]
+            # Group by stage, pick latest (highest version) per stage
+            stage_latest: dict[str, dict[str, Any]] = {}
+            for vi in ver_items:
+                stage = vi.get("current_stage", "None")
+                existing_item = stage_latest.get(stage)
+                if existing_item is None or vi["version"] > existing_item["version"]:
+                    stage_latest[stage] = vi
+            results = []
+            for vi in stage_latest.values():
+                padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
+                tags = self._get_version_tags(model_ulid, padded)
+                results.append(_item_to_model_version(vi, tags))
+            return results
+
+        results = []
+        for stage in stages:
+            # Query LSI3 where lsi3sk begins_with "stage#"
+            stage_items = self._table.query(
+                pk=pk,
+                sk_prefix=f"{stage}#",
+                index_name="lsi3",
+                scan_forward=False,
+                limit=1,
+            )
+            if stage_items:
+                vi = stage_items[0]
+                padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
+                tags = self._get_version_tags(model_ulid, padded)
+                results.append(_item_to_model_version(vi, tags))
+        return results
 
     def set_model_version_tag(self, name: str, version: str, tag: Any) -> None:
-        raise MlflowException("Deferred to Task 18")
+        """Set a tag on a model version."""
+        model_ulid = self._resolve_model_ulid(name)
+        padded = _pad_version(version)
+        self._write_version_tag(model_ulid, padded, tag)
 
     def delete_model_version_tag(self, name: str, version: str, key: str) -> None:
-        raise MlflowException("Deferred to Task 18")
+        """Delete a tag from a model version."""
+        model_ulid = self._resolve_model_ulid(name)
+        padded = _pad_version(version)
+        self._table.delete_item(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk=f"{SK_VERSION_PREFIX}{padded}{SK_VERSION_TAG_SUFFIX}{key}",
+        )
 
     def get_model_version_download_uri(self, name: str, version: str) -> str:
-        raise MlflowException("Deferred to Task 18")
+        """Return the source URI for a model version."""
+        mv = self.get_model_version(name, version)
+        return mv.source or ""
 
     def transition_model_version_stage(
         self,
@@ -392,10 +573,64 @@ class DynamoDBRegistryStore(AbstractStore):
         stage: str,
         archive_existing_versions: bool,
     ) -> ModelVersion:
-        raise MlflowException("Deferred to Task 18")
+        """Transition a model version to a new stage."""
+        model_ulid = self._resolve_model_ulid(name)
+        padded = _pad_version(version)
+        now_ms = int(time.time() * 1000)
+
+        updated_item = self._table.update_item(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk=f"{SK_VERSION_PREFIX}{padded}",
+            updates={
+                "current_stage": stage,
+                "last_updated_timestamp": now_ms,
+                LSI2_SK: str(now_ms),
+                LSI3_SK: f"{stage}#{padded}",
+            },
+        )
+
+        if updated_item is None:
+            raise MlflowException(
+                f"Model Version (name={name}, version={version}) not found.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        tags = self._get_version_tags(model_ulid, padded)
+        return _item_to_model_version(updated_item, tags)
 
     def copy_model_version(self, src_mv: ModelVersion, dst_name: str) -> ModelVersion:
-        raise MlflowException("Deferred to Task 18")
+        """Copy a model version to another registered model."""
+        return self.create_model_version(
+            name=dst_name,
+            source=src_mv.source or "",
+            run_id=src_mv.run_id,
+            description=src_mv.description,
+        )
+
+    # ------------------------------------------------------------------
+    # Model Version Tags
+    # ------------------------------------------------------------------
+
+    def _write_version_tag(
+        self, model_ulid: str, padded_version: str, tag: ModelVersionTag
+    ) -> None:
+        """Write a version tag item."""
+        item = {
+            "PK": f"{PK_MODEL_PREFIX}{model_ulid}",
+            "SK": f"{SK_VERSION_PREFIX}{padded_version}{SK_VERSION_TAG_SUFFIX}{tag.key}",
+            "key": tag.key,
+            "value": tag.value,
+        }
+        self._table.put_item(item)
+
+    def _get_version_tags(self, model_ulid: str, padded_version: str) -> list[ModelVersionTag]:
+        """Read all tags for a model version."""
+        prefix = f"{SK_VERSION_PREFIX}{padded_version}{SK_VERSION_TAG_SUFFIX}"
+        items = self._table.query(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk_prefix=prefix,
+        )
+        return [ModelVersionTag(item["key"], item["value"]) for item in items]
 
     # ------------------------------------------------------------------
     # Alias operations (Task 19)
