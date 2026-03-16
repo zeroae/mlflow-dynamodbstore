@@ -459,6 +459,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Server
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ttl-retention" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1169,6 +1180,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Server
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ttl-retention" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1353,6 +1375,37 @@
 <p>When a region is specified (e.g., <code>us-east-1</code>), the plugin uses the default AWS SDK endpoint for that region. When a <code>host:port</code> is specified, it is treated as a local or custom endpoint.</p>
 </div>
 <h2 id="environment-variables">Environment Variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h2>
+<h3 id="server">Server<a class="headerlink" href="#server" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Description</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MLFLOW_FLASK_SERVER_SECRET_KEY</code></td>
+<td><strong>Required</strong> when using <code>--app-name dynamodb-auth</code>. Static secret for CSRF protection. Must be consistent across all server instances.</td>
+<td><em>(none)</em></td>
+</tr>
+<tr>
+<td><code>MLFLOW_AUTH_ADMIN_USERNAME</code></td>
+<td>Admin username created on first startup</td>
+<td><code>admin</code></td>
+</tr>
+<tr>
+<td><code>MLFLOW_AUTH_ADMIN_PASSWORD</code></td>
+<td>Admin password created on first startup</td>
+<td><code>password1234</code></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition danger">
+<p class="admonition-title">Change Default Credentials</p>
+<p>Always change the default admin password in production. Set <code>MLFLOW_AUTH_ADMIN_USERNAME</code> and <code>MLFLOW_AUTH_ADMIN_PASSWORD</code> before first startup.</p>
+</div>
 <h3 id="ttl-retention">TTL Retention<a class="headerlink" href="#ttl-retention" title="Permanent link">&para;</a></h3>
 <p>These variables control how long data is retained before DynamoDB TTL removes it. Set to <code>0</code> to disable TTL for a category.</p>
 <table>
