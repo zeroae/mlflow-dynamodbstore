@@ -1236,16 +1236,18 @@ class DynamoDBTrackingStore(AbstractStore):
                 f"{SK_RUN_PREFIX}{run_id}{SK_METRIC_HISTORY_PREFIX}"
                 f"{metric.key}#{padded}#{metric.timestamp}"
             )
-            items.append(
-                {
-                    "PK": pk,
-                    "SK": hist_sk,
-                    "key": metric.key,
-                    "value": ddb_value,
-                    "timestamp": metric.timestamp,
-                    "step": metric.step,
-                }
-            )
+            hist_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": hist_sk,
+                "key": metric.key,
+                "value": ddb_value,
+                "timestamp": metric.timestamp,
+                "step": metric.step,
+            }
+            metric_history_ttl = self._config.get_metric_history_ttl_seconds()
+            if metric_history_ttl is not None:
+                hist_item["ttl"] = int(time.time()) + metric_history_ttl
+            items.append(hist_item)
 
             # RANK item for metric (inverted value for descending sort)
             max_val = 9999999999.9999

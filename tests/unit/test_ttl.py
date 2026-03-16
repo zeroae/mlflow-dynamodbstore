@@ -1,4 +1,4 @@
-"""Tests for TTL on soft-delete (delete_run + restore_run)."""
+"""Tests for TTL on soft-delete (delete_run + restore_run) and trace lifecycle."""
 
 import time
 
@@ -173,3 +173,48 @@ class TestExperimentTTL:
         tracking_store.delete_experiment(exp_id)
         item = table.get_item(f"{PK_EXPERIMENT_PREFIX}{exp_id}", "E#META")
         assert "ttl" not in item
+
+
+class TestMetricHistoryTTL:
+    def test_metric_history_has_ttl(self, tracking_store):
+        table = tracking_store._table
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        run = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r")
+        tracking_store.log_batch(
+            run.info.run_id, metrics=[Metric("loss", 0.5, 1, 100)], params=[], tags=[]
+        )
+        # History item should have TTL
+        history = table.query(
+            pk=f"{PK_EXPERIMENT_PREFIX}{exp_id}",
+            sk_prefix=f"{SK_RUN_PREFIX}{run.info.run_id}#MHIST#",
+        )
+        assert len(history) > 0
+        assert "ttl" in history[0]
+
+    def test_metric_latest_no_ttl(self, tracking_store):
+        table = tracking_store._table
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        run = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r")
+        tracking_store.log_batch(
+            run.info.run_id, metrics=[Metric("loss", 0.5, 1, 100)], params=[], tags=[]
+        )
+        latest = table.get_item(
+            f"{PK_EXPERIMENT_PREFIX}{exp_id}",
+            f"{SK_RUN_PREFIX}{run.info.run_id}#METRIC#loss",
+        )
+        assert "ttl" not in latest
+
+    def test_metric_history_ttl_disabled_when_zero(self, tracking_store):
+        table = tracking_store._table
+        tracking_store._config.set_ttl_policy(metric_history_retention_days=0)
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        run = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r")
+        tracking_store.log_batch(
+            run.info.run_id, metrics=[Metric("loss", 0.5, 1, 100)], params=[], tags=[]
+        )
+        history = table.query(
+            pk=f"{PK_EXPERIMENT_PREFIX}{exp_id}",
+            sk_prefix=f"{SK_RUN_PREFIX}{run.info.run_id}#MHIST#",
+        )
+        assert len(history) > 0
+        assert "ttl" not in history[0]
