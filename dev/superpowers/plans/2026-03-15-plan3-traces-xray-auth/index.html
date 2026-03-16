@@ -1,0 +1,2076 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="DynamoDB-backed MLflow tracking store, model registry, and auth plugin">
+      
+      
+        <meta name="author" content="ZeroAE">
+      
+      
+        <link rel="canonical" href="https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/plans/2026-03-15-plan3-traces-xray-auth/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
+    
+    
+      
+        <title>Plan 3: Traces, X-Ray & Auth — Implementation Plan - mlflow-dynamodbstore</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#plan-3-traces-x-ray-auth-implementation-plan" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="mlflow-dynamodbstore" class="md-header__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            mlflow-dynamodbstore
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Plan 3: Traces, X-Ray &amp; Auth — Implementation Plan
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/zeroae/mlflow-dynamodbstore" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/mlflow-dynamodbstore
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="mlflow-dynamodbstore" class="md-nav__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    mlflow-dynamodbstore
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/zeroae/mlflow-dynamodbstore" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/mlflow-dynamodbstore
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/workspaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workspaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/xray-integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    X-Ray Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/ttl-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TTL Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/upgrading/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/access-patterns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Access Patterns
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../contributing/development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADRs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    ADRs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../adr/001-single-table-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single Table Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#file-structure-newmodified-files-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Structure (new/modified files only)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chunk-1-trace-crud-dynamodb-only-no-x-ray" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chunk 1: Trace CRUD (DynamoDB-only, no X-Ray)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Chunk 1: Trace CRUD (DynamoDB-only, no X-Ray)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#task-1-trace-metadata-crud" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 1: Trace metadata CRUD
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-2-assessments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 2: Assessments
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-3-search_traces-dynamodb-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 3: search_traces (DynamoDB-only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-4-delete_traces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 4: delete_traces
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chunk-2-x-ray-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chunk 2: X-Ray Integration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Chunk 2: X-Ray Integration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#task-5-x-ray-client-wrapper" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 5: X-Ray client wrapper
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-6-x-ray-filter-translator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 6: X-Ray filter translator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-7-x-ray-span-converter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 7: X-Ray span converter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-8-annotation-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 8: Annotation config
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-9-get_trace-with-span-proxy-lazy-caching-span-indexing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 9: get_trace with span proxy + lazy caching + span indexing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-10-search_traces-hybrid-dynamodb-x-ray" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 10: search_traces hybrid (DynamoDB + X-Ray)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-11-otel-annotation-processor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 11: OTel annotation processor
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chunk-3-auth-plugin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chunk 3: Auth Plugin
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Chunk 3: Auth Plugin">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#task-12-dynamodbauthstore-user-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 12: DynamoDBAuthStore — user methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-13-dynamodbauthstore-experiment-permissions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 13: DynamoDBAuthStore — experiment permissions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-14-dynamodbauthstore-model-workspace-scorer-permissions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 14: DynamoDBAuthStore — model + workspace + scorer permissions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-15-auth-app-plugin-create_app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 15: Auth app plugin (create_app)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-16-auth-client" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 16: Auth client
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chunk-4-integration-tests-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chunk 4: Integration Tests + Verification
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Chunk 4: Integration Tests + Verification">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#task-17-trace-integration-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 17: Trace integration tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-18-auth-integration-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 18: Auth integration tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-19-final-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 19: Final verification
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/zeroae/mlflow-dynamodbstore/edit/main/docs/superpowers/plans/2026-03-15-plan3-traces-xray-auth.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="plan-3-traces-x-ray-auth-implementation-plan">Plan 3: Traces, X-Ray &amp; Auth — Implementation Plan<a class="headerlink" href="#plan-3-traces-x-ray-auth-implementation-plan" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>For agentic workers:</strong> REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (<code>- [ ]</code>) syntax for tracking.</p>
+</blockquote>
+<p><strong>Goal:</strong> Add trace CRUD with X-Ray span proxy (lazy caching + span attribute indexing), OTel annotation processor, and the full DynamoDB-backed auth plugin with ~50 duck-typed methods.</p>
+<p><strong>Architecture:</strong> Traces stored in DynamoDB (META, tags, request metadata, assessments). Spans live in X-Ray and are lazy-cached to DynamoDB on first <code>get_trace</code> call, with span attributes (types, statuses, names, models) denormalized onto trace META and FTS-indexed. Auth uses the USER# partition with typed permission SKs and GSI4 for reverse queries.</p>
+<p><strong>Tech Stack:</strong> Same as Plans 1-2, plus <code>werkzeug</code> (for password hashing, already a transitive dep of mlflow/flask).</p>
+<p><strong>Spec:</strong> <code>docs/superpowers/specs/2026-03-15-mlflow-dynamodbstore-design.md</code></p>
+<p><strong>Depends on:</strong> Plans 1 + 2 (foundation, CRUD, search, FTS)</p>
+<p><strong>What Plan 2 provides (used by Plan 3):</strong>
+- <code>dynamodb/search.py</code>: <code>FilterPredicate</code>, <code>QueryPlan</code>, <code>parse_run_filter()</code>, <code>plan_run_query()</code>, <code>execute_query()</code> — extend for traces
+- <code>dynamodb/fts.py</code>: <code>tokenize_words()</code>, <code>tokenize_trigrams()</code>, <code>fts_items_for_text()</code>, <code>fts_diff()</code> — use for trace tags, metadata, assessments, span names/content
+- <code>dynamodb/config.py</code>: <code>ConfigReader</code> — use for TTL policy, denormalize patterns, FTS trigram fields
+- <code>dynamodb/pagination.py</code>: <code>encode_page_token()</code>, <code>decode_page_token()</code> — use for search_traces
+- Tag denormalization pattern: <code>_denormalize_tag()</code>, <code>_remove_denormalized_tag()</code> on tracking_store — replicate for trace tags
+- NAME_REV pattern and GSI5 queries — not needed for traces (trace names not cross-partition searchable)</p>
+<p><strong>Only remaining Plan 1/2 stub:</strong> <code>link_traces_to_run()</code> — implement in this plan</p>
+<hr />
+<h2 id="file-structure-newmodified-files-only">File Structure (new/modified files only)<a class="headerlink" href="#file-structure-newmodified-files-only" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>src/mlflow_dynamodbstore/
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>├── tracking_store.py                   # MODIFY: Add trace methods (start_trace, get_trace, search_traces, etc.)
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>├── dynamodb/
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│   └── search.py                       # MODIFY: Add parse_trace_filter(), plan_trace_query()
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>├── auth/
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│   ├── __init__.py                     # NEW
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│   ├── store.py                        # NEW: DynamoDBAuthStore (~50 methods)
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>│   ├── app.py                          # NEW: create_app(Flask) → Flask
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>│   └── client.py                       # NEW: DynamoDBAuthClient (REST client)
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>├── xray/
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>│   ├── __init__.py                     # NEW
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>│   ├── client.py                       # NEW: X-Ray API wrapper (GetTraceSummaries, BatchGetTraces)
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>│   ├── filter_translator.py            # NEW: MLflow span.* filter → X-Ray filter expression
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>│   ├── span_converter.py              # NEW: X-Ray segments → MLflow Span objects
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>│   └── annotation_config.py            # NEW: Configurable mlflow attr → X-Ray annotation mapping
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>├── otel/
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>│   ├── __init__.py                     # NEW
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>│   └── annotation_processor.py         # NEW: OTel SpanProcessor for X-Ray annotations
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>tests/
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>├── unit/
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>│   ├── test_tracking_traces.py         # NEW: Trace CRUD tests
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>│   ├── xray/
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>│   │   ├── test_client.py              # NEW: X-Ray client tests (mocked)
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>│   │   ├── test_filter_translator.py   # NEW: Filter translation tests
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>│   │   └── test_span_converter.py      # NEW: Span conversion tests
+</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>│   ├── auth/
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>│   │   ├── test_store.py               # NEW: Auth store tests
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>│   │   └── test_app.py                 # NEW: Auth app integration
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>│   └── otel/
+</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>│       └── test_annotation_processor.py # NEW: OTel processor tests
+</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>├── integration/
+</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>│   ├── test_traces.py                  # NEW: Trace lifecycle integration
+</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>│   └── test_auth.py                    # NEW: Auth integration
+</span></code></pre></div>
+<hr />
+<h2 id="chunk-1-trace-crud-dynamodb-only-no-x-ray">Chunk 1: Trace CRUD (DynamoDB-only, no X-Ray)<a class="headerlink" href="#chunk-1-trace-crud-dynamodb-only-no-x-ray" title="Permanent link">&para;</a></h2>
+<h3 id="task-1-trace-metadata-crud">Task 1: Trace metadata CRUD<a class="headerlink" href="#task-1-trace-metadata-crud" title="Permanent link">&para;</a></h3>
+<p>Extend <code>tracking_store.py</code> with: <code>start_trace</code>, <code>get_trace_info</code>, <code>set_trace_tag</code>, <code>delete_trace_tag</code>, <code>link_traces_to_run</code>.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># tests/unit/test_tracking_traces.py</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">mlflow.entities</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceInfo</span><span class="p">,</span> <span class="n">TraceStatus</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">class</span><span class="w"> </span><span class="nc">TestTraceCRUD</span><span class="p">:</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_start_trace</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>        <span class="n">exp_id</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">create_experiment</span><span class="p">(</span><span class="s2">&quot;exp&quot;</span><span class="p">,</span> <span class="n">artifact_location</span><span class="o">=</span><span class="s2">&quot;s3://b&quot;</span><span class="p">)</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>        <span class="n">trace_info</span> <span class="o">=</span> <span class="n">TraceInfo</span><span class="p">(</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>            <span class="n">trace_id</span><span class="o">=</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>            <span class="n">experiment_id</span><span class="o">=</span><span class="n">exp_id</span><span class="p">,</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>            <span class="n">timestamp_ms</span><span class="o">=</span><span class="mi">1709251200000</span><span class="p">,</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>            <span class="n">execution_time_ms</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>            <span class="n">status</span><span class="o">=</span><span class="n">TraceStatus</span><span class="o">.</span><span class="n">OK</span><span class="p">,</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>            <span class="n">request_metadata</span><span class="o">=</span><span class="p">{},</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>            <span class="n">tags</span><span class="o">=</span><span class="p">{},</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>        <span class="p">)</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">start_trace</span><span class="p">(</span><span class="n">trace_info</span><span class="p">)</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>        <span class="n">result</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">get_trace_info</span><span class="p">(</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>        <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">trace_id</span> <span class="o">==</span> <span class="s2">&quot;tr-abc123&quot;</span>
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>        <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">experiment_id</span> <span class="o">==</span> <span class="n">exp_id</span>
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>
+</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_trace_has_ttl</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">,</span> <span class="n">table</span><span class="p">):</span>
+</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Verify trace META has ttl from CONFIG#TTL_POLICY.trace_retention_days.&quot;&quot;&quot;</span>
+</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>        <span class="n">exp_id</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">create_experiment</span><span class="p">(</span><span class="s2">&quot;exp&quot;</span><span class="p">,</span> <span class="n">artifact_location</span><span class="o">=</span><span class="s2">&quot;s3://b&quot;</span><span class="p">)</span>
+</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>        <span class="n">trace_info</span> <span class="o">=</span> <span class="n">TraceInfo</span><span class="p">(</span>
+</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>            <span class="n">trace_id</span><span class="o">=</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span> <span class="n">experiment_id</span><span class="o">=</span><span class="n">exp_id</span><span class="p">,</span>
+</span><span id="__span-1-27"><a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>            <span class="n">timestamp_ms</span><span class="o">=</span><span class="mi">1709251200000</span><span class="p">,</span> <span class="n">execution_time_ms</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+</span><span id="__span-1-28"><a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a>            <span class="n">status</span><span class="o">=</span><span class="n">TraceStatus</span><span class="o">.</span><span class="n">OK</span><span class="p">,</span> <span class="n">request_metadata</span><span class="o">=</span><span class="p">{},</span> <span class="n">tags</span><span class="o">=</span><span class="p">{},</span>
+</span><span id="__span-1-29"><a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a>        <span class="p">)</span>
+</span><span id="__span-1-30"><a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">start_trace</span><span class="p">(</span><span class="n">trace_info</span><span class="p">)</span>
+</span><span id="__span-1-31"><a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a>        <span class="n">meta</span> <span class="o">=</span> <span class="n">table</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;EXP#</span><span class="si">{</span><span class="n">exp_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;T#tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-1-32"><a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a>        <span class="k">assert</span> <span class="s2">&quot;ttl&quot;</span> <span class="ow">in</span> <span class="n">meta</span>
+</span><span id="__span-1-33"><a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a>        <span class="c1"># TTL should be ~30 days from now (default trace_retention_days)</span>
+</span><span id="__span-1-34"><a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a>
+</span><span id="__span-1-35"><a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_trace_lsi_attributes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">,</span> <span class="n">table</span><span class="p">):</span>
+</span><span id="__span-1-36"><a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Verify all LSI attributes set on trace META.&quot;&quot;&quot;</span>
+</span><span id="__span-1-37"><a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a>        <span class="n">exp_id</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">create_experiment</span><span class="p">(</span><span class="s2">&quot;exp&quot;</span><span class="p">,</span> <span class="n">artifact_location</span><span class="o">=</span><span class="s2">&quot;s3://b&quot;</span><span class="p">)</span>
+</span><span id="__span-1-38"><a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>        <span class="n">trace_info</span> <span class="o">=</span> <span class="n">TraceInfo</span><span class="p">(</span>
+</span><span id="__span-1-39"><a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>            <span class="n">trace_id</span><span class="o">=</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span> <span class="n">experiment_id</span><span class="o">=</span><span class="n">exp_id</span><span class="p">,</span>
+</span><span id="__span-1-40"><a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>            <span class="n">timestamp_ms</span><span class="o">=</span><span class="mi">1709251200000</span><span class="p">,</span> <span class="n">execution_time_ms</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+</span><span id="__span-1-41"><a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a>            <span class="n">status</span><span class="o">=</span><span class="n">TraceStatus</span><span class="o">.</span><span class="n">OK</span><span class="p">,</span> <span class="n">request_metadata</span><span class="o">=</span><span class="p">{},</span>
+</span><span id="__span-1-42"><a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a>            <span class="n">tags</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;mlflow.traceName&quot;</span><span class="p">:</span> <span class="s2">&quot;my-trace&quot;</span><span class="p">},</span>
+</span><span id="__span-1-43"><a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a>        <span class="p">)</span>
+</span><span id="__span-1-44"><a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">start_trace</span><span class="p">(</span><span class="n">trace_info</span><span class="p">)</span>
+</span><span id="__span-1-45"><a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a>        <span class="n">meta</span> <span class="o">=</span> <span class="n">table</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;EXP#</span><span class="si">{</span><span class="n">exp_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;T#tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-1-46"><a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a>        <span class="k">assert</span> <span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;lsi1sk&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1709251200000</span>  <span class="c1"># timestamp_ms</span>
+</span><span id="__span-1-47"><a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a>        <span class="k">assert</span> <span class="s2">&quot;lsi3sk&quot;</span> <span class="ow">in</span> <span class="n">meta</span>  <span class="c1"># status#timestamp_ms</span>
+</span><span id="__span-1-48"><a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a>        <span class="k">assert</span> <span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;lsi4sk&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;my-trace&quot;</span>  <span class="c1"># lower(trace_name)</span>
+</span><span id="__span-1-49"><a id="__codelineno-1-49" name="__codelineno-1-49" href="#__codelineno-1-49"></a>        <span class="k">assert</span> <span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;lsi5sk&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="mi">500</span>  <span class="c1"># execution_time_ms</span>
+</span><span id="__span-1-50"><a id="__codelineno-1-50" name="__codelineno-1-50" href="#__codelineno-1-50"></a>
+</span><span id="__span-1-51"><a id="__codelineno-1-51" name="__codelineno-1-51" href="#__codelineno-1-51"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_trace_gsi1_entry</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">,</span> <span class="n">table</span><span class="p">):</span>
+</span><span id="__span-1-52"><a id="__codelineno-1-52" name="__codelineno-1-52" href="#__codelineno-1-52"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Verify GSI1 reverse lookup: TRACE#&lt;id&gt; → EXP#&lt;id&gt;.&quot;&quot;&quot;</span>
+</span><span id="__span-1-53"><a id="__codelineno-1-53" name="__codelineno-1-53" href="#__codelineno-1-53"></a>        <span class="n">exp_id</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">create_experiment</span><span class="p">(</span><span class="s2">&quot;exp&quot;</span><span class="p">,</span> <span class="n">artifact_location</span><span class="o">=</span><span class="s2">&quot;s3://b&quot;</span><span class="p">)</span>
+</span><span id="__span-1-54"><a id="__codelineno-1-54" name="__codelineno-1-54" href="#__codelineno-1-54"></a>        <span class="n">trace_info</span> <span class="o">=</span> <span class="n">TraceInfo</span><span class="p">(</span>
+</span><span id="__span-1-55"><a id="__codelineno-1-55" name="__codelineno-1-55" href="#__codelineno-1-55"></a>            <span class="n">trace_id</span><span class="o">=</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span> <span class="n">experiment_id</span><span class="o">=</span><span class="n">exp_id</span><span class="p">,</span>
+</span><span id="__span-1-56"><a id="__codelineno-1-56" name="__codelineno-1-56" href="#__codelineno-1-56"></a>            <span class="n">timestamp_ms</span><span class="o">=</span><span class="mi">1709251200000</span><span class="p">,</span> <span class="n">execution_time_ms</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+</span><span id="__span-1-57"><a id="__codelineno-1-57" name="__codelineno-1-57" href="#__codelineno-1-57"></a>            <span class="n">status</span><span class="o">=</span><span class="n">TraceStatus</span><span class="o">.</span><span class="n">OK</span><span class="p">,</span> <span class="n">request_metadata</span><span class="o">=</span><span class="p">{},</span> <span class="n">tags</span><span class="o">=</span><span class="p">{},</span>
+</span><span id="__span-1-58"><a id="__codelineno-1-58" name="__codelineno-1-58" href="#__codelineno-1-58"></a>        <span class="p">)</span>
+</span><span id="__span-1-59"><a id="__codelineno-1-59" name="__codelineno-1-59" href="#__codelineno-1-59"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">start_trace</span><span class="p">(</span><span class="n">trace_info</span><span class="p">)</span>
+</span><span id="__span-1-60"><a id="__codelineno-1-60" name="__codelineno-1-60" href="#__codelineno-1-60"></a>        <span class="c1"># get_trace_info should resolve via GSI1</span>
+</span><span id="__span-1-61"><a id="__codelineno-1-61" name="__codelineno-1-61" href="#__codelineno-1-61"></a>        <span class="n">result</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">get_trace_info</span><span class="p">(</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-1-62"><a id="__codelineno-1-62" name="__codelineno-1-62" href="#__codelineno-1-62"></a>        <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">experiment_id</span> <span class="o">==</span> <span class="n">exp_id</span>
+</span><span id="__span-1-63"><a id="__codelineno-1-63" name="__codelineno-1-63" href="#__codelineno-1-63"></a>
+</span><span id="__span-1-64"><a id="__codelineno-1-64" name="__codelineno-1-64" href="#__codelineno-1-64"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_trace_client_request_ptr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">,</span> <span class="n">table</span><span class="p">):</span>
+</span><span id="__span-1-65"><a id="__codelineno-1-65" name="__codelineno-1-65" href="#__codelineno-1-65"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Verify CLIENTPTR materialized item for client_request_id.&quot;&quot;&quot;</span>
+</span><span id="__span-1-66"><a id="__codelineno-1-66" name="__codelineno-1-66" href="#__codelineno-1-66"></a>        <span class="n">exp_id</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">create_experiment</span><span class="p">(</span><span class="s2">&quot;exp&quot;</span><span class="p">,</span> <span class="n">artifact_location</span><span class="o">=</span><span class="s2">&quot;s3://b&quot;</span><span class="p">)</span>
+</span><span id="__span-1-67"><a id="__codelineno-1-67" name="__codelineno-1-67" href="#__codelineno-1-67"></a>        <span class="n">trace_info</span> <span class="o">=</span> <span class="n">TraceInfo</span><span class="p">(</span>
+</span><span id="__span-1-68"><a id="__codelineno-1-68" name="__codelineno-1-68" href="#__codelineno-1-68"></a>            <span class="n">trace_id</span><span class="o">=</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span> <span class="n">experiment_id</span><span class="o">=</span><span class="n">exp_id</span><span class="p">,</span>
+</span><span id="__span-1-69"><a id="__codelineno-1-69" name="__codelineno-1-69" href="#__codelineno-1-69"></a>            <span class="n">timestamp_ms</span><span class="o">=</span><span class="mi">1709251200000</span><span class="p">,</span> <span class="n">execution_time_ms</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+</span><span id="__span-1-70"><a id="__codelineno-1-70" name="__codelineno-1-70" href="#__codelineno-1-70"></a>            <span class="n">status</span><span class="o">=</span><span class="n">TraceStatus</span><span class="o">.</span><span class="n">OK</span><span class="p">,</span>
+</span><span id="__span-1-71"><a id="__codelineno-1-71" name="__codelineno-1-71" href="#__codelineno-1-71"></a>            <span class="n">request_metadata</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;client_request_id&quot;</span><span class="p">:</span> <span class="s2">&quot;req-xyz&quot;</span><span class="p">},</span>
+</span><span id="__span-1-72"><a id="__codelineno-1-72" name="__codelineno-1-72" href="#__codelineno-1-72"></a>            <span class="n">tags</span><span class="o">=</span><span class="p">{},</span>
+</span><span id="__span-1-73"><a id="__codelineno-1-73" name="__codelineno-1-73" href="#__codelineno-1-73"></a>        <span class="p">)</span>
+</span><span id="__span-1-74"><a id="__codelineno-1-74" name="__codelineno-1-74" href="#__codelineno-1-74"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">start_trace</span><span class="p">(</span><span class="n">trace_info</span><span class="p">)</span>
+</span><span id="__span-1-75"><a id="__codelineno-1-75" name="__codelineno-1-75" href="#__codelineno-1-75"></a>        <span class="c1"># CLIENTPTR item should exist with GSI1 attributes</span>
+</span><span id="__span-1-76"><a id="__codelineno-1-76" name="__codelineno-1-76" href="#__codelineno-1-76"></a>        <span class="n">ptr</span> <span class="o">=</span> <span class="n">table</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;EXP#</span><span class="si">{</span><span class="n">exp_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;T#tr-abc123#CLIENTPTR&quot;</span><span class="p">)</span>
+</span><span id="__span-1-77"><a id="__codelineno-1-77" name="__codelineno-1-77" href="#__codelineno-1-77"></a>        <span class="k">assert</span> <span class="n">ptr</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+</span><span id="__span-1-78"><a id="__codelineno-1-78" name="__codelineno-1-78" href="#__codelineno-1-78"></a>        <span class="k">assert</span> <span class="n">ptr</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;gsi1pk&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;CLIENT#req-xyz&quot;</span>
+</span><span id="__span-1-79"><a id="__codelineno-1-79" name="__codelineno-1-79" href="#__codelineno-1-79"></a>
+</span><span id="__span-1-80"><a id="__codelineno-1-80" name="__codelineno-1-80" href="#__codelineno-1-80"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_set_trace_tag_with_denormalization</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">,</span> <span class="n">table</span><span class="p">):</span>
+</span><span id="__span-1-81"><a id="__codelineno-1-81" name="__codelineno-1-81" href="#__codelineno-1-81"></a>        <span class="n">exp_id</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">create_experiment</span><span class="p">(</span><span class="s2">&quot;exp&quot;</span><span class="p">,</span> <span class="n">artifact_location</span><span class="o">=</span><span class="s2">&quot;s3://b&quot;</span><span class="p">)</span>
+</span><span id="__span-1-82"><a id="__codelineno-1-82" name="__codelineno-1-82" href="#__codelineno-1-82"></a>        <span class="n">trace_info</span> <span class="o">=</span> <span class="n">TraceInfo</span><span class="p">(</span>
+</span><span id="__span-1-83"><a id="__codelineno-1-83" name="__codelineno-1-83" href="#__codelineno-1-83"></a>            <span class="n">trace_id</span><span class="o">=</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span> <span class="n">experiment_id</span><span class="o">=</span><span class="n">exp_id</span><span class="p">,</span>
+</span><span id="__span-1-84"><a id="__codelineno-1-84" name="__codelineno-1-84" href="#__codelineno-1-84"></a>            <span class="n">timestamp_ms</span><span class="o">=</span><span class="mi">1709251200000</span><span class="p">,</span> <span class="n">execution_time_ms</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+</span><span id="__span-1-85"><a id="__codelineno-1-85" name="__codelineno-1-85" href="#__codelineno-1-85"></a>            <span class="n">status</span><span class="o">=</span><span class="n">TraceStatus</span><span class="o">.</span><span class="n">OK</span><span class="p">,</span> <span class="n">request_metadata</span><span class="o">=</span><span class="p">{},</span> <span class="n">tags</span><span class="o">=</span><span class="p">{},</span>
+</span><span id="__span-1-86"><a id="__codelineno-1-86" name="__codelineno-1-86" href="#__codelineno-1-86"></a>        <span class="p">)</span>
+</span><span id="__span-1-87"><a id="__codelineno-1-87" name="__codelineno-1-87" href="#__codelineno-1-87"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">start_trace</span><span class="p">(</span><span class="n">trace_info</span><span class="p">)</span>
+</span><span id="__span-1-88"><a id="__codelineno-1-88" name="__codelineno-1-88" href="#__codelineno-1-88"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">set_trace_tag</span><span class="p">(</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span> <span class="s2">&quot;mlflow.traceName&quot;</span><span class="p">,</span> <span class="s2">&quot;test-trace&quot;</span><span class="p">)</span>
+</span><span id="__span-1-89"><a id="__codelineno-1-89" name="__codelineno-1-89" href="#__codelineno-1-89"></a>        <span class="c1"># Tag item should exist</span>
+</span><span id="__span-1-90"><a id="__codelineno-1-90" name="__codelineno-1-90" href="#__codelineno-1-90"></a>        <span class="n">tag</span> <span class="o">=</span> <span class="n">table</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;EXP#</span><span class="si">{</span><span class="n">exp_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;T#tr-abc123#TAG#mlflow.traceName&quot;</span><span class="p">)</span>
+</span><span id="__span-1-91"><a id="__codelineno-1-91" name="__codelineno-1-91" href="#__codelineno-1-91"></a>        <span class="k">assert</span> <span class="n">tag</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+</span><span id="__span-1-92"><a id="__codelineno-1-92" name="__codelineno-1-92" href="#__codelineno-1-92"></a>        <span class="c1"># Should be denormalized (mlflow.* pattern)</span>
+</span><span id="__span-1-93"><a id="__codelineno-1-93" name="__codelineno-1-93" href="#__codelineno-1-93"></a>        <span class="n">meta</span> <span class="o">=</span> <span class="n">table</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;EXP#</span><span class="si">{</span><span class="n">exp_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;T#tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-1-94"><a id="__codelineno-1-94" name="__codelineno-1-94" href="#__codelineno-1-94"></a>        <span class="k">assert</span> <span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;tags&quot;</span><span class="p">,</span> <span class="p">{})</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;mlflow.traceName&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;test-trace&quot;</span>
+</span><span id="__span-1-95"><a id="__codelineno-1-95" name="__codelineno-1-95" href="#__codelineno-1-95"></a>
+</span><span id="__span-1-96"><a id="__codelineno-1-96" name="__codelineno-1-96" href="#__codelineno-1-96"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_delete_trace_tag</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">,</span> <span class="n">table</span><span class="p">):</span>
+</span><span id="__span-1-97"><a id="__codelineno-1-97" name="__codelineno-1-97" href="#__codelineno-1-97"></a>        <span class="n">exp_id</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">create_experiment</span><span class="p">(</span><span class="s2">&quot;exp&quot;</span><span class="p">,</span> <span class="n">artifact_location</span><span class="o">=</span><span class="s2">&quot;s3://b&quot;</span><span class="p">)</span>
+</span><span id="__span-1-98"><a id="__codelineno-1-98" name="__codelineno-1-98" href="#__codelineno-1-98"></a>        <span class="n">trace_info</span> <span class="o">=</span> <span class="n">TraceInfo</span><span class="p">(</span>
+</span><span id="__span-1-99"><a id="__codelineno-1-99" name="__codelineno-1-99" href="#__codelineno-1-99"></a>            <span class="n">trace_id</span><span class="o">=</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span> <span class="n">experiment_id</span><span class="o">=</span><span class="n">exp_id</span><span class="p">,</span>
+</span><span id="__span-1-100"><a id="__codelineno-1-100" name="__codelineno-1-100" href="#__codelineno-1-100"></a>            <span class="n">timestamp_ms</span><span class="o">=</span><span class="mi">1709251200000</span><span class="p">,</span> <span class="n">execution_time_ms</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+</span><span id="__span-1-101"><a id="__codelineno-1-101" name="__codelineno-1-101" href="#__codelineno-1-101"></a>            <span class="n">status</span><span class="o">=</span><span class="n">TraceStatus</span><span class="o">.</span><span class="n">OK</span><span class="p">,</span> <span class="n">request_metadata</span><span class="o">=</span><span class="p">{},</span> <span class="n">tags</span><span class="o">=</span><span class="p">{},</span>
+</span><span id="__span-1-102"><a id="__codelineno-1-102" name="__codelineno-1-102" href="#__codelineno-1-102"></a>        <span class="p">)</span>
+</span><span id="__span-1-103"><a id="__codelineno-1-103" name="__codelineno-1-103" href="#__codelineno-1-103"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">start_trace</span><span class="p">(</span><span class="n">trace_info</span><span class="p">)</span>
+</span><span id="__span-1-104"><a id="__codelineno-1-104" name="__codelineno-1-104" href="#__codelineno-1-104"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">set_trace_tag</span><span class="p">(</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span> <span class="s2">&quot;mlflow.traceName&quot;</span><span class="p">,</span> <span class="s2">&quot;test&quot;</span><span class="p">)</span>
+</span><span id="__span-1-105"><a id="__codelineno-1-105" name="__codelineno-1-105" href="#__codelineno-1-105"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">delete_trace_tag</span><span class="p">(</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span> <span class="s2">&quot;mlflow.traceName&quot;</span><span class="p">)</span>
+</span><span id="__span-1-106"><a id="__codelineno-1-106" name="__codelineno-1-106" href="#__codelineno-1-106"></a>        <span class="n">tag</span> <span class="o">=</span> <span class="n">table</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;EXP#</span><span class="si">{</span><span class="n">exp_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;T#tr-abc123#TAG#mlflow.traceName&quot;</span><span class="p">)</span>
+</span><span id="__span-1-107"><a id="__codelineno-1-107" name="__codelineno-1-107" href="#__codelineno-1-107"></a>        <span class="k">assert</span> <span class="n">tag</span> <span class="ow">is</span> <span class="kc">None</span>
+</span><span id="__span-1-108"><a id="__codelineno-1-108" name="__codelineno-1-108" href="#__codelineno-1-108"></a>        <span class="n">meta</span> <span class="o">=</span> <span class="n">table</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;EXP#</span><span class="si">{</span><span class="n">exp_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;T#tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-1-109"><a id="__codelineno-1-109" name="__codelineno-1-109" href="#__codelineno-1-109"></a>        <span class="k">assert</span> <span class="s2">&quot;mlflow.traceName&quot;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;tags&quot;</span><span class="p">,</span> <span class="p">{})</span>
+</span><span id="__span-1-110"><a id="__codelineno-1-110" name="__codelineno-1-110" href="#__codelineno-1-110"></a>
+</span><span id="__span-1-111"><a id="__codelineno-1-111" name="__codelineno-1-111" href="#__codelineno-1-111"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_link_traces_to_run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-1-112"><a id="__codelineno-1-112" name="__codelineno-1-112" href="#__codelineno-1-112"></a>        <span class="n">exp_id</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">create_experiment</span><span class="p">(</span><span class="s2">&quot;exp&quot;</span><span class="p">,</span> <span class="n">artifact_location</span><span class="o">=</span><span class="s2">&quot;s3://b&quot;</span><span class="p">)</span>
+</span><span id="__span-1-113"><a id="__codelineno-1-113" name="__codelineno-1-113" href="#__codelineno-1-113"></a>        <span class="n">run</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">create_run</span><span class="p">(</span><span class="n">exp_id</span><span class="p">,</span> <span class="n">user_id</span><span class="o">=</span><span class="s2">&quot;u&quot;</span><span class="p">,</span> <span class="n">start_time</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">tags</span><span class="o">=</span><span class="p">[],</span> <span class="n">run_name</span><span class="o">=</span><span class="s2">&quot;r&quot;</span><span class="p">)</span>
+</span><span id="__span-1-114"><a id="__codelineno-1-114" name="__codelineno-1-114" href="#__codelineno-1-114"></a>        <span class="n">trace_info</span> <span class="o">=</span> <span class="n">TraceInfo</span><span class="p">(</span>
+</span><span id="__span-1-115"><a id="__codelineno-1-115" name="__codelineno-1-115" href="#__codelineno-1-115"></a>            <span class="n">trace_id</span><span class="o">=</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">,</span> <span class="n">experiment_id</span><span class="o">=</span><span class="n">exp_id</span><span class="p">,</span>
+</span><span id="__span-1-116"><a id="__codelineno-1-116" name="__codelineno-1-116" href="#__codelineno-1-116"></a>            <span class="n">timestamp_ms</span><span class="o">=</span><span class="mi">1709251200000</span><span class="p">,</span> <span class="n">execution_time_ms</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+</span><span id="__span-1-117"><a id="__codelineno-1-117" name="__codelineno-1-117" href="#__codelineno-1-117"></a>            <span class="n">status</span><span class="o">=</span><span class="n">TraceStatus</span><span class="o">.</span><span class="n">OK</span><span class="p">,</span> <span class="n">request_metadata</span><span class="o">=</span><span class="p">{},</span> <span class="n">tags</span><span class="o">=</span><span class="p">{},</span>
+</span><span id="__span-1-118"><a id="__codelineno-1-118" name="__codelineno-1-118" href="#__codelineno-1-118"></a>        <span class="p">)</span>
+</span><span id="__span-1-119"><a id="__codelineno-1-119" name="__codelineno-1-119" href="#__codelineno-1-119"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">start_trace</span><span class="p">(</span><span class="n">trace_info</span><span class="p">)</span>
+</span><span id="__span-1-120"><a id="__codelineno-1-120" name="__codelineno-1-120" href="#__codelineno-1-120"></a>        <span class="n">tracking_store</span><span class="o">.</span><span class="n">link_traces_to_run</span><span class="p">([</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">],</span> <span class="n">run</span><span class="o">.</span><span class="n">info</span><span class="o">.</span><span class="n">run_id</span><span class="p">)</span>
+</span><span id="__span-1-121"><a id="__codelineno-1-121" name="__codelineno-1-121" href="#__codelineno-1-121"></a>        <span class="c1"># Verify trace request metadata has mlflow.sourceRun</span>
+</span><span id="__span-1-122"><a id="__codelineno-1-122" name="__codelineno-1-122" href="#__codelineno-1-122"></a>        <span class="n">info</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">get_trace_info</span><span class="p">(</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-1-123"><a id="__codelineno-1-123" name="__codelineno-1-123" href="#__codelineno-1-123"></a>        <span class="k">assert</span> <span class="n">info</span><span class="o">.</span><span class="n">request_metadata</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;mlflow.sourceRun&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="n">run</span><span class="o">.</span><span class="n">info</span><span class="o">.</span><span class="n">run_id</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item">
+<p><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Run tests, verify fail</strong></p>
+</li>
+<li class="task-list-item">
+<p><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Implement trace methods</strong></p>
+</li>
+</ul>
+<p><code>start_trace</code>: Write trace META with:
+- TTL from <code>ConfigReader.get_ttl_policy().trace_retention_days</code>
+- LSI attributes: <code>lsi1sk=timestamp_ms</code>, <code>lsi2sk=end_time_ms</code>, <code>lsi3sk=&lt;status&gt;#&lt;timestamp_ms&gt;</code>, <code>lsi4sk=lower(trace_name)</code>, <code>lsi5sk=execution_time_ms</code>
+- GSI1 entry: <code>gsi1pk=TRACE#&lt;trace_id&gt;</code>, <code>gsi1sk=EXP#&lt;exp_id&gt;</code>
+- CLIENTPTR item if <code>client_request_id</code> in request_metadata
+- <code>tags: {}</code> map for denormalization
+- Write request metadata items (<code>T#&lt;trace_id&gt;#RMETA#&lt;key&gt;</code>) with same TTL
+- Write FTS items for trace tag values (using <code>fts_items_for_text()</code> from Plan 2)</p>
+<p><code>get_trace_info</code>: Resolve trace_id → experiment_id via GSI1 (with cache), read trace META.</p>
+<p><code>set_trace_tag</code> / <code>delete_trace_tag</code>: Write/delete tag item + denormalization (using <code>ConfigReader.should_denormalize()</code>) + FTS maintenance (using <code>fts_items_for_text()</code> / <code>fts_diff()</code>). All trace child items inherit the trace's TTL.</p>
+<p><code>link_traces_to_run</code>: Write/update request metadata item <code>T#&lt;trace_id&gt;#RMETA#mlflow.sourceRun</code> with run_id value.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add trace metadata CRUD to tracking store&quot;</span>
+</span></code></pre></div>
+<h3 id="task-2-assessments">Task 2: Assessments<a class="headerlink" href="#task-2-assessments" title="Permanent link">&para;</a></h3>
+<p>Extend with: <code>create_assessment</code>, <code>update_assessment</code>, <code>delete_assessment</code>, <code>get_assessment</code>.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<p>Test create (ULID ID, FTS tokens for value using <code>fts_items_for_text()</code>), update (FTS diff using <code>fts_diff()</code>), delete (FTS + FTS_REV cleanup via reverse index query), get. Verify assessment items inherit trace TTL.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement assessment methods</strong></li>
+</ul>
+<p>Assessment items: <code>T#&lt;trace_id&gt;#ASSESS#&lt;assessment_id&gt;</code>. ID generated via <code>generate_ulid()</code>. FTS items for assessment value text. All items get same TTL as parent trace.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add assessment CRUD with FTS indexing&quot;</span>
+</span></code></pre></div>
+<h3 id="task-3-search_traces-dynamodb-only">Task 3: search_traces (DynamoDB-only)<a class="headerlink" href="#task-3-search_traces-dynamodb-only" title="Permanent link">&para;</a></h3>
+<p>Add <code>parse_trace_filter()</code> and <code>plan_trace_query()</code> to <code>search.py</code>, then implement <code>search_traces</code> in <code>tracking_store.py</code>.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">TestSearchTraces</span><span class="p">:</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_search_by_timestamp</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;LSI1 query.&quot;&quot;&quot;</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>        <span class="o">...</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_search_by_status</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;LSI3 composite: status#timestamp_ms.&quot;&quot;&quot;</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>        <span class="o">...</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_search_by_execution_time</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;LSI5 duration sort.&quot;&quot;&quot;</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>        <span class="o">...</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_search_by_trace_name</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;LSI4 begins_with for prefix ILIKE.&quot;&quot;&quot;</span>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>        <span class="o">...</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_search_by_tag</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Denormalized tag → FilterExpression.&quot;&quot;&quot;</span>
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>        <span class="o">...</span>
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_search_by_metadata</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Request metadata filter.&quot;&quot;&quot;</span>
+</span><span id="__span-4-24"><a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a>        <span class="o">...</span>
+</span><span id="__span-4-25"><a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a>
+</span><span id="__span-4-26"><a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_search_fts_keyword</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-4-27"><a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;FTS word-level search on tag/metadata/assessment text.&quot;&quot;&quot;</span>
+</span><span id="__span-4-28"><a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>        <span class="o">...</span>
+</span><span id="__span-4-29"><a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>
+</span><span id="__span-4-30"><a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_search_assessment_filter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-4-31"><a id="__codelineno-4-31" name="__codelineno-4-31" href="#__codelineno-4-31"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Client-side: query assessments per trace, filter.&quot;&quot;&quot;</span>
+</span><span id="__span-4-32"><a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a>        <span class="o">...</span>
+</span><span id="__span-4-33"><a id="__codelineno-4-33" name="__codelineno-4-33" href="#__codelineno-4-33"></a>
+</span><span id="__span-4-34"><a id="__codelineno-4-34" name="__codelineno-4-34" href="#__codelineno-4-34"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_search_pagination</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-4-35"><a id="__codelineno-4-35" name="__codelineno-4-35" href="#__codelineno-4-35"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Pagination with page_token.&quot;&quot;&quot;</span>
+</span><span id="__span-4-36"><a id="__codelineno-4-36" name="__codelineno-4-36" href="#__codelineno-4-36"></a>        <span class="o">...</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Add <code>parse_trace_filter()</code> and <code>plan_trace_query()</code> to search.py</strong></li>
+</ul>
+<p>Trace search uses:
+- LSI1: <code>timestamp_ms</code> (default sort)
+- LSI2: <code>end_time_ms</code>
+- LSI3: <code>&lt;status&gt;#&lt;timestamp_ms&gt;</code> (status filter + time sort)
+- LSI4: <code>lower(trace_name)</code> (name prefix ILIKE)
+- LSI5: <code>execution_time_ms</code> (duration sort)
+- FTS: word/trigram search on trace tags, metadata, assessments
+- Post-filter: assessment-based filters (<code>feedback.&lt;key&gt;</code>), <code>RLIKE</code> regex</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Implement <code>search_traces</code> in tracking_store.py using parse → plan → execute pipeline</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add search_traces with DynamoDB query support&quot;</span>
+</span></code></pre></div>
+<h3 id="task-4-delete_traces">Task 4: delete_traces<a class="headerlink" href="#task-4-delete_traces" title="Permanent link">&para;</a></h3>
+<p>Implement physical trace deletion with full cleanup.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<p>Test that delete_traces removes: trace META, tags, request metadata, assessments, CLIENTPTR, span cache (if exists), and all FTS/FTS_REV items (via reverse index query <code>SK begins_with("FTS_REV#T#&lt;trace_id&gt;#")</code>).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement using FTS_REV reverse index</strong></li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">delete_traces</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">experiment_id</span><span class="p">,</span> <span class="n">trace_ids</span><span class="p">):</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="k">for</span> <span class="n">trace_id</span> <span class="ow">in</span> <span class="n">trace_ids</span><span class="p">:</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>        <span class="n">pk</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;EXP#</span><span class="si">{</span><span class="n">experiment_id</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>        <span class="c1"># 1. Query all trace sub-items</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>        <span class="n">trace_items</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_table</span><span class="o">.</span><span class="n">query</span><span class="p">(</span><span class="n">pk</span><span class="o">=</span><span class="n">pk</span><span class="p">,</span> <span class="n">sk_prefix</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;T#</span><span class="si">{</span><span class="n">trace_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>        <span class="c1"># 2. Query FTS_REV for this trace</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>        <span class="n">fts_rev_items</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_table</span><span class="o">.</span><span class="n">query</span><span class="p">(</span><span class="n">pk</span><span class="o">=</span><span class="n">pk</span><span class="p">,</span> <span class="n">sk_prefix</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;FTS_REV#T#</span><span class="si">{</span><span class="n">trace_id</span><span class="si">}</span><span class="s2">#&quot;</span><span class="p">)</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>        <span class="c1"># 3. Derive forward FTS SKs from reverse items</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>        <span class="n">fts_forward_sks</span> <span class="o">=</span> <span class="p">[</span><span class="n">derive_forward_sk</span><span class="p">(</span><span class="n">item</span><span class="p">)</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">fts_rev_items</span><span class="p">]</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>        <span class="c1"># 4. Batch delete everything</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>        <span class="n">all_items</span> <span class="o">=</span> <span class="n">trace_items</span> <span class="o">+</span> <span class="n">fts_rev_items</span> <span class="o">+</span> <span class="n">fts_forward_items</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_table</span><span class="o">.</span><span class="n">batch_delete</span><span class="p">(</span><span class="n">all_items</span><span class="p">)</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add delete_traces with FTS reverse index cleanup&quot;</span>
+</span></code></pre></div>
+<hr />
+<h2 id="chunk-2-x-ray-integration">Chunk 2: X-Ray Integration<a class="headerlink" href="#chunk-2-x-ray-integration" title="Permanent link">&para;</a></h2>
+<h3 id="task-5-x-ray-client-wrapper">Task 5: X-Ray client wrapper<a class="headerlink" href="#task-5-x-ray-client-wrapper" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Create: <code>src/mlflow_dynamodbstore/xray/client.py</code>
+- Create: <code>tests/unit/xray/test_client.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<p>Mock <code>boto3.client('xray')</code> to test: <code>get_trace_summaries(filter_expression, start_time, end_time)</code>, <code>batch_get_traces(trace_ids)</code>. Test time window chunking (6-hour max per query). Test pagination of GetTraceSummaries.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement XRayClient</strong></li>
+</ul>
+<p>Wrapper around <code>boto3.client('xray')</code>. Handles time window chunking, pagination of <code>GetTraceSummaries</code>, and <code>BatchGetTraces</code> with 5-ID batches.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add X-Ray client wrapper&quot;</span>
+</span></code></pre></div>
+<h3 id="task-6-x-ray-filter-translator">Task 6: X-Ray filter translator<a class="headerlink" href="#task-6-x-ray-filter-translator" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Create: <code>src/mlflow_dynamodbstore/xray/filter_translator.py</code>
+- Create: <code>tests/unit/xray/test_filter_translator.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">mlflow_dynamodbstore.xray.filter_translator</span><span class="w"> </span><span class="kn">import</span> <span class="n">translate_span_filters</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">mlflow_dynamodbstore.xray.annotation_config</span><span class="w"> </span><span class="kn">import</span> <span class="n">DEFAULT_ANNOTATION_CONFIG</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">TestFilterTranslator</span><span class="p">:</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_span_type_equals</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>        <span class="n">xray_filter</span><span class="p">,</span> <span class="n">remaining</span> <span class="o">=</span> <span class="n">translate_span_filters</span><span class="p">(</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>            <span class="p">[</span><span class="n">FilterPredicate</span><span class="p">(</span><span class="s2">&quot;span_attribute&quot;</span><span class="p">,</span> <span class="s2">&quot;mlflow.spanType&quot;</span><span class="p">,</span> <span class="s2">&quot;=&quot;</span><span class="p">,</span> <span class="s2">&quot;LLM&quot;</span><span class="p">)],</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>            <span class="n">DEFAULT_ANNOTATION_CONFIG</span><span class="p">,</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>        <span class="p">)</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>        <span class="k">assert</span> <span class="s1">&#39;annotation.mlflow_spanType = &quot;LLM&quot;&#39;</span> <span class="ow">in</span> <span class="n">xray_filter</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_span_name_equals</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>        <span class="n">xray_filter</span><span class="p">,</span> <span class="n">remaining</span> <span class="o">=</span> <span class="n">translate_span_filters</span><span class="p">(</span>
+</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>            <span class="p">[</span><span class="n">FilterPredicate</span><span class="p">(</span><span class="s2">&quot;span_attribute&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="s2">&quot;=&quot;</span><span class="p">,</span> <span class="s2">&quot;ChatModel&quot;</span><span class="p">)],</span>
+</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>            <span class="n">DEFAULT_ANNOTATION_CONFIG</span><span class="p">,</span>
+</span><span id="__span-9-16"><a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a>        <span class="p">)</span>
+</span><span id="__span-9-17"><a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a>        <span class="k">assert</span> <span class="s1">&#39;annotation.mlflow_spanName = &quot;ChatModel&quot;&#39;</span> <span class="ow">in</span> <span class="n">xray_filter</span>
+</span><span id="__span-9-18"><a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a>
+</span><span id="__span-9-19"><a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_span_like_not_translatable</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="__span-9-20"><a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a>        <span class="n">xray_filter</span><span class="p">,</span> <span class="n">remaining</span> <span class="o">=</span> <span class="n">translate_span_filters</span><span class="p">(</span>
+</span><span id="__span-9-21"><a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a>            <span class="p">[</span>
+</span><span id="__span-9-22"><a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a>                <span class="n">FilterPredicate</span><span class="p">(</span><span class="s2">&quot;span_attribute&quot;</span><span class="p">,</span> <span class="s2">&quot;mlflow.spanType&quot;</span><span class="p">,</span> <span class="s2">&quot;=&quot;</span><span class="p">,</span> <span class="s2">&quot;LLM&quot;</span><span class="p">),</span>
+</span><span id="__span-9-23"><a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a>                <span class="n">FilterPredicate</span><span class="p">(</span><span class="s2">&quot;span_attribute&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="s2">&quot;LIKE&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="si">%c</span><span class="s2">hat%&quot;</span><span class="p">),</span>
+</span><span id="__span-9-24"><a id="__codelineno-9-24" name="__codelineno-9-24" href="#__codelineno-9-24"></a>            <span class="p">],</span>
+</span><span id="__span-9-25"><a id="__codelineno-9-25" name="__codelineno-9-25" href="#__codelineno-9-25"></a>            <span class="n">DEFAULT_ANNOTATION_CONFIG</span><span class="p">,</span>
+</span><span id="__span-9-26"><a id="__codelineno-9-26" name="__codelineno-9-26" href="#__codelineno-9-26"></a>        <span class="p">)</span>
+</span><span id="__span-9-27"><a id="__codelineno-9-27" name="__codelineno-9-27" href="#__codelineno-9-27"></a>        <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">remaining</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span>  <span class="c1"># LIKE stays as post-filter</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement filter translator</strong></li>
+</ul>
+<p>Takes list of span FilterPredicates + annotation config. Returns (xray_filter_expression, remaining_predicates). Only <code>=</code> comparisons on mapped annotations are pushable to X-Ray.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add MLflow span filter → X-Ray filter translator&quot;</span>
+</span></code></pre></div>
+<h3 id="task-7-x-ray-span-converter">Task 7: X-Ray span converter<a class="headerlink" href="#task-7-x-ray-span-converter" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Create: <code>src/mlflow_dynamodbstore/xray/span_converter.py</code>
+- Create: <code>tests/unit/xray/test_span_converter.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<p>Test conversion of X-Ray segment JSON → MLflow Span objects. Test annotation→attribute mapping per spec table (segment ID → span_id, mlflow_spanType → span_type, etc.). Test parent-child relationships. Test timing conversion (X-Ray seconds → MLflow nanoseconds).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement span converter</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add X-Ray segment → MLflow Span converter&quot;</span>
+</span></code></pre></div>
+<h3 id="task-8-annotation-config">Task 8: Annotation config<a class="headerlink" href="#task-8-annotation-config" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Create: <code>src/mlflow_dynamodbstore/xray/annotation_config.py</code>
+- Create: <code>tests/unit/xray/test_annotation_config.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<p>Test <code>DEFAULT_ANNOTATION_CONFIG</code> maps mlflow.spanType → mlflow_spanType, etc. Test custom mappings. Test <code>get_xray_annotation_name(mlflow_attr)</code> lookup.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement</strong></li>
+</ul>
+<p>Default mapping per spec. Configurable via <code>[tool.mlflow-dynamodbstore.xray]</code> in pyproject.toml or env vars.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add configurable X-Ray annotation mapping&quot;</span>
+</span></code></pre></div>
+<h3 id="task-9-get_trace-with-span-proxy-lazy-caching-span-indexing">Task 9: get_trace with span proxy + lazy caching + span indexing<a class="headerlink" href="#task-9-get_trace-with-span-proxy-lazy-caching-span-indexing" title="Permanent link">&para;</a></h3>
+<p>Modify <code>tracking_store.py</code>: implement <code>get_trace</code> to fetch spans from X-Ray, cache to DynamoDB, and index span attributes.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">unittest.mock</span><span class="w"> </span><span class="kn">import</span> <span class="n">patch</span><span class="p">,</span> <span class="n">MagicMock</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">TestGetTraceWithSpans</span><span class="p">:</span>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_cache_miss_fetches_from_xray</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;First get_trace → X-Ray fetch → cache write → return spans.&quot;&quot;&quot;</span>
+</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>        <span class="c1"># Create trace in DynamoDB</span>
+</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>        <span class="n">exp_id</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">create_experiment</span><span class="p">(</span><span class="s2">&quot;exp&quot;</span><span class="p">,</span> <span class="n">artifact_location</span><span class="o">=</span><span class="s2">&quot;s3://b&quot;</span><span class="p">)</span>
+</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>        <span class="c1"># ... start_trace ...</span>
+</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a>        <span class="c1"># Mock XRayClient to return spans</span>
+</span><span id="__span-13-10"><a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>        <span class="k">with</span> <span class="n">patch</span><span class="o">.</span><span class="n">object</span><span class="p">(</span><span class="n">tracking_store</span><span class="p">,</span> <span class="s1">&#39;_xray_client&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">mock_xray</span><span class="p">:</span>
+</span><span id="__span-13-11"><a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a>            <span class="n">mock_xray</span><span class="o">.</span><span class="n">batch_get_traces</span><span class="o">.</span><span class="n">return_value</span> <span class="o">=</span> <span class="p">[</span><span class="n">SAMPLE_XRAY_SEGMENTS</span><span class="p">]</span>
+</span><span id="__span-13-12"><a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a>            <span class="n">trace</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">get_trace</span><span class="p">(</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-13-13"><a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a>            <span class="k">assert</span> <span class="n">trace</span><span class="o">.</span><span class="n">spans</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+</span><span id="__span-13-14"><a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a>            <span class="n">mock_xray</span><span class="o">.</span><span class="n">batch_get_traces</span><span class="o">.</span><span class="n">assert_called_once</span><span class="p">()</span>
+</span><span id="__span-13-15"><a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a>
+</span><span id="__span-13-16"><a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_cache_hit_skips_xray</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-13-17"><a id="__codelineno-13-17" name="__codelineno-13-17" href="#__codelineno-13-17"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Second get_trace → cache hit → no X-Ray call.&quot;&quot;&quot;</span>
+</span><span id="__span-13-18"><a id="__codelineno-13-18" name="__codelineno-13-18" href="#__codelineno-13-18"></a>        <span class="c1"># ... start_trace, first get_trace (populates cache) ...</span>
+</span><span id="__span-13-19"><a id="__codelineno-13-19" name="__codelineno-13-19" href="#__codelineno-13-19"></a>        <span class="k">with</span> <span class="n">patch</span><span class="o">.</span><span class="n">object</span><span class="p">(</span><span class="n">tracking_store</span><span class="p">,</span> <span class="s1">&#39;_xray_client&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">mock_xray</span><span class="p">:</span>
+</span><span id="__span-13-20"><a id="__codelineno-13-20" name="__codelineno-13-20" href="#__codelineno-13-20"></a>            <span class="n">trace</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">get_trace</span><span class="p">(</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-13-21"><a id="__codelineno-13-21" name="__codelineno-13-21" href="#__codelineno-13-21"></a>            <span class="n">mock_xray</span><span class="o">.</span><span class="n">batch_get_traces</span><span class="o">.</span><span class="n">assert_not_called</span><span class="p">()</span>
+</span><span id="__span-13-22"><a id="__codelineno-13-22" name="__codelineno-13-22" href="#__codelineno-13-22"></a>
+</span><span id="__span-13-23"><a id="__codelineno-13-23" name="__codelineno-13-23" href="#__codelineno-13-23"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_span_attributes_denormalized_on_cache</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">,</span> <span class="n">table</span><span class="p">):</span>
+</span><span id="__span-13-24"><a id="__codelineno-13-24" name="__codelineno-13-24" href="#__codelineno-13-24"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;On cache, span_types/statuses/names/models sets written to META.&quot;&quot;&quot;</span>
+</span><span id="__span-13-25"><a id="__codelineno-13-25" name="__codelineno-13-25" href="#__codelineno-13-25"></a>        <span class="c1"># ... start_trace, get_trace ...</span>
+</span><span id="__span-13-26"><a id="__codelineno-13-26" name="__codelineno-13-26" href="#__codelineno-13-26"></a>        <span class="n">meta</span> <span class="o">=</span> <span class="n">table</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;EXP#</span><span class="si">{</span><span class="n">exp_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;T#tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-13-27"><a id="__codelineno-13-27" name="__codelineno-13-27" href="#__codelineno-13-27"></a>        <span class="k">assert</span> <span class="s2">&quot;span_types&quot;</span> <span class="ow">in</span> <span class="n">meta</span>  <span class="c1"># set of all span types</span>
+</span><span id="__span-13-28"><a id="__codelineno-13-28" name="__codelineno-13-28" href="#__codelineno-13-28"></a>        <span class="k">assert</span> <span class="s2">&quot;span_names&quot;</span> <span class="ow">in</span> <span class="n">meta</span>  <span class="c1"># set of all span names</span>
+</span><span id="__span-13-29"><a id="__codelineno-13-29" name="__codelineno-13-29" href="#__codelineno-13-29"></a>
+</span><span id="__span-13-30"><a id="__codelineno-13-30" name="__codelineno-13-30" href="#__codelineno-13-30"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_span_name_fts_on_cache</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">,</span> <span class="n">table</span><span class="p">):</span>
+</span><span id="__span-13-31"><a id="__codelineno-13-31" name="__codelineno-13-31" href="#__codelineno-13-31"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;On cache, FTS items written for span names.&quot;&quot;&quot;</span>
+</span><span id="__span-13-32"><a id="__codelineno-13-32" name="__codelineno-13-32" href="#__codelineno-13-32"></a>        <span class="c1"># ... start_trace, get_trace ...</span>
+</span><span id="__span-13-33"><a id="__codelineno-13-33" name="__codelineno-13-33" href="#__codelineno-13-33"></a>        <span class="n">fts_items</span> <span class="o">=</span> <span class="n">table</span><span class="o">.</span><span class="n">query</span><span class="p">(</span><span class="n">pk</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;EXP#</span><span class="si">{</span><span class="n">exp_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">sk_prefix</span><span class="o">=</span><span class="s2">&quot;FTS#W#&quot;</span><span class="p">)</span>
+</span><span id="__span-13-34"><a id="__codelineno-13-34" name="__codelineno-13-34" href="#__codelineno-13-34"></a>        <span class="c1"># Should include tokens from span names</span>
+</span><span id="__span-13-35"><a id="__codelineno-13-35" name="__codelineno-13-35" href="#__codelineno-13-35"></a>        <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">fts_items</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span>
+</span><span id="__span-13-36"><a id="__codelineno-13-36" name="__codelineno-13-36" href="#__codelineno-13-36"></a>
+</span><span id="__span-13-37"><a id="__codelineno-13-37" name="__codelineno-13-37" href="#__codelineno-13-37"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_xray_expired_returns_trace_without_spans</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracking_store</span><span class="p">):</span>
+</span><span id="__span-13-38"><a id="__codelineno-13-38" name="__codelineno-13-38" href="#__codelineno-13-38"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;If X-Ray returns nothing (&gt;30 days), return metadata only.&quot;&quot;&quot;</span>
+</span><span id="__span-13-39"><a id="__codelineno-13-39" name="__codelineno-13-39" href="#__codelineno-13-39"></a>        <span class="k">with</span> <span class="n">patch</span><span class="o">.</span><span class="n">object</span><span class="p">(</span><span class="n">tracking_store</span><span class="p">,</span> <span class="s1">&#39;_xray_client&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">mock_xray</span><span class="p">:</span>
+</span><span id="__span-13-40"><a id="__codelineno-13-40" name="__codelineno-13-40" href="#__codelineno-13-40"></a>            <span class="n">mock_xray</span><span class="o">.</span><span class="n">batch_get_traces</span><span class="o">.</span><span class="n">return_value</span> <span class="o">=</span> <span class="p">[]</span>
+</span><span id="__span-13-41"><a id="__codelineno-13-41" name="__codelineno-13-41" href="#__codelineno-13-41"></a>            <span class="n">trace</span> <span class="o">=</span> <span class="n">tracking_store</span><span class="o">.</span><span class="n">get_trace</span><span class="p">(</span><span class="s2">&quot;tr-abc123&quot;</span><span class="p">)</span>
+</span><span id="__span-13-42"><a id="__codelineno-13-42" name="__codelineno-13-42" href="#__codelineno-13-42"></a>            <span class="k">assert</span> <span class="n">trace</span><span class="o">.</span><span class="n">spans</span> <span class="o">==</span> <span class="p">[]</span> <span class="ow">or</span> <span class="n">trace</span><span class="o">.</span><span class="n">spans</span> <span class="ow">is</span> <span class="kc">None</span>
+</span></code></pre></div>
+<p>Note: X-Ray calls must be mocked (moto doesn't support X-Ray). Use <code>unittest.mock.patch</code>.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement get_trace with X-Ray proxy</strong></li>
+</ul>
+<p>Flow per spec:
+1. Read trace META, tags, metadata, assessments from DynamoDB
+2. Check for cached spans: <code>T#&lt;trace_id&gt;#SPANS</code>
+3. If cached → use them
+4. If not cached → call <code>XRayClient.batch_get_traces(trace_id)</code>
+5. Convert X-Ray segments → MLflow Spans via <code>span_converter.py</code>
+6. Cache to DynamoDB: <code>T#&lt;trace_id&gt;#SPANS</code> (JSON blob, same TTL as trace)
+7. Denormalize span attributes on META: <code>span_types</code>, <code>span_statuses</code>, <code>span_models</code>, <code>span_names</code> (string sets)
+8. Write FTS items for span names and span content (using <code>fts_items_for_text()</code>)
+9. Return complete Trace</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add get_trace with X-Ray span proxy, lazy caching, and span indexing&quot;</span>
+</span></code></pre></div>
+<h3 id="task-10-search_traces-hybrid-dynamodb-x-ray">Task 10: search_traces hybrid (DynamoDB + X-Ray)<a class="headerlink" href="#task-10-search_traces-hybrid-dynamodb-x-ray" title="Permanent link">&para;</a></h3>
+<p>Modify <code>search_traces</code>: for <code>span.*</code> filters, query both DynamoDB (cached traces with denormalized span attrs) and X-Ray (uncached), union results.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<p>Test: span.type filter returns:
+- Cached traces via FilterExpression <code>contains(span_types, 'LLM')</code> on META
+- Uncached traces via X-Ray <code>GetTraceSummaries</code> (mocked)
+- Results unioned and deduplicated</p>
+<p>Test: span.name LIKE '%chat%' on cached traces uses FTS items.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement hybrid search</strong></li>
+</ul>
+<p>Split span predicates from non-span predicates. For non-span: use existing DynamoDB plan_trace_query. For span predicates on cached traces: add FilterExpressions for denormalized sets or FTS queries. For uncached traces: translate to X-Ray filter, query, union.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add hybrid DynamoDB + X-Ray search for span filters&quot;</span>
+</span></code></pre></div>
+<h3 id="task-11-otel-annotation-processor">Task 11: OTel annotation processor<a class="headerlink" href="#task-11-otel-annotation-processor" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Create: <code>src/mlflow_dynamodbstore/otel/annotation_processor.py</code>
+- Create: <code>tests/unit/otel/test_annotation_processor.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<p>Test that the SpanProcessor maps <code>mlflow.spanType</code> → <code>mlflow_spanType</code> annotation on OTel spans before export. Test configurable mapping. Test that unmapped attributes pass through unchanged.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement AnnotationSpanProcessor(SpanProcessor)</strong></li>
+</ul>
+<p>Intercepts <code>on_end</code> to add X-Ray annotations from configurable MLflow attribute mappings. Uses <code>annotation_config.py</code> for the mapping table.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add OTel SpanProcessor for X-Ray annotation mapping&quot;</span>
+</span></code></pre></div>
+<hr />
+<h2 id="chunk-3-auth-plugin">Chunk 3: Auth Plugin<a class="headerlink" href="#chunk-3-auth-plugin" title="Permanent link">&para;</a></h2>
+<h3 id="task-12-dynamodbauthstore-user-methods">Task 12: DynamoDBAuthStore — user methods<a class="headerlink" href="#task-12-dynamodbauthstore-user-methods" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Create: <code>src/mlflow_dynamodbstore/auth/__init__.py</code>
+- Create: <code>src/mlflow_dynamodbstore/auth/store.py</code>
+- Create: <code>tests/unit/auth/test_store.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">TestAuthStoreUsers</span><span class="p">:</span>
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_create_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_store</span><span class="p">):</span>
+</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>        <span class="n">user</span> <span class="o">=</span> <span class="n">auth_store</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;password123&quot;</span><span class="p">)</span>
+</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>        <span class="k">assert</span> <span class="n">user</span><span class="o">.</span><span class="n">username</span> <span class="o">==</span> <span class="s2">&quot;alice&quot;</span>
+</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>        <span class="k">assert</span> <span class="n">user</span><span class="o">.</span><span class="n">is_admin</span> <span class="ow">is</span> <span class="kc">False</span>
+</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>
+</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_authenticate_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_store</span><span class="p">):</span>
+</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>        <span class="n">auth_store</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;password123&quot;</span><span class="p">)</span>
+</span><span id="__span-17-11"><a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a>        <span class="k">assert</span> <span class="n">auth_store</span><span class="o">.</span><span class="n">authenticate_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;password123&quot;</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">True</span>
+</span><span id="__span-17-12"><a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a>        <span class="k">assert</span> <span class="n">auth_store</span><span class="o">.</span><span class="n">authenticate_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;wrong&quot;</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">False</span>
+</span><span id="__span-17-13"><a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a>
+</span><span id="__span-17-14"><a id="__codelineno-17-14" name="__codelineno-17-14" href="#__codelineno-17-14"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_get_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_store</span><span class="p">):</span>
+</span><span id="__span-17-15"><a id="__codelineno-17-15" name="__codelineno-17-15" href="#__codelineno-17-15"></a>        <span class="n">auth_store</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;password123&quot;</span><span class="p">)</span>
+</span><span id="__span-17-16"><a id="__codelineno-17-16" name="__codelineno-17-16" href="#__codelineno-17-16"></a>        <span class="n">user</span> <span class="o">=</span> <span class="n">auth_store</span><span class="o">.</span><span class="n">get_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">)</span>
+</span><span id="__span-17-17"><a id="__codelineno-17-17" name="__codelineno-17-17" href="#__codelineno-17-17"></a>        <span class="k">assert</span> <span class="n">user</span><span class="o">.</span><span class="n">username</span> <span class="o">==</span> <span class="s2">&quot;alice&quot;</span>
+</span><span id="__span-17-18"><a id="__codelineno-17-18" name="__codelineno-17-18" href="#__codelineno-17-18"></a>
+</span><span id="__span-17-19"><a id="__codelineno-17-19" name="__codelineno-17-19" href="#__codelineno-17-19"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_list_users</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_store</span><span class="p">):</span>
+</span><span id="__span-17-20"><a id="__codelineno-17-20" name="__codelineno-17-20" href="#__codelineno-17-20"></a>        <span class="n">auth_store</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;pass1&quot;</span><span class="p">)</span>
+</span><span id="__span-17-21"><a id="__codelineno-17-21" name="__codelineno-17-21" href="#__codelineno-17-21"></a>        <span class="n">auth_store</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">&quot;bob&quot;</span><span class="p">,</span> <span class="s2">&quot;pass2&quot;</span><span class="p">)</span>
+</span><span id="__span-17-22"><a id="__codelineno-17-22" name="__codelineno-17-22" href="#__codelineno-17-22"></a>        <span class="n">users</span> <span class="o">=</span> <span class="n">auth_store</span><span class="o">.</span><span class="n">list_users</span><span class="p">()</span>
+</span><span id="__span-17-23"><a id="__codelineno-17-23" name="__codelineno-17-23" href="#__codelineno-17-23"></a>        <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">users</span><span class="p">)</span> <span class="o">==</span> <span class="mi">2</span>
+</span><span id="__span-17-24"><a id="__codelineno-17-24" name="__codelineno-17-24" href="#__codelineno-17-24"></a>
+</span><span id="__span-17-25"><a id="__codelineno-17-25" name="__codelineno-17-25" href="#__codelineno-17-25"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_update_user_password</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_store</span><span class="p">):</span>
+</span><span id="__span-17-26"><a id="__codelineno-17-26" name="__codelineno-17-26" href="#__codelineno-17-26"></a>        <span class="n">auth_store</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;pass1&quot;</span><span class="p">)</span>
+</span><span id="__span-17-27"><a id="__codelineno-17-27" name="__codelineno-17-27" href="#__codelineno-17-27"></a>        <span class="n">auth_store</span><span class="o">.</span><span class="n">update_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="n">password</span><span class="o">=</span><span class="s2">&quot;pass2&quot;</span><span class="p">)</span>
+</span><span id="__span-17-28"><a id="__codelineno-17-28" name="__codelineno-17-28" href="#__codelineno-17-28"></a>        <span class="k">assert</span> <span class="n">auth_store</span><span class="o">.</span><span class="n">authenticate_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;pass2&quot;</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">True</span>
+</span><span id="__span-17-29"><a id="__codelineno-17-29" name="__codelineno-17-29" href="#__codelineno-17-29"></a>
+</span><span id="__span-17-30"><a id="__codelineno-17-30" name="__codelineno-17-30" href="#__codelineno-17-30"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_delete_user_cascades_permissions</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_store</span><span class="p">):</span>
+</span><span id="__span-17-31"><a id="__codelineno-17-31" name="__codelineno-17-31" href="#__codelineno-17-31"></a>        <span class="n">auth_store</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;pass1&quot;</span><span class="p">)</span>
+</span><span id="__span-17-32"><a id="__codelineno-17-32" name="__codelineno-17-32" href="#__codelineno-17-32"></a>        <span class="n">auth_store</span><span class="o">.</span><span class="n">create_experiment_permission</span><span class="p">(</span><span class="s2">&quot;exp1&quot;</span><span class="p">,</span> <span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;READ&quot;</span><span class="p">)</span>
+</span><span id="__span-17-33"><a id="__codelineno-17-33" name="__codelineno-17-33" href="#__codelineno-17-33"></a>        <span class="n">auth_store</span><span class="o">.</span><span class="n">delete_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">)</span>
+</span><span id="__span-17-34"><a id="__codelineno-17-34" name="__codelineno-17-34" href="#__codelineno-17-34"></a>        <span class="k">assert</span> <span class="n">auth_store</span><span class="o">.</span><span class="n">has_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">False</span>
+</span><span id="__span-17-35"><a id="__codelineno-17-35" name="__codelineno-17-35" href="#__codelineno-17-35"></a>        <span class="c1"># All permissions should be gone too</span>
+</span><span id="__span-17-36"><a id="__codelineno-17-36" name="__codelineno-17-36" href="#__codelineno-17-36"></a>
+</span><span id="__span-17-37"><a id="__codelineno-17-37" name="__codelineno-17-37" href="#__codelineno-17-37"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_create_duplicate_user_raises</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_store</span><span class="p">):</span>
+</span><span id="__span-17-38"><a id="__codelineno-17-38" name="__codelineno-17-38" href="#__codelineno-17-38"></a>        <span class="n">auth_store</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;pass1&quot;</span><span class="p">)</span>
+</span><span id="__span-17-39"><a id="__codelineno-17-39" name="__codelineno-17-39" href="#__codelineno-17-39"></a>        <span class="k">with</span> <span class="n">pytest</span><span class="o">.</span><span class="n">raises</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+</span><span id="__span-17-40"><a id="__codelineno-17-40" name="__codelineno-17-40" href="#__codelineno-17-40"></a>            <span class="n">auth_store</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">,</span> <span class="s2">&quot;pass2&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement user CRUD</strong></li>
+</ul>
+<p><code>USER#&lt;username&gt;</code> partition with <code>U#META</code> SK. Password hashing via <code>werkzeug.security.generate_password_hash</code> / <code>check_password_hash</code>. Strongly consistent reads (<code>ConsistentRead=True</code>) for <code>authenticate_user</code> and <code>get_user</code>. <code>list_users</code> via GSI2 (<code>AUTH_USERS</code>). <code>delete_user</code> queries all items in <code>USER#&lt;username&gt;</code> partition and batch deletes.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add DynamoDBAuthStore user CRUD&quot;</span>
+</span></code></pre></div>
+<h3 id="task-13-dynamodbauthstore-experiment-permissions">Task 13: DynamoDBAuthStore — experiment permissions<a class="headerlink" href="#task-13-dynamodbauthstore-experiment-permissions" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<p>Test CRUD: <code>create_experiment_permission</code>, <code>get_experiment_permission</code>, <code>list_experiment_permissions(username)</code>, <code>update_experiment_permission</code>, <code>delete_experiment_permission</code>. Test GSI4 reverse query: list all users with access to experiment X.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement</strong></li>
+</ul>
+<p>SK: <code>U#PERM#EXP#&lt;experiment_id&gt;</code>. GSI4: <code>gsi4pk=PERM#EXP#&lt;experiment_id&gt;</code>, <code>gsi4sk=USER#&lt;username&gt;</code>.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add experiment permissions to auth store&quot;</span>
+</span></code></pre></div>
+<h3 id="task-14-dynamodbauthstore-model-workspace-scorer-permissions">Task 14: DynamoDBAuthStore — model + workspace + scorer permissions<a class="headerlink" href="#task-14-dynamodbauthstore-model-workspace-scorer-permissions" title="Permanent link">&para;</a></h3>
+<p>Implement remaining permission types following the same pattern.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<p>Model permissions: CRUD + <code>delete_registered_model_permissions(name)</code> (bulk via GSI4) + <code>rename_registered_model_permissions(old, new)</code> (GSI4 query → delete old → write new).
+Workspace permissions: CRUD + <code>list_workspace_permissions(workspace)</code> (GSI4) + <code>list_accessible_workspace_names(username)</code> (query <code>USER#&lt;username&gt;</code> SK prefix).
+Scorer permissions: CRUD + <code>delete_scorer_permissions_for_scorer(exp_id, scorer_name)</code> (GSI4).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement all permission methods</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add model, workspace, and scorer permissions to auth store&quot;</span>
+</span></code></pre></div>
+<h3 id="task-15-auth-app-plugin-create_app">Task 15: Auth app plugin (create_app)<a class="headerlink" href="#task-15-auth-app-plugin-create_app" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Create: <code>src/mlflow_dynamodbstore/auth/app.py</code>
+- Create: <code>tests/unit/auth/test_app.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests</strong></li>
+</ul>
+<p>Test <code>create_app(flask_app)</code> returns Flask app with DynamoDBAuthStore. Test admin user created from config. Test auth middleware registered.</p>
+<ul class="task-list">
+<li class="task-list-item">
+<p><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Implement create_app</strong></p>
+</li>
+<li>
+<p>Parse DynamoDB URI from <code>MLFLOW_BACKEND_STORE_URI</code> or config</p>
+</li>
+<li>Initialize <code>DynamoDBAuthStore</code> with same table</li>
+<li>Create admin user from <code>MLFLOW_AUTH_ADMIN_USERNAME</code>/<code>MLFLOW_AUTH_ADMIN_PASSWORD</code> env vars (default: admin/password1234)</li>
+<li>Replace MLflow's auth module-level <code>store</code> singleton with our instance</li>
+<li>
+<p>Reuse MLflow's <code>_before_request</code>/<code>_after_request</code> hooks and permission validators</p>
+</li>
+<li class="task-list-item">
+<p><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run tests, verify pass</strong></p>
+</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add dynamodb-auth Flask app plugin&quot;</span>
+</span></code></pre></div>
+<h3 id="task-16-auth-client">Task 16: Auth client<a class="headerlink" href="#task-16-auth-client" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Create: <code>src/mlflow_dynamodbstore/auth/client.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Implement DynamoDBAuthClient</strong></li>
+</ul>
+<p>REST client following MLflow's <code>AuthServiceClient</code> pattern. Makes HTTP requests to the MLflow server's auth endpoints.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add DynamoDBAuthClient REST client&quot;</span>
+</span></code></pre></div>
+<hr />
+<h2 id="chunk-4-integration-tests-verification">Chunk 4: Integration Tests + Verification<a class="headerlink" href="#chunk-4-integration-tests-verification" title="Permanent link">&para;</a></h2>
+<h3 id="task-17-trace-integration-tests">Task 17: Trace integration tests<a class="headerlink" href="#task-17-trace-integration-tests" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Create: <code>tests/integration/test_traces.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write integration tests via moto server</strong></li>
+</ul>
+<p>Full trace lifecycle: start_trace → set_trace_tag → create_assessment → update_assessment → search_traces (by status, by timestamp, by FTS keyword) → delete_traces. Verify:
+- TTL attributes on all trace items
+- FTS + FTS_REV items written and cleaned up
+- CLIENTPTR item created and cleaned up
+- Tag denormalization on trace META
+- Pagination</p>
+<p>Note: X-Ray proxy cannot be tested via moto (X-Ray not supported). Test DynamoDB-only paths. X-Ray integration tested via mocks in unit tests.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Run tests</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;test: add trace integration tests&quot;</span>
+</span></code></pre></div>
+<h3 id="task-18-auth-integration-tests">Task 18: Auth integration tests<a class="headerlink" href="#task-18-auth-integration-tests" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Create: <code>tests/integration/test_auth.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write integration tests via moto server</strong></li>
+</ul>
+<p>Full auth lifecycle: create user → create experiment permission → authenticate → verify access → create model permission → rename model permissions → delete workspace permissions cascade → delete user cascade. Verify GSI4 reverse queries.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Run tests</strong></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;test: add auth integration tests&quot;</span>
+</span></code></pre></div>
+<h3 id="task-19-final-verification">Task 19: Final verification<a class="headerlink" href="#task-19-final-verification" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Run full test suite</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/<span class="w"> </span>-v<span class="w"> </span>--cov<span class="o">=</span>mlflow_dynamodbstore<span class="w"> </span>--cov-report<span class="o">=</span>term-missing
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Run linters</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>uv<span class="w"> </span>run<span class="w"> </span>ruff<span class="w"> </span>check<span class="w"> </span>src/<span class="w"> </span>tests/
+</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a>uv<span class="w"> </span>run<span class="w"> </span>mypy<span class="w"> </span>src/mlflow_dynamodbstore/
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run MLflow compatibility tests</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/compatibility/<span class="w"> </span>-v<span class="w"> </span>--tb<span class="o">=</span>short
+</span></code></pre></div>
+<p>Check if trace-related and auth-related compatibility tests now pass.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Verify auth app plugin end-to-end (manual smoke test)</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>uv<span class="w"> </span>run<span class="w"> </span>mlflow<span class="w"> </span>server<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="w">  </span>--app-name<span class="w"> </span>dynamodb-auth<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="w">  </span>--backend-store-uri<span class="w"> </span>dynamodb://us-east-1/test-table<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="w">  </span>--default-artifact-root<span class="w"> </span>/tmp/artifacts<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a><span class="w">  </span>--port<span class="w"> </span><span class="m">5001</span><span class="w"> </span><span class="p">&amp;</span>
+</span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a>sleep<span class="w"> </span><span class="m">3</span>
+</span><span id="__span-28-7"><a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="c1"># Test auth</span>
+</span><span id="__span-28-8"><a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a>curl<span class="w"> </span>-u<span class="w"> </span>admin:password1234<span class="w"> </span>http://localhost:5001/api/2.0/mlflow/experiments/list
+</span><span id="__span-28-9"><a id="__codelineno-28-9" name="__codelineno-28-9" href="#__codelineno-28-9"></a><span class="nb">kill</span><span class="w"> </span>%1
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Commit any fixes</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;chore: fix lint and type errors from Plan 3 verification&quot;</span>
+</span></code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/zeroae/mlflow-dynamodbstore" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/mlflow-dynamodbstore/" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
+      
+    
+  </body>
+</html>
