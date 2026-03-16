@@ -50,6 +50,7 @@ dev = [
     "requests",
     "pre-commit",
     "diff-cover",
+    "flask-wtf>=1.2.2",
 ]
 docs = [
     "mkdocs",

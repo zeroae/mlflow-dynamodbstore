@@ -73,7 +73,7 @@ class DynamoDBAuthStore:
         ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
 
-    def init_db(self) -> None:
+    def init_db(self, *args: Any, **kwargs: Any) -> None:
         """No-op — table is created by the provisioner."""
         pass
 
