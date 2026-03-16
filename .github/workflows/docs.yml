@@ -2,10 +2,25 @@ name: Docs
 
 on:
   push:
-    branches: [main, 'release/v*', 'release/[0-9]*']
-    tags: ['v*']
+    branches:
+      - main
+      - 'release/v*'
+      - 'release/[0-9]*'
+    tags:
+      - 'v*'
   pull_request:
-    branches: [main, 'release/v*', 'release/[0-9]*']
+    branches:
+      - main
+      - 'release/v*'
+      - 'release/[0-9]*'
+  workflow_run:
+    workflows: ["Tests"]
+    types:
+      - completed
+    branches:
+      - main
+      - 'release/v*'
+      - 'release/[0-9]*'
 
 permissions:
   contents: write
@@ -18,22 +33,28 @@ concurrency:
 
 jobs:
   build:
-    if: github.event_name == 'pull_request'
+    if: github.event_name != 'workflow_run'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
       - uses: astral-sh/setup-uv@v7
+
       - name: Set up Python
         run: uv python install 3.12
+
       - name: Install dependencies
         run: uv sync --extra docs --extra dev
+
       - name: Build docs
         run: uv run mkdocs build --strict
 
   deploy:
-    if: github.event_name == 'push'
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     concurrency:
       group: gh-pages-write-${{ github.ref }}
@@ -41,27 +62,35 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
+
       - uses: astral-sh/setup-uv@v7
+
       - name: Set up Python
         run: uv python install 3.12
+
       - name: Install dependencies
         run: uv sync --extra docs
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Deploy dev docs (main branch)
         if: github.ref == 'refs/heads/main'
         run: |
           uv run mike deploy --push --update-aliases dev latest
           uv run mike set-default --push latest
+
       - name: Deploy next docs (release branch)
         if: startsWith(github.ref, 'refs/heads/release/')
         run: |
           VERSION=${GITHUB_REF#refs/heads/release/}
           VERSION=${VERSION#v}
           uv run mike deploy --push --update-aliases ${VERSION}-dev next
+
       - name: Deploy versioned docs (tag)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
