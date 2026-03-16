@@ -150,7 +150,7 @@ classifiers = [
 dependencies = [
     "mlflow>=3.0",
     "boto3",
-    "python-ulid",
+    "python-ulid>=3.0.0",
     "snowballstemmer",
 ]
 
