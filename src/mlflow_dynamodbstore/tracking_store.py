@@ -27,6 +27,7 @@ from mlflow.protos.databricks_pb2 import (
 from mlflow.store.tracking.abstract_store import AbstractStore
 
 from mlflow_dynamodbstore.cache import ResolutionCache
+from mlflow_dynamodbstore.dynamodb.config import ConfigReader
 from mlflow_dynamodbstore.dynamodb.keys import pad_step
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
@@ -134,6 +135,8 @@ class DynamoDBTrackingStore(AbstractStore):
         self._cache = ResolutionCache()
         self._artifact_uri = artifact_uri or ""
         self._workspace = "default"
+        self._config = ConfigReader(self._table)
+        self._config.reconcile()
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -171,6 +174,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "creation_time": now_ms,
             "last_update_time": now_ms,
             "workspace": self._workspace,
+            "tags": {},
             # LSI attributes
             LSI1_SK: f"active#{exp_id}",
             LSI2_SK: str(now_ms),
@@ -348,14 +352,17 @@ class DynamoDBTrackingStore(AbstractStore):
         self._write_experiment_tag(experiment_id, tag)
 
     def _write_experiment_tag(self, experiment_id: str, tag: ExperimentTag) -> None:
-        """Write an experiment tag item."""
+        """Write an experiment tag item and optionally denormalize into the META item."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         item = {
-            "PK": f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            "PK": pk,
             "SK": f"{SK_EXPERIMENT_TAG_PREFIX}{tag.key}",
             "key": tag.key,
             "value": tag.value,
         }
         self._table.put_item(item)
+        if self._config.should_denormalize(None, tag.key):
+            self._denormalize_tag(pk, SK_EXPERIMENT_META, tag.key, tag.value)
 
     def _get_experiment_tags(self, experiment_id: str) -> list[ExperimentTag]:
         """Read all tags for an experiment."""
@@ -399,6 +406,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "run_name": run_name,
             "lifecycle_stage": "active",
             "artifact_uri": artifact_uri,
+            "tags": {},
             # LSI attributes
             LSI1_SK: f"active#{run_id}",
             LSI3_SK: f"RUNNING#{run_id}",
@@ -609,14 +617,17 @@ class DynamoDBTrackingStore(AbstractStore):
         return experiment_id
 
     def _write_run_tag(self, experiment_id: str, run_id: str, tag: RunTag) -> None:
-        """Write a run tag item."""
+        """Write a run tag item and optionally denormalize into the META item."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         item = {
-            "PK": f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            "PK": pk,
             "SK": f"{SK_RUN_PREFIX}{run_id}{SK_TAG_PREFIX}{tag.key}",
             "key": tag.key,
             "value": tag.value,
         }
         self._table.put_item(item)
+        if self._config.should_denormalize(experiment_id, tag.key):
+            self._denormalize_tag(pk, f"{SK_RUN_PREFIX}{run_id}", tag.key, tag.value)
 
     def _build_run(self, item: dict[str, Any], tags: list[RunTag] | None = None) -> Run:
         """Build a Run entity from an item and optional in-memory tags."""
@@ -627,6 +638,23 @@ class DynamoDBTrackingStore(AbstractStore):
             metrics=[],
         )
         return Run(run_info=info, run_data=data)
+
+    def _denormalize_tag(self, pk: str, sk: str, tag_key: str, tag_value: str) -> None:
+        """Write tag value into the META item's nested `tags` map."""
+        self._table._table.update_item(
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression="SET #tags.#k = :v",
+            ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
+            ExpressionAttributeValues={":v": tag_value},
+        )
+
+    def _remove_denormalized_tag(self, pk: str, sk: str, tag_key: str) -> None:
+        """Remove a tag from the META item's nested `tags` map."""
+        self._table._table.update_item(
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression="REMOVE #tags.#k",
+            ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
+        )
 
     def log_batch(
         self,
@@ -758,6 +786,8 @@ class DynamoDBTrackingStore(AbstractStore):
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         sk = f"{SK_RUN_PREFIX}{run_id}{SK_TAG_PREFIX}{key}"
         self._table.delete_item(pk=pk, sk=sk)
+        if self._config.should_denormalize(experiment_id, key):
+            self._remove_denormalized_tag(pk, f"{SK_RUN_PREFIX}{run_id}", key)
 
     def log_inputs(
         self,
