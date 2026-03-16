@@ -82,6 +82,14 @@ exclude = ["tests/"]
 module = ["ulid.*", "snowballstemmer.*", "moto.*", "boto3", "boto3.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["mlflow.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["mlflow_dynamodbstore.tracking_store", "mlflow_dynamodbstore.registry_store", "mlflow_dynamodbstore.workspace_store"]
+disallow_untyped_calls = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
