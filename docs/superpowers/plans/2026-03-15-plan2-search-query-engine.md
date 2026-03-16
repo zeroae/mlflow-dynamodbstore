@@ -109,10 +109,41 @@ import re
 import snowballstemmer
 
 STOP_WORDS = frozenset({
-    "the", "a", "an", "is", "in", "on", "at", "to", "for",
-    "of", "and", "or", "not", "it", "this", "that", "with",
-    "be", "has", "have", "had", "do", "does", "did", "but",
-    "if", "no", "so", "as", "by", "from", "are", "was", "were",
+    # Articles & determiners
+    "a", "an", "the", "this", "that", "these", "those",
+    # Pronouns
+    "i", "me", "my", "myself", "we", "our", "ours", "ourselves",
+    "you", "your", "yours", "yourself", "yourselves",
+    "he", "him", "his", "himself", "she", "her", "hers", "herself",
+    "it", "its", "itself", "they", "them", "their", "theirs", "themselves",
+    "what", "which", "who", "whom", "whose",
+    # Prepositions
+    "in", "on", "at", "to", "for", "of", "with", "by", "from",
+    "up", "about", "into", "through", "during", "before", "after",
+    "above", "below", "between", "under", "over", "out", "off",
+    "down", "against", "until", "while",
+    # Conjunctions
+    "and", "or", "but", "nor", "so", "yet", "both", "either",
+    "neither", "not", "only", "than", "when", "if", "because",
+    "as", "while", "although", "though",
+    # Be verbs
+    "be", "am", "is", "are", "was", "were", "been", "being",
+    # Have verbs
+    "has", "have", "had", "having",
+    # Do verbs
+    "do", "does", "did", "doing",
+    # Modal verbs
+    "will", "would", "shall", "should", "may", "might",
+    "can", "could", "must",
+    # Common adverbs
+    "no", "not", "very", "too", "also", "just", "more", "most",
+    "now", "then", "here", "there", "where", "how", "all", "each",
+    "every", "any", "few", "some", "such", "own", "same", "other",
+    "much", "many", "well", "back", "even", "still", "already",
+    # Common verbs (low semantic value)
+    "get", "got", "gets", "make", "made", "let",
+    # Misc
+    "no", "yes", "one", "two",
 })
 _stemmer = snowballstemmer.stemmer("english")
 
