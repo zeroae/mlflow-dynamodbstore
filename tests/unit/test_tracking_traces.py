@@ -908,3 +908,22 @@ class TestSearchTraces:
         )
         timestamps = [t.request_time for t in results]
         assert timestamps == sorted(timestamps, reverse=True)
+
+    def test_search_by_end_time(self, tracking_store):
+        """Filter by attribute.end_time_ms (stored as lsi2sk)."""
+        exp_id = _create_experiment(tracking_store)
+        _create_traces(tracking_store, exp_id)
+
+        # end_time_ms = request_time + execution_duration
+        # trace 0: 1709251200000 + 500 = 1709251200500
+        # trace 1: 1709251201000 + 100 = 1709251201100
+        # trace 2: 1709251202000 + 1500 = 1709251203500
+        # trace 3: 1709251203000 + 200 = 1709251203200
+        # trace 4: 1709251204000 + 800 = 1709251204800
+        # Filter for end_time_ms > 1709251203400 should return traces 2 and 4
+        results, token = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="attribute.end_time_ms > 1709251203400",
+        )
+        result_ids = {t.trace_id for t in results}
+        assert result_ids == {"tr-search-002", "tr-search-004"}

@@ -800,6 +800,7 @@ def _apply_trace_post_filter(
         # Map attribute keys to item fields
         key_map = {
             "timestamp_ms": "request_time",
+            "end_time_ms": "lsi2sk",
             "execution_time_ms": "execution_duration",
             "status": "state",
         }
