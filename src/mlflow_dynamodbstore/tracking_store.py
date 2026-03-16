@@ -1498,6 +1498,137 @@ class DynamoDBTrackingStore(AbstractStore):
             client_request_id=meta.get("client_request_id"),
         )
 
+    def search_traces(
+        self,
+        experiment_ids: list[str] | None = None,
+        filter_string: str | None = None,
+        max_results: int = 100,
+        order_by: list[str] | None = None,
+        page_token: str | None = None,
+        model_id: str | None = None,
+        locations: list[str] | None = None,
+    ) -> tuple[list[TraceInfo], str | None]:
+        """Search traces across experiments using parse -> plan -> execute pipeline."""
+        from mlflow_dynamodbstore.dynamodb.pagination import (
+            decode_page_token,
+            encode_page_token,
+        )
+        from mlflow_dynamodbstore.dynamodb.search import (
+            execute_trace_query,
+            parse_trace_filter,
+            plan_trace_query,
+        )
+
+        if not experiment_ids:
+            experiment_ids = []
+
+        # 1. Parse filter
+        predicates = parse_trace_filter(filter_string)
+
+        # 2. Plan query
+        plan = plan_trace_query(predicates, order_by)
+
+        # 3. For each experiment: execute query
+        token_data = decode_page_token(page_token)
+        exp_idx = token_data.get("exp_idx", 0) if token_data else 0
+        inner_token = token_data.get("inner_token") if token_data else None
+
+        traces: list[TraceInfo] = []
+        remaining = max_results
+        next_page_token: str | None = None
+
+        for i, exp_id in enumerate(experiment_ids[exp_idx:], start=exp_idx):
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            current_token = inner_token if i == exp_idx else None
+
+            inner_next: str | None = None
+            while remaining > 0:
+                items, inner_next = execute_trace_query(
+                    table=self._table,
+                    plan=plan,
+                    pk=pk,
+                    max_results=remaining,
+                    page_token=current_token,
+                    predicates=predicates,
+                )
+
+                for item in items:
+                    trace_id = item["trace_id"]
+                    self._cache.put("trace_exp", trace_id, exp_id)
+
+                    # Build TraceInfo from META + sub-items
+                    trace_info = self._build_trace_info(exp_id, trace_id, item)
+                    traces.append(trace_info)
+                    remaining -= 1
+
+                    if remaining <= 0:
+                        break
+
+                if not inner_next:
+                    break
+                current_token = inner_next
+
+            if remaining <= 0:
+                if inner_next or i < len(experiment_ids) - 1:
+                    next_page_token = encode_page_token(
+                        {
+                            "exp_idx": i if inner_next else i + 1,
+                            "inner_token": inner_next,
+                        }
+                    )
+                break
+
+            if inner_next:
+                next_page_token = encode_page_token(
+                    {
+                        "exp_idx": i,
+                        "inner_token": inner_next,
+                    }
+                )
+                break
+
+        return traces, next_page_token
+
+    def _build_trace_info(
+        self,
+        experiment_id: str,
+        trace_id: str,
+        meta: dict[str, Any],
+    ) -> TraceInfo:
+        """Build a TraceInfo from a META item + sub-item lookups."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        # Read tags
+        tag_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#TAG#",
+        )
+        tags = {item["key"]: item["value"] for item in tag_items}
+
+        # Read request metadata
+        rmeta_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#",
+        )
+        trace_metadata = {item["key"]: item["value"] for item in rmeta_items}
+
+        state_str = meta.get("state", "STATE_UNSPECIFIED")
+        state = TraceState(state_str)
+
+        return TraceInfo(
+            trace_id=trace_id,
+            trace_location=TraceLocation(
+                type=TraceLocationType.MLFLOW_EXPERIMENT,
+                mlflow_experiment=MlflowExperimentLocation(experiment_id=experiment_id),
+            ),
+            request_time=int(meta["request_time"]),
+            execution_duration=int(meta.get("execution_duration", 0)),
+            state=state,
+            trace_metadata=trace_metadata,
+            tags=tags,
+            client_request_id=meta.get("client_request_id"),
+        )
+
     def _write_trace_tag(
         self,
         experiment_id: str,

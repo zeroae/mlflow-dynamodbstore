@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from mlflow.entities import ViewType
-from mlflow.utils.search_utils import SearchExperimentsUtils, SearchUtils
+from mlflow.utils.search_utils import SearchExperimentsUtils, SearchTraceUtils, SearchUtils
 
 if TYPE_CHECKING:
     from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
@@ -77,6 +77,26 @@ def parse_run_filter(filter_string: str | None) -> list[FilterPredicate]:
     if not filter_string:
         return []
     parsed = SearchUtils.parse_search_filter(filter_string)  # type: ignore[no-untyped-call]
+    return _to_predicates(parsed)
+
+
+def parse_trace_filter(filter_string: str | None) -> list[FilterPredicate]:
+    """Parse an MLflow trace search filter string into a list of FilterPredicates.
+
+    Delegates actual parsing to :class:`mlflow.utils.search_utils.SearchTraceUtils`
+    and normalises the result into our :class:`FilterPredicate` dataclass.
+
+    Args:
+        filter_string: An MLflow trace filter expression such as
+            ``"attribute.status = 'OK' AND tag.my_tag = 'hello'"``
+            or ``None`` / empty string for no filter.
+
+    Returns:
+        A (possibly empty) list of :class:`FilterPredicate` objects, one per AND clause.
+    """
+    if not filter_string:
+        return []
+    parsed = SearchTraceUtils.parse_search_filter_for_search_traces(filter_string)  # type: ignore[no-untyped-call]
     return _to_predicates(parsed)
 
 
@@ -279,6 +299,123 @@ def plan_run_query(
         scan_forward=scan_forward,
         filter_expressions=filter_expressions,
         post_filters=post_filters,
+    )
+
+
+# Trace LSI mapping for order_by attributes
+_TRACE_ORDER_BY_LSI: dict[str, str] = {
+    "timestamp_ms": "lsi1",
+    "end_time_ms": "lsi2",
+    "execution_time_ms": "lsi5",
+}
+
+
+def plan_trace_query(
+    predicates: list[FilterPredicate],
+    order_by: list[str] | None,
+) -> QueryPlan:
+    """Analyze predicates and order_by to produce an optimal DynamoDB QueryPlan for traces.
+
+    Strategy selection priority:
+    1. FTS   -- LIKE '%word%' on tag/metadata text fields
+    2. LSI3  -- status= filter (composite key: status#timestamp_ms)
+    3. LSI4  -- name LIKE/ILIKE prefix
+    4. LSI5  -- order_by execution_time_ms
+    5. LSI2  -- order_by end_time_ms
+    6. Default: LSI1 timestamp_ms (DESC)
+
+    Key difference from run search: trace LSI1/2/5 values are NUMERIC, so
+    begins_with (sk_prefix) is not used on them. LSI3 is STRING (status#ts),
+    and LSI4 is STRING (lowercased name), so sk_prefix works for those.
+
+    Args:
+        predicates: Parsed filter predicates from :func:`parse_trace_filter`.
+        order_by: List of order-by tokens (e.g. ``["execution_time_ms ASC"]``).
+
+    Returns:
+        A :class:`QueryPlan` describing the chosen execution strategy.
+    """
+    # ------------------------------------------------------------------ #
+    # 1. Check for FTS strategy (LIKE '%word%' on any text field)         #
+    # ------------------------------------------------------------------ #
+    for pred in predicates:
+        if pred.op in ("LIKE", "ILIKE") and isinstance(pred.value, str):
+            if _FTS_LIKE_RE.match(pred.value):
+                fts_query = pred.value.strip("%")
+                return QueryPlan(
+                    strategy="fts",
+                    index=None,
+                    sk_prefix=None,
+                    scan_forward=True,
+                    fts_query=fts_query,
+                )
+
+    # ------------------------------------------------------------------ #
+    # 2. Check for status= filter -> LSI3                                 #
+    # ------------------------------------------------------------------ #
+    status_sk_prefix: str | None = None
+    for pred in predicates:
+        if pred.field_type == "attribute" and pred.key == "status" and pred.op == "=":
+            status_sk_prefix = f"{pred.value}#"
+            remaining_preds = [
+                p
+                for p in predicates
+                if not (p.field_type == "attribute" and p.key == "status" and p.op == "=")
+            ]
+            return QueryPlan(
+                strategy="index",
+                index="lsi3",
+                sk_prefix=status_sk_prefix,
+                scan_forward=False,  # newest first
+                post_filters=remaining_preds,
+            )
+
+    # ------------------------------------------------------------------ #
+    # 3. Check for name LIKE/ILIKE prefix -> LSI4                         #
+    # ------------------------------------------------------------------ #
+    for pred in predicates:
+        if pred.field_type == "tag" and pred.key == "mlflow.traceName":
+            if pred.op in ("LIKE", "ILIKE") and isinstance(pred.value, str):
+                # Only handle prefix patterns: 'word%'
+                val = pred.value
+                if val.endswith("%") and not val.startswith("%"):
+                    prefix = val.rstrip("%").lower()
+                    remaining_preds = [p for p in predicates if p is not pred]
+                    return QueryPlan(
+                        strategy="index",
+                        index="lsi4",
+                        sk_prefix=prefix,
+                        scan_forward=True,
+                        post_filters=remaining_preds,
+                    )
+
+    # ------------------------------------------------------------------ #
+    # 4. Determine index from order_by                                    #
+    # ------------------------------------------------------------------ #
+    chosen_index: str | None = None
+    scan_forward = False  # default: newest first (DESC)
+
+    if order_by:
+        for token in order_by:
+            field_type, key, sf = _parse_order_by_token(token)
+            if key in _TRACE_ORDER_BY_LSI:
+                chosen_index = _TRACE_ORDER_BY_LSI[key]
+                scan_forward = sf
+                break
+
+    # ------------------------------------------------------------------ #
+    # 5. Default: LSI1 (timestamp_ms DESC)                                #
+    # ------------------------------------------------------------------ #
+    if chosen_index is None:
+        chosen_index = "lsi1"
+
+    # All remaining predicates become post-filters (no sk_prefix for numeric LSIs)
+    return QueryPlan(
+        strategy="index",
+        index=chosen_index,
+        sk_prefix=None,
+        scan_forward=scan_forward,
+        post_filters=list(predicates),
     )
 
 
@@ -642,6 +779,233 @@ def _execute_fts(
             return _fetch_meta_items(table, pk, list(result_ids))
 
     return []
+
+
+def _is_trace_meta_item(item: dict[str, Any]) -> bool:
+    """Check if a DynamoDB item is a trace META item (not a sub-item or run item)."""
+    return "trace_id" in item
+
+
+def _apply_trace_post_filter(
+    table: DynamoDBTable,
+    pk: str,
+    trace_id: str,
+    item: dict[str, Any],
+    pred: FilterPredicate,
+) -> bool:
+    """Apply a single post-filter predicate for traces. May require sub-item lookups."""
+    from mlflow_dynamodbstore.dynamodb.schema import SK_TRACE_PREFIX
+
+    if pred.field_type == "attribute":
+        # Map attribute keys to item fields
+        key_map = {
+            "timestamp_ms": "request_time",
+            "execution_time_ms": "execution_duration",
+            "status": "state",
+        }
+        item_key = key_map.get(pred.key, pred.key)
+        actual = item.get(item_key)
+        # Coerce numeric comparisons
+        if pred.key in ("timestamp_ms", "execution_time_ms", "end_time_ms"):
+            if actual is not None:
+                actual = int(actual)
+        return _compare(actual, pred.op, pred.value)
+
+    if pred.field_type == "tag":
+        # Check denormalized tags first
+        tags = item.get("tags", {})
+        if pred.key in tags:
+            return _compare(tags[pred.key], pred.op, pred.value)
+        # Fall back to sub-item lookup
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#TAG#{pred.key}"
+        sub_item = table.get_item(pk, sk)
+        actual = sub_item["value"] if sub_item else None
+        return _compare(actual, pred.op, pred.value)
+
+    if pred.field_type == "request_metadata":
+        sk = f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{pred.key}"
+        sub_item = table.get_item(pk, sk)
+        actual = sub_item["value"] if sub_item else None
+        return _compare(actual, pred.op, pred.value)
+
+    return True  # Unknown type, don't filter
+
+
+def _execute_trace_fts(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+) -> list[dict[str, Any]]:
+    """Execute a full-text search query strategy for traces."""
+    from mlflow_dynamodbstore.dynamodb.fts import tokenize_trigrams, tokenize_words
+    from mlflow_dynamodbstore.dynamodb.schema import SK_FTS_PREFIX, SK_TRACE_PREFIX
+
+    if not plan.fts_query:
+        return []
+
+    # Tokenize with word stemmer
+    word_tokens = tokenize_words(plan.fts_query)
+
+    def _extract_trace_ids(fts_items: list[dict[str, Any]]) -> set[str]:
+        """Extract trace_ids from FTS items with T# entity prefix."""
+        ids = set()
+        for item in fts_items:
+            sk = item.get("SK", "")
+            # FTS#W#<token>#T#<trace_id>[#<field>]
+            parts = sk.split("#")
+            for i, part in enumerate(parts):
+                if part == "T" and i + 1 < len(parts):
+                    ids.add(parts[i + 1])
+                    break
+        return ids
+
+    for level, tokens in [
+        ("W", word_tokens),
+        ("3", tokenize_trigrams(plan.fts_query) if not word_tokens else []),
+    ]:
+        if not tokens:
+            continue
+        entity_id_sets: list[set[str]] = []
+        for token in tokens:
+            sk_prefix = f"{SK_FTS_PREFIX}{level}#{token}#T#"
+            fts_items = table.query(pk=pk, sk_prefix=sk_prefix)
+            entity_id_sets.append(_extract_trace_ids(fts_items))
+
+        if not entity_id_sets:
+            continue
+
+        result_ids = entity_id_sets[0]
+        for s in entity_id_sets[1:]:
+            result_ids &= s
+
+        if result_ids:
+            # Fetch trace META items
+            items = []
+            for tid in result_ids:
+                meta = table.get_item(pk, f"{SK_TRACE_PREFIX}{tid}")
+                if meta and _is_trace_meta_item(meta):
+                    items.append(meta)
+            return items
+
+    return []
+
+
+def _execute_trace_index(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+) -> list[dict[str, Any]]:
+    """Execute an index-based query strategy for traces.
+
+    For LSIs with STRING sort keys (lsi3, lsi4), we can query the index
+    directly with sk_prefix. For numeric LSIs (lsi1, lsi2, lsi5), we
+    query the main table by SK prefix "T#" to get only trace items,
+    then sort by the LSI attribute in Python.
+    """
+    from mlflow_dynamodbstore.dynamodb.schema import (
+        LSI1_SK,
+        LSI2_SK,
+        LSI4_SK,
+        LSI5_SK,
+        SK_TRACE_PREFIX,
+    )
+
+    # LSIs with string sort keys can use begins_with
+    string_lsis = {"lsi3", "lsi4"}
+
+    if plan.index in string_lsis and plan.sk_prefix is not None:
+        # Query the LSI directly with sk_prefix
+        items = table.query(
+            pk=pk,
+            sk_prefix=plan.sk_prefix,
+            index_name=plan.index,
+            scan_forward=plan.scan_forward,
+        )
+        # Filter to trace META items only
+        return [item for item in items if _is_trace_meta_item(item)]
+
+    # For numeric LSIs (lsi1, lsi2, lsi5): query main table by SK prefix T#
+    # to get all trace items, then sort in Python by the LSI attribute.
+    items = table.query(pk=pk, sk_prefix=SK_TRACE_PREFIX)
+    # Filter to META items only (exclude sub-items like T#<id>#TAG#...)
+    meta_items = [item for item in items if _is_trace_meta_item(item)]
+
+    # Determine sort key attribute
+    lsi_attr_map = {
+        "lsi1": LSI1_SK,
+        "lsi2": LSI2_SK,
+        "lsi4": LSI4_SK,
+        "lsi5": LSI5_SK,
+    }
+    sort_attr = lsi_attr_map.get(plan.index or "lsi1", LSI1_SK)
+
+    # Sort by the LSI attribute
+    meta_items.sort(
+        key=lambda item: item.get(sort_attr, 0),
+        reverse=not plan.scan_forward,
+    )
+    return meta_items
+
+
+def execute_trace_query(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+    max_results: int,
+    page_token: str | None = None,
+    predicates: list[FilterPredicate] | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Execute a DynamoDB query for traces based on a QueryPlan.
+
+    Similar to :func:`execute_query` but filters results to only include
+    trace META items and applies trace-specific post-filters.
+
+    Args:
+        table: DynamoDBTable instance.
+        plan: The QueryPlan describing the execution strategy.
+        pk: The partition key (e.g. ``"EXP#01JQ"``).
+        max_results: Maximum number of trace META items to return.
+        page_token: Opaque pagination token from a previous call.
+        predicates: Full list of filter predicates for trace search.
+
+    Returns:
+        A tuple ``(items, next_page_token)`` where *items* are trace META
+        item dicts and *next_page_token* is ``None`` when there are no
+        more results.
+    """
+    from mlflow_dynamodbstore.dynamodb.pagination import (
+        decode_page_token,
+        encode_page_token,
+    )
+
+    predicates = predicates or []
+    token_data = decode_page_token(page_token)
+    offset = token_data.get("offset", 0) if token_data else 0
+
+    if plan.strategy == "fts":
+        items = _execute_trace_fts(table, plan, pk)
+    elif plan.strategy == "index":
+        items = _execute_trace_index(table, plan, pk)
+    else:
+        items = []
+
+    # Apply post-filters
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        trace_id = item.get("trace_id", "")
+        if all(
+            _apply_trace_post_filter(table, pk, trace_id, item, pred) for pred in plan.post_filters
+        ):
+            filtered.append(item)
+
+    # Pagination: simple offset-based
+    page = filtered[offset : offset + max_results]
+    has_more = len(filtered) > offset + max_results
+    next_token: str | None = None
+    if has_more:
+        next_token = encode_page_token({"offset": offset + max_results})
+
+    return page, next_token
 
 
 def parse_experiment_filter(filter_string: str | None) -> list[FilterPredicate]:

@@ -723,3 +723,188 @@ class TestGetAssessment:
 
         with pytest.raises(MlflowException, match="does not exist"):
             tracking_store.get_assessment(trace_id, "nonexistent-id")
+
+
+# ---------------------------------------------------------------------------
+# search_traces tests
+# ---------------------------------------------------------------------------
+
+
+def _create_traces(tracking_store, experiment_id, count=5):
+    """Create several traces with varied attributes for search tests.
+
+    Returns a list of trace_ids in creation order.
+    """
+    traces = []
+    base_time = 1709251200000
+    states = ["OK", "ERROR", "OK", "OK", "ERROR"]
+    names = ["chat-completion", "embedding-gen", "chat-summary", "translate", "error-handler"]
+    durations = [500, 100, 1500, 200, 800]
+
+    for i in range(count):
+        trace_id = f"tr-search-{i:03d}"
+        trace_info = _make_trace_info(
+            experiment_id,
+            trace_id=trace_id,
+            request_time=base_time + i * 1000,
+            execution_duration=durations[i],
+            state=TraceState(states[i]),
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: names[i],
+                "client_request_id": f"client-{i}",
+            },
+            tags={
+                "user_tag": f"value-{i}",
+                "mlflow.user": "alice",
+            },
+        )
+        tracking_store.start_trace(trace_info)
+        traces.append(trace_id)
+    return traces
+
+
+class TestSearchTraces:
+    def test_search_by_timestamp(self, tracking_store):
+        """LSI1 query - search by timestamp range."""
+        exp_id = _create_experiment(tracking_store)
+        _create_traces(tracking_store, exp_id)
+
+        # Search for traces with timestamp > base_time + 2000
+        results, token = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="attribute.timestamp_ms > 1709251202000",
+        )
+        # Should find traces 3 and 4 (timestamps 3000 and 4000 above base)
+        result_ids = [t.trace_id for t in results]
+        assert "tr-search-003" in result_ids
+        assert "tr-search-004" in result_ids
+        assert "tr-search-000" not in result_ids
+        assert "tr-search-001" not in result_ids
+
+    def test_search_by_status(self, tracking_store):
+        """LSI3 composite: status#timestamp_ms."""
+        exp_id = _create_experiment(tracking_store)
+        _create_traces(tracking_store, exp_id)
+
+        results, token = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="attribute.status = 'ERROR'",
+        )
+        result_ids = [t.trace_id for t in results]
+        # Traces 1 and 4 have ERROR status
+        assert set(result_ids) == {"tr-search-001", "tr-search-004"}
+
+    def test_search_by_execution_time(self, tracking_store):
+        """LSI5 duration sort."""
+        exp_id = _create_experiment(tracking_store)
+        _create_traces(tracking_store, exp_id)
+
+        results, token = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            order_by=["execution_time_ms ASC"],
+        )
+        durations = [t.execution_duration for t in results]
+        assert durations == sorted(durations)
+
+    def test_search_by_trace_name(self, tracking_store):
+        """LSI4 begins_with for prefix ILIKE."""
+        exp_id = _create_experiment(tracking_store)
+        _create_traces(tracking_store, exp_id)
+
+        results, token = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="attribute.name LIKE 'chat%'",
+        )
+        result_ids = [t.trace_id for t in results]
+        # "chat-completion" and "chat-summary" match
+        assert "tr-search-000" in result_ids
+        assert "tr-search-002" in result_ids
+        assert len(result_ids) == 2
+
+    def test_search_by_tag(self, tracking_store):
+        """Denormalized tag -> FilterExpression."""
+        exp_id = _create_experiment(tracking_store)
+        _create_traces(tracking_store, exp_id)
+
+        results, token = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="tag.user_tag = 'value-2'",
+        )
+        result_ids = [t.trace_id for t in results]
+        assert result_ids == ["tr-search-002"]
+
+    def test_search_by_metadata(self, tracking_store):
+        """Request metadata filter."""
+        exp_id = _create_experiment(tracking_store)
+        _create_traces(tracking_store, exp_id)
+
+        results, token = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="request_metadata.client_request_id = 'client-3'",
+        )
+        result_ids = [t.trace_id for t in results]
+        assert result_ids == ["tr-search-003"]
+
+    def test_search_fts_keyword(self, tracking_store):
+        """FTS word-level search on tag/metadata text."""
+        exp_id = _create_experiment(tracking_store)
+        # Enable trigram indexing for trace tag values
+        tracking_store._config.set_fts_trigram_fields(["trace_tag_value"])
+
+        _create_traces(tracking_store, exp_id)
+
+        # Set a distinctive tag on one trace
+        tracking_store.set_trace_tag("tr-search-002", "description", "quantum computing research")
+
+        results, token = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="tag.description LIKE '%quantum%'",
+        )
+        result_ids = [t.trace_id for t in results]
+        assert "tr-search-002" in result_ids
+
+    def test_search_pagination(self, tracking_store):
+        """Pagination with page_token."""
+        exp_id = _create_experiment(tracking_store)
+        _create_traces(tracking_store, exp_id)
+
+        # Get first page of 2
+        results1, token1 = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            max_results=2,
+        )
+        assert len(results1) == 2
+        assert token1 is not None
+
+        # Get second page
+        results2, token2 = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            max_results=2,
+            page_token=token1,
+        )
+        assert len(results2) == 2
+        assert token2 is not None
+
+        # Get third page
+        results3, token3 = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            max_results=2,
+            page_token=token2,
+        )
+        assert len(results3) == 1
+        assert token3 is None
+
+        # All results should be unique
+        all_ids = [t.trace_id for t in results1 + results2 + results3]
+        assert len(set(all_ids)) == 5
+
+    def test_search_default_order(self, tracking_store):
+        """Default order is by timestamp descending."""
+        exp_id = _create_experiment(tracking_store)
+        _create_traces(tracking_store, exp_id)
+
+        results, token = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+        )
+        timestamps = [t.request_time for t in results]
+        assert timestamps == sorted(timestamps, reverse=True)
