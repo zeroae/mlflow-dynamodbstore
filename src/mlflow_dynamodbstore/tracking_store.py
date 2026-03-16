@@ -1390,8 +1390,10 @@ class DynamoDBTrackingStore(AbstractStore):
 
         ttl = self._get_trace_ttl()
 
-        # Extract trace name from trace_metadata
-        trace_name = trace_info.trace_metadata.get(TraceTagKey.TRACE_NAME, "")
+        # Extract trace name from trace_metadata or tags
+        trace_name = trace_info.trace_metadata.get(
+            TraceTagKey.TRACE_NAME, ""
+        ) or trace_info.tags.get(TraceTagKey.TRACE_NAME, "")
         execution_duration = trace_info.execution_duration or 0
         request_time = trace_info.request_time
         state_str = str(trace_info.state)
@@ -1411,7 +1413,7 @@ class DynamoDBTrackingStore(AbstractStore):
             LSI1_SK: request_time,
             LSI2_SK: request_time + execution_duration,
             LSI3_SK: f"{state_str}#{request_time}",
-            LSI4_SK: trace_name.lower() if trace_name else "",
+            LSI4_SK: trace_name.lower() if trace_name else "~",  # DynamoDB rejects empty strings
             LSI5_SK: execution_duration,
             # GSI1: reverse lookup trace_id -> experiment_id
             GSI1_PK: f"{GSI1_TRACE_PREFIX}{trace_id}",
