@@ -829,6 +829,11 @@ def _apply_trace_post_filter(
         actual = sub_item["value"] if sub_item else None
         return _compare(actual, pred.op, pred.value)
 
+    if pred.field_type == "span":
+        # Span predicates are handled by the hybrid search layer in tracking_store.
+        # Skip here so they don't accidentally pass through.
+        return True
+
     return True  # Unknown type, don't filter
 
 

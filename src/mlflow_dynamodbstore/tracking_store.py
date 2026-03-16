@@ -1632,7 +1632,14 @@ class DynamoDBTrackingStore(AbstractStore):
         model_id: str | None = None,
         locations: list[str] | None = None,
     ) -> tuple[list[TraceInfo], str | None]:
-        """Search traces across experiments using parse -> plan -> execute pipeline."""
+        """Search traces across experiments using parse -> plan -> execute pipeline.
+
+        For span-level filters (field_type == "span"), uses a hybrid approach:
+        1. Cached traces (those with denormalized span_types/span_names/span_statuses
+           on META) are filtered via DynamoDB.
+        2. Uncached traces are found via X-Ray filter expressions.
+        3. Results are unioned and deduplicated.
+        """
         from mlflow_dynamodbstore.dynamodb.pagination import (
             decode_page_token,
             encode_page_token,
@@ -1646,11 +1653,13 @@ class DynamoDBTrackingStore(AbstractStore):
         if not experiment_ids:
             experiment_ids = []
 
-        # 1. Parse filter
+        # 1. Parse filter and split into span vs non-span predicates
         predicates = parse_trace_filter(filter_string)
+        span_predicates = [p for p in predicates if p.field_type == "span"]
+        non_span_predicates = [p for p in predicates if p.field_type != "span"]
 
-        # 2. Plan query
-        plan = plan_trace_query(predicates, order_by)
+        # 2. Plan query using only non-span predicates
+        plan = plan_trace_query(non_span_predicates, order_by)
 
         # 3. For each experiment: execute query
         token_data = decode_page_token(page_token)
@@ -1660,27 +1669,37 @@ class DynamoDBTrackingStore(AbstractStore):
         traces: list[TraceInfo] = []
         remaining = max_results
         next_page_token: str | None = None
+        seen_trace_ids: set[str] = set()
 
         for i, exp_id in enumerate(experiment_ids[exp_idx:], start=exp_idx):
             pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
             current_token = inner_token if i == exp_idx else None
 
+            # --- Phase 1: DynamoDB query (handles non-span + cached span filters) ---
             inner_next: str | None = None
             while remaining > 0:
                 items, inner_next = execute_trace_query(
                     table=self._table,
                     plan=plan,
                     pk=pk,
-                    max_results=remaining,
+                    max_results=remaining if not span_predicates else remaining * 3,
                     page_token=current_token,
-                    predicates=predicates,
+                    predicates=non_span_predicates,
                 )
 
                 for item in items:
                     trace_id = item["trace_id"]
-                    self._cache.put("trace_exp", trace_id, exp_id)
+                    if trace_id in seen_trace_ids:
+                        continue
 
-                    # Build TraceInfo from META + sub-items
+                    # Apply span predicates on cached (denormalized) data
+                    if span_predicates and not self._match_span_predicates_cached(
+                        item, span_predicates
+                    ):
+                        continue
+
+                    seen_trace_ids.add(trace_id)
+                    self._cache.put("trace_exp", trace_id, exp_id)
                     trace_info = self._build_trace_info(exp_id, trace_id, item)
                     traces.append(trace_info)
                     remaining -= 1
@@ -1691,6 +1710,35 @@ class DynamoDBTrackingStore(AbstractStore):
                 if not inner_next:
                     break
                 current_token = inner_next
+
+            # --- Phase 2: X-Ray fallback for uncached traces with span filters ---
+            if span_predicates and remaining > 0:
+                xray_trace_ids = self._search_xray_for_span_filters(exp_id, span_predicates)
+                for xray_tid in xray_trace_ids:
+                    if remaining <= 0:
+                        break
+                    if xray_tid in seen_trace_ids:
+                        continue
+                    # Verify this trace exists in DynamoDB and belongs to this experiment
+                    meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{xray_tid}")
+                    if meta is None:
+                        continue
+                    # Apply non-span post-filters on this item too
+                    from mlflow_dynamodbstore.dynamodb.search import (
+                        _apply_trace_post_filter,
+                    )
+
+                    if not all(
+                        _apply_trace_post_filter(self._table, pk, xray_tid, meta, p)
+                        for p in non_span_predicates
+                    ):
+                        continue
+
+                    seen_trace_ids.add(xray_tid)
+                    self._cache.put("trace_exp", xray_tid, exp_id)
+                    trace_info = self._build_trace_info(exp_id, xray_tid, meta)
+                    traces.append(trace_info)
+                    remaining -= 1
 
             if remaining <= 0:
                 if inner_next or i < len(experiment_ids) - 1:
@@ -1712,6 +1760,126 @@ class DynamoDBTrackingStore(AbstractStore):
                 break
 
         return traces, next_page_token
+
+    @staticmethod
+    def _match_span_predicates_cached(
+        item: dict[str, Any],
+        span_predicates: list[Any],
+    ) -> bool:
+        """Check span predicates against denormalized span attrs on META item.
+
+        Denormalized fields on META:
+        - span_types: set of span type strings (e.g. {"LLM", "RETRIEVER"})
+        - span_names: set of span name strings (e.g. {"ChatModel", "Retriever"})
+        - span_statuses: set of status strings (e.g. {"OK"})
+
+        Returns True if the item has denormalized data and all predicates match,
+        or False if the item has no denormalized data (uncached).
+        """
+        import fnmatch as _fnmatch
+
+        # Map span predicate keys to denormalized set fields on META
+        span_key_to_field = {
+            "type": "span_types",
+            "name": "span_names",
+            "status": "span_statuses",
+        }
+
+        has_any_denormalized = any(
+            item.get(f) for f in ("span_types", "span_names", "span_statuses")
+        )
+        if not has_any_denormalized:
+            # No cached span data -> cannot match via DynamoDB
+            return False
+
+        for pred in span_predicates:
+            field_name = span_key_to_field.get(pred.key)
+            if not field_name:
+                # Unknown span key, skip (will need X-Ray)
+                return False
+            values = item.get(field_name)
+            if not values:
+                return False
+
+            if pred.op == "=":
+                if pred.value not in values:
+                    return False
+            elif pred.op == "!=":
+                if pred.value in values:
+                    return False
+            elif pred.op in ("LIKE", "ILIKE"):
+                pattern = str(pred.value).replace("%", "*").replace("_", "?")
+                if pred.op == "ILIKE":
+                    pattern = pattern.lower()
+                matched = any(
+                    _fnmatch.fnmatch(v.lower() if pred.op == "ILIKE" else v, pattern)
+                    for v in values
+                )
+                if not matched:
+                    return False
+            else:
+                # Unsupported op for set membership
+                return False
+
+        return True
+
+    def _search_xray_for_span_filters(
+        self,
+        experiment_id: str,
+        span_predicates: list[Any],
+    ) -> list[str]:
+        """Query X-Ray for traces matching span predicates.
+
+        Uses the filter translator to convert span predicates to X-Ray filter
+        expressions, then calls get_trace_summaries.
+
+        Returns a list of trace IDs found via X-Ray.
+        """
+        import datetime
+
+        from mlflow_dynamodbstore.xray.annotation_config import DEFAULT_ANNOTATION_CONFIG
+        from mlflow_dynamodbstore.xray.filter_translator import translate_span_filters
+
+        # Map span predicate keys to annotation config keys
+        span_key_to_annotation = {
+            "type": "mlflow.spanType",
+            "name": "name",
+            "status": "status",
+        }
+
+        # Remap span predicates to use annotation config keys
+        from mlflow_dynamodbstore.dynamodb.search import FilterPredicate
+
+        remapped = []
+        for pred in span_predicates:
+            ann_key = span_key_to_annotation.get(pred.key, pred.key)
+            remapped.append(
+                FilterPredicate(
+                    field_type=pred.field_type,
+                    key=ann_key,
+                    op=pred.op,
+                    value=pred.value,
+                )
+            )
+
+        xray_filter, _remaining = translate_span_filters(remapped, DEFAULT_ANNOTATION_CONFIG)
+        if not xray_filter:
+            return []
+
+        # Use a reasonable time window (last 30 days)
+        end_time = datetime.datetime.now(tz=datetime.UTC)
+        start_time = end_time - datetime.timedelta(days=30)
+
+        try:
+            summaries = self._xray_client.get_trace_summaries(
+                start_time=start_time,
+                end_time=end_time,
+                filter_expression=xray_filter,
+            )
+        except Exception:
+            return []
+
+        return [s["Id"] for s in summaries if "Id" in s]
 
     def _build_trace_info(
         self,

@@ -1292,3 +1292,168 @@ class TestGetTraceWithSpans:
         assert spans_item is not None
         meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123")
         assert int(spans_item["ttl"]) == int(meta["ttl"])
+
+
+class TestHybridSearchTraces:
+    """Tests for hybrid DynamoDB + X-Ray search with span-level filters."""
+
+    def _create_trace_and_cache_spans(self, tracking_store, exp_id, trace_id="tr-abc123"):
+        """Create a trace, then call get_trace to cache spans and denormalize."""
+        trace_info = _make_trace_info(exp_id, trace_id=trace_id)
+        tracking_store.start_trace(trace_info)
+
+        mock_xray = MagicMock()
+        mock_xray.batch_get_traces.return_value = [SAMPLE_XRAY_TRACE]
+        tracking_store._xray_client_instance = mock_xray
+
+        # get_trace caches spans and denormalizes span_types/span_names/span_statuses
+        tracking_store.get_trace(trace_id)
+        return trace_info
+
+    def test_span_type_filter_cached(self, tracking_store):
+        """Span type filter on cached traces uses denormalized span_types on META."""
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_and_cache_spans(tracking_store, exp_id)
+
+        # Verify denormalized span_types exist on META
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123")
+        assert "span_types" in meta
+        assert "LLM" in meta["span_types"]
+
+        # Search with span type filter - should find the cached trace via DynamoDB
+        results, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="span.type = 'LLM'",
+        )
+        assert len(results) == 1
+        assert results[0].trace_id == "tr-abc123"
+
+    def test_span_type_filter_no_match(self, tracking_store):
+        """Span type filter that doesn't match returns empty."""
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_and_cache_spans(tracking_store, exp_id)
+
+        results, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="span.type = 'AGENT'",
+        )
+        assert len(results) == 0
+
+    def test_span_type_filter_uncached_via_xray(self, tracking_store):
+        """Span type filter on uncached traces queries X-Ray."""
+        exp_id = _create_experiment(tracking_store)
+
+        # Create trace but DON'T call get_trace (no cached spans)
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        # Mock X-Ray client to return the trace
+        mock_xray = MagicMock()
+        mock_xray.get_trace_summaries.return_value = [{"Id": "tr-abc123", "ResponseTime": 0.5}]
+        tracking_store._xray_client_instance = mock_xray
+
+        results, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="span.type = 'LLM'",
+        )
+        assert len(results) == 1
+        assert results[0].trace_id == "tr-abc123"
+
+        # Verify X-Ray was called with the right filter
+        mock_xray.get_trace_summaries.assert_called_once()
+        call_kwargs = mock_xray.get_trace_summaries.call_args
+        assert 'annotation.mlflow_spanType = "LLM"' in call_kwargs.kwargs.get(
+            "filter_expression", call_kwargs[1].get("filter_expression", "")
+        ) or 'annotation.mlflow_spanType = "LLM"' in str(call_kwargs)
+
+    def test_span_filter_union_dedup(self, tracking_store):
+        """Results from DynamoDB and X-Ray are unioned and deduplicated."""
+        exp_id = _create_experiment(tracking_store)
+
+        # Create trace1 with cached spans (found via DynamoDB)
+        self._create_trace_and_cache_spans(tracking_store, exp_id, trace_id="tr-cached")
+
+        # Create trace2 without cached spans (found via X-Ray)
+        trace_info2 = _make_trace_info(exp_id, trace_id="tr-uncached")
+        tracking_store.start_trace(trace_info2)
+
+        # Mock X-Ray to return BOTH traces (the cached one + the uncached one)
+        mock_xray = MagicMock()
+        mock_xray.get_trace_summaries.return_value = [
+            {"Id": "tr-cached", "ResponseTime": 0.5},
+            {"Id": "tr-uncached", "ResponseTime": 0.3},
+        ]
+        # Also need batch_get_traces for the cached trace's get_trace call
+        # (already called above, so just set up for X-Ray search)
+        tracking_store._xray_client_instance = mock_xray
+
+        results, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="span.type = 'LLM'",
+        )
+
+        trace_ids = [r.trace_id for r in results]
+        # Both should be present, no duplicates
+        assert "tr-cached" in trace_ids
+        assert "tr-uncached" in trace_ids
+        assert len(trace_ids) == len(set(trace_ids))
+
+    def test_span_name_like_cached(self, tracking_store):
+        """span.name LIKE '%Chat%' on cached traces uses denormalized span_names."""
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_and_cache_spans(tracking_store, exp_id)
+
+        # Verify denormalized span_names exist
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-abc123")
+        assert "span_names" in meta
+        assert "ChatModel" in meta["span_names"]
+
+        results, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="span.name LIKE '%Chat%'",
+        )
+        assert len(results) == 1
+        assert results[0].trace_id == "tr-abc123"
+
+    def test_span_name_like_no_match(self, tracking_store):
+        """span.name LIKE '%xyz%' on cached traces returns empty when no match."""
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_and_cache_spans(tracking_store, exp_id)
+
+        results, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="span.name LIKE '%nonexistent%'",
+        )
+        assert len(results) == 0
+
+    def test_no_span_filter_unchanged(self, tracking_store):
+        """search_traces without span filters works as before."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        results, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="attribute.status = 'OK'",
+        )
+        assert len(results) == 1
+        assert results[0].trace_id == "tr-abc123"
+
+    def test_xray_error_returns_empty(self, tracking_store):
+        """If X-Ray call fails, gracefully return DynamoDB-only results."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        mock_xray = MagicMock()
+        mock_xray.get_trace_summaries.side_effect = Exception("X-Ray unavailable")
+        tracking_store._xray_client_instance = mock_xray
+
+        # Should not raise, just return empty (no cached span data, X-Ray fails)
+        results, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string="span.type = 'LLM'",
+        )
+        assert len(results) == 0
