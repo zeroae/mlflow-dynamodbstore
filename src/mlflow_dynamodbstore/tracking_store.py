@@ -1531,6 +1531,8 @@ class DynamoDBTrackingStore(AbstractStore):
                 text=tag_value,
             )
             if tag_fts:
+                for fts_item in tag_fts:
+                    fts_item["ttl"] = ttl
                 self._table.batch_write(tag_fts)
 
     def set_trace_tag(self, trace_id: str, key: str, value: str) -> None:

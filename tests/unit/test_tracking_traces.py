@@ -278,6 +278,44 @@ class TestSetTraceTag:
         )
         assert int(tag_item["ttl"]) == int(meta["ttl"])
 
+    def test_trace_fts_items_have_ttl(self, tracking_store):
+        """FTS items written for trace tags must inherit the trace's TTL."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store._table.put_item(
+            {
+                "PK": PK_CONFIG,
+                "SK": "TTL_POLICY",
+                "trace_retention_days": 7,
+            }
+        )
+        # Enable trigram indexing for trace tag values
+        tracking_store._config.set_fts_trigram_fields(["trace_tag_value"])
+
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+
+        # Set a tag (triggers FTS item writes)
+        tracking_store.set_trace_tag("tr-abc123", "mlflow.note", "important")
+
+        # Read trace META to get the TTL value
+        meta = tracking_store._table.get_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{exp_id}",
+            sk=f"{SK_TRACE_PREFIX}tr-abc123",
+        )
+        trace_ttl = int(meta["ttl"])
+
+        # Query FTS forward items for this trace
+        from mlflow_dynamodbstore.dynamodb.schema import SK_FTS_PREFIX
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        fts_items = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
+        # Filter to items for trace entity "T#tr-abc123"
+        trace_fts = [i for i in fts_items if "T#tr-abc123" in i["SK"]]
+        assert len(trace_fts) > 0, "Expected FTS items to be written for trace tag"
+        for fts_item in trace_fts:
+            assert "ttl" in fts_item, f"FTS item missing ttl: {fts_item['SK']}"
+            assert int(fts_item["ttl"]) == trace_ttl
+
 
 class TestDeleteTraceTag:
     def test_delete_trace_tag(self, tracking_store):
