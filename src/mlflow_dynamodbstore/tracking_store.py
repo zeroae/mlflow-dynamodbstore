@@ -1434,9 +1434,14 @@ class DynamoDBTrackingStore(AbstractStore):
     # Trace CRUD
     # ------------------------------------------------------------------
 
-    def _get_trace_ttl(self) -> int:
-        """Compute TTL epoch from CONFIG#TTL_POLICY.trace_retention_days (default 30)."""
+    def _get_trace_ttl(self) -> int | None:
+        """Compute TTL epoch from CONFIG#TTL_POLICY.trace_retention_days (default 30).
+
+        Returns None when trace_retention_days is 0 (TTL disabled).
+        """
         days = self._config.get_ttl_policy()["trace_retention_days"]
+        if days == 0:
+            return None
         return int(time.time()) + days * 86400
 
     def _resolve_trace_experiment(self, trace_id: str) -> str:
@@ -1494,7 +1499,6 @@ class DynamoDBTrackingStore(AbstractStore):
             "request_time": request_time,
             "execution_duration": execution_duration,
             "state": state_str,
-            "ttl": ttl,
             "tags": {},
             # LSI attributes
             LSI1_SK: request_time,
@@ -1506,6 +1510,9 @@ class DynamoDBTrackingStore(AbstractStore):
             GSI1_PK: f"{GSI1_TRACE_PREFIX}{trace_id}",
             GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
         }
+
+        if ttl is not None:
+            item["ttl"] = ttl
 
         if trace_info.client_request_id:
             item["client_request_id"] = trace_info.client_request_id
@@ -1520,25 +1527,26 @@ class DynamoDBTrackingStore(AbstractStore):
             ptr_item: dict[str, Any] = {
                 "PK": pk,
                 "SK": f"{SK_TRACE_PREFIX}{trace_id}#CLIENTPTR",
-                "ttl": ttl,
                 GSI1_PK: f"{GSI1_CLIENT_PREFIX}{trace_info.client_request_id}",
                 GSI1_SK: f"{GSI1_TRACE_PREFIX}{trace_id}",
             }
+            if ttl is not None:
+                ptr_item["ttl"] = ttl
             self._table.put_item(ptr_item)
 
         # Write request metadata items
         if trace_info.trace_metadata:
             rmeta_items: list[dict[str, Any]] = []
             for key, value in trace_info.trace_metadata.items():
-                rmeta_items.append(
-                    {
-                        "PK": pk,
-                        "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{key}",
-                        "key": key,
-                        "value": value,
-                        "ttl": ttl,
-                    }
-                )
+                rmeta_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{key}",
+                    "key": key,
+                    "value": value,
+                }
+                if ttl is not None:
+                    rmeta_item["ttl"] = ttl
+                rmeta_items.append(rmeta_item)
             if rmeta_items:
                 self._table.batch_write(rmeta_items)
 
@@ -1664,8 +1672,9 @@ class DynamoDBTrackingStore(AbstractStore):
                 "PK": pk,
                 "SK": spans_sk,
                 "data": _json.dumps(span_dicts),
-                "ttl": ttl,
             }
+            if ttl is not None:
+                spans_item["ttl"] = ttl
             self._table.put_item(spans_item)
 
             # Denormalize span attributes on META
@@ -1702,8 +1711,9 @@ class DynamoDBTrackingStore(AbstractStore):
                         field="spans",
                         text=span_names_text,
                     )
-                    for item in fts_items:
-                        item["ttl"] = ttl
+                    if ttl is not None:
+                        for item in fts_items:
+                            item["ttl"] = ttl
                     self._table.batch_write(fts_items)
 
         # Convert span dicts to MLflow Span objects
@@ -2016,7 +2026,7 @@ class DynamoDBTrackingStore(AbstractStore):
         trace_id: str,
         tag_key: str,
         tag_value: str,
-        ttl: int,
+        ttl: int | None,
     ) -> None:
         """Write a trace tag item with TTL, optionally denormalize, and write FTS items."""
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
@@ -2026,13 +2036,14 @@ class DynamoDBTrackingStore(AbstractStore):
         old_tag = self._table.get_item(pk=pk, sk=tag_sk)
         old_value: str | None = old_tag["value"] if old_tag else None
 
-        item = {
+        item: dict[str, Any] = {
             "PK": pk,
             "SK": tag_sk,
             "key": tag_key,
             "value": tag_value,
-            "ttl": ttl,
         }
+        if ttl is not None:
+            item["ttl"] = ttl
         self._table.put_item(item)
         if self._config.should_denormalize(experiment_id, tag_key):
             self._denormalize_tag(pk, f"{SK_TRACE_PREFIX}{trace_id}", tag_key, tag_value)
@@ -2064,8 +2075,13 @@ class DynamoDBTrackingStore(AbstractStore):
                 for lvl, tok in tokens_to_add:
                     forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
                     reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
-                    new_fts_items.append({"PK": pk, "SK": forward_sk, "ttl": ttl})
-                    new_fts_items.append({"PK": pk, "SK": reverse_sk, "ttl": ttl})
+                    new_fwd: dict[str, Any] = {"PK": pk, "SK": forward_sk}
+                    new_rev: dict[str, Any] = {"PK": pk, "SK": reverse_sk}
+                    if ttl is not None:
+                        new_fwd["ttl"] = ttl
+                        new_rev["ttl"] = ttl
+                    new_fts_items.append(new_fwd)
+                    new_fts_items.append(new_rev)
                 self._table.batch_write(new_fts_items)
 
     def set_trace_tag(self, trace_id: str, key: str, value: str) -> None:
@@ -2079,7 +2095,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 f"Trace '{trace_id}' does not exist.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
-        ttl = int(meta.get("ttl", self._get_trace_ttl()))
+        ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
         self._write_trace_tag(experiment_id, trace_id, key, value, ttl)
 
     def delete_trace_tag(self, trace_id: str, key: str) -> None:
@@ -2107,8 +2123,9 @@ class DynamoDBTrackingStore(AbstractStore):
                 "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{TraceMetadataKey.SOURCE_RUN}",
                 "key": TraceMetadataKey.SOURCE_RUN,
                 "value": run_id,
-                "ttl": ttl,
             }
+            if ttl is not None:
+                rmeta_item["ttl"] = ttl
             self._table.put_item(rmeta_item)
 
     # ------------------------------------------------------------------
@@ -2132,7 +2149,7 @@ class DynamoDBTrackingStore(AbstractStore):
         trace_id: str,
         assessment_id: str,
         text: str,
-        ttl: int,
+        ttl: int | None,
     ) -> None:
         """Write FTS forward + reverse items for an assessment's value text."""
         field = f"assess_{assessment_id}"
@@ -2143,8 +2160,9 @@ class DynamoDBTrackingStore(AbstractStore):
             field=field,
             text=text,
         )
-        for item in fts_items:
-            item["ttl"] = ttl
+        if ttl is not None:
+            for item in fts_items:
+                item["ttl"] = ttl
         if fts_items:
             self._table.batch_write(fts_items)
 
@@ -2166,7 +2184,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 f"Trace '{trace_id}' does not exist.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
-        ttl = int(meta.get("ttl", self._get_trace_ttl()))
+        ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
 
         # Generate assessment ID
         assessment_id = generate_ulid()
@@ -2186,9 +2204,10 @@ class DynamoDBTrackingStore(AbstractStore):
         item: dict[str, Any] = {
             "PK": pk,
             "SK": sk,
-            "ttl": ttl,
             "data": assess_dict,
         }
+        if ttl is not None:
+            item["ttl"] = ttl
         self._table.put_item(item)
 
         # Write FTS items for the assessment value text
@@ -2236,7 +2255,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
-        ttl = int(item.get("ttl", self._get_trace_ttl()))
+        ttl = int(item["ttl"]) if "ttl" in item else self._get_trace_ttl()
 
         assess_dict = item["data"]
 
@@ -2297,8 +2316,13 @@ class DynamoDBTrackingStore(AbstractStore):
                 for lvl, tok in tokens_to_add:
                     forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
                     reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
-                    new_fts_items.append({"PK": pk, "SK": forward_sk, "ttl": ttl})
-                    new_fts_items.append({"PK": pk, "SK": reverse_sk, "ttl": ttl})
+                    new_fwd: dict[str, Any] = {"PK": pk, "SK": forward_sk}
+                    new_rev: dict[str, Any] = {"PK": pk, "SK": reverse_sk}
+                    if ttl is not None:
+                        new_fwd["ttl"] = ttl
+                        new_rev["ttl"] = ttl
+                    new_fts_items.append(new_fwd)
+                    new_fts_items.append(new_rev)
                 self._table.batch_write(new_fts_items)
 
         return updated_assessment

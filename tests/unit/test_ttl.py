@@ -2,7 +2,9 @@
 
 import time
 
-from mlflow.entities import Metric
+from mlflow.entities import Metric, TraceInfo, TraceLocation, TraceLocationType, TraceState
+from mlflow.entities.trace_location import MlflowExperimentLocation
+from mlflow.tracing.constant import TraceTagKey
 
 from mlflow_dynamodbstore.dynamodb.schema import (
     PK_EXPERIMENT_PREFIX,
@@ -10,6 +12,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_FTS_REV_PREFIX,
     SK_RANK_PREFIX,
     SK_RUN_PREFIX,
+    SK_TRACE_PREFIX,
 )
 
 
@@ -218,3 +221,67 @@ class TestMetricHistoryTTL:
         )
         assert len(history) > 0
         assert "ttl" not in history[0]
+
+
+def _make_trace_info(experiment_id: str, trace_id: str = "tr-ttl-test") -> TraceInfo:
+    """Helper to build a TraceInfo for TTL tests."""
+    return TraceInfo(
+        trace_id=trace_id,
+        trace_location=TraceLocation(
+            type=TraceLocationType.MLFLOW_EXPERIMENT,
+            mlflow_experiment=MlflowExperimentLocation(experiment_id=experiment_id),
+        ),
+        request_time=1709251200000,
+        execution_duration=500,
+        state=TraceState.OK,
+        trace_metadata={TraceTagKey.TRACE_NAME: "my-trace"},
+        tags={"user_tag": "hello"},
+    )
+
+
+class TestTraceTTL:
+    def test_trace_meta_has_ttl(self, tracking_store):
+        """start_trace should set TTL from trace_retention_days on the META item."""
+        table = tracking_store._table
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+        item = table.get_item(
+            f"{PK_EXPERIMENT_PREFIX}{exp_id}",
+            f"{SK_TRACE_PREFIX}{trace_info.trace_id}",
+        )
+        assert "ttl" in item
+        assert item["ttl"] > time.time()
+
+    def test_trace_children_inherit_ttl(self, tracking_store):
+        """Tags and metadata items should have the same TTL as the trace META."""
+        table = tracking_store._table
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        trace_id = trace_info.trace_id
+
+        # Get TTL from META
+        meta = table.get_item(pk, f"{SK_TRACE_PREFIX}{trace_id}")
+        meta_ttl = meta["ttl"]
+
+        # All children (tags, metadata) should have TTL
+        children = table.query(pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#")
+        assert len(children) > 0, "Expected trace children (tags, metadata)"
+        for child in children:
+            assert "ttl" in child, f"Missing ttl on child SK={child['SK']}"
+            assert child["ttl"] == meta_ttl, f"TTL mismatch on child SK={child['SK']}"
+
+    def test_trace_ttl_disabled_when_zero(self, tracking_store):
+        """When trace_retention_days=0, no TTL should be set."""
+        table = tracking_store._table
+        tracking_store._config.set_ttl_policy(trace_retention_days=0)
+        exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
+        trace_info = _make_trace_info(exp_id)
+        tracking_store.start_trace(trace_info)
+        item = table.get_item(
+            f"{PK_EXPERIMENT_PREFIX}{exp_id}",
+            f"{SK_TRACE_PREFIX}{trace_info.trace_id}",
+        )
+        assert "ttl" not in item
