@@ -51,7 +51,6 @@ jobs:
           fail_ci_if_error: false
 
   integration:
-    needs: unit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -79,10 +78,8 @@ jobs:
           report_type: test_results
           fail_ci_if_error: false
 
-  compatibility:
-    needs: unit
+  e2e:
     runs-on: ubuntu-latest
-    if: ${{ !github.event.pull_request.draft }}
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
@@ -90,21 +87,22 @@ jobs:
         run: uv python install 3.12
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Run compatibility tests
-        run: uv run pytest tests/compatibility/ -m compatibility --cov=mlflow_dynamodbstore --cov-report=xml --junitxml=junit.xml -o junit_family=legacy -v
-      - name: Upload compatibility coverage
+      - name: Run e2e tests (moto backend)
+        run: uv run pytest tests/e2e/ -m e2e --cov=mlflow_dynamodbstore --cov-report=xml --junitxml=junit.xml -o junit_family=legacy -v
+      - name: Upload e2e coverage
         uses: codecov/codecov-action@v5
         with:
           files: coverage.xml
-          flags: compatibility
+          flags: e2e
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
-      - name: Upload compatibility test results to Codecov
+      - name: Upload e2e test results to Codecov
         if: "!cancelled()"
         uses: codecov/codecov-action@v5
         with:
           files: junit.xml
-          flags: compatibility
+          flags: e2e
           token: ${{ secrets.CODECOV_TOKEN }}
           report_type: test_results
           fail_ci_if_error: false
+

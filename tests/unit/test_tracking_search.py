@@ -288,15 +288,19 @@ class TestSearchRuns:
         tracking_store.log_batch(
             run2.info.run_id, metrics=[Metric("acc", 0.95, 0, 0)], params=[], tags=[]
         )
-        # RANK items use inverted metric values, so scan_forward=True (ASC)
-        # actually gives descending original order. Test ASC which maps to
-        # scan_forward=True, giving us highest-first due to inverted keys.
+        # ASC = ascending original values (lowest first)
         runs, _ = tracking_store._search_runs(
             [exp_id], "", ViewType.ACTIVE_ONLY, 100, ["metric.acc ASC"], None
         )
         assert len(runs) == 2
-        # With ASC + inverted RANK keys, highest original values come first
-        assert runs[0].info.run_id == run2.info.run_id
+        assert runs[0].info.run_id == run1.info.run_id  # 0.8 < 0.95
+
+        # DESC = descending original values (highest first)
+        runs, _ = tracking_store._search_runs(
+            [exp_id], "", ViewType.ACTIVE_ONLY, 100, ["metric.acc DESC"], None
+        )
+        assert len(runs) == 2
+        assert runs[0].info.run_id == run2.info.run_id  # 0.95 > 0.8
 
     def test_search_by_denormalized_tag(self, tracking_store):
         exp_id = tracking_store.create_experiment("exp3", artifact_location="s3://b")

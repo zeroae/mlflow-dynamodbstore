@@ -13,14 +13,17 @@ if TYPE_CHECKING:
 
 from mlflow.entities import (
     Assessment,
+    Dataset,
     DatasetInput,
     Experiment,
     ExperimentTag,
+    InputTag,
     Metric,
     Param,
     Run,
     RunData,
     RunInfo,
+    RunInputs,
     RunTag,
     TraceInfo,
     TraceLocation,
@@ -97,6 +100,11 @@ def _rev(s: str) -> str:
     return s[::-1]
 
 
+def _int_or_none(value: Any) -> int | None:
+    """Convert a value to int, or return None if the value is None."""
+    return int(value) if value is not None else None
+
+
 def _item_to_experiment(
     item: dict[str, Any], tags: list[ExperimentTag] | None = None
 ) -> Experiment:
@@ -107,8 +115,8 @@ def _item_to_experiment(
         artifact_location=item.get("artifact_location", ""),
         lifecycle_stage=item.get("lifecycle_stage", "active"),
         tags=tags or [],
-        creation_time=item.get("creation_time"),
-        last_update_time=item.get("last_update_time"),
+        creation_time=_int_or_none(item.get("creation_time")),
+        last_update_time=_int_or_none(item.get("last_update_time")),
     )
 
 
@@ -119,8 +127,8 @@ def _item_to_run_info(item: dict[str, Any]) -> RunInfo:
         experiment_id=item["experiment_id"],
         user_id=item.get("user_id", ""),
         status=item.get("status", "RUNNING"),
-        start_time=item.get("start_time"),
-        end_time=item.get("end_time"),
+        start_time=_int_or_none(item.get("start_time")),
+        end_time=_int_or_none(item.get("end_time")),
         lifecycle_stage=item.get("lifecycle_stage", "active"),
         artifact_uri=item.get("artifact_uri", ""),
         run_name=item.get("run_name", ""),
@@ -132,6 +140,9 @@ def _item_to_run(
     tags: list[dict[str, Any]],
     params: list[dict[str, Any]],
     metrics: list[dict[str, Any]],
+    input_items: list[dict[str, Any]] | None = None,
+    dataset_items: list[dict[str, Any]] | None = None,
+    input_tag_items: list[dict[str, Any]] | None = None,
 ) -> Run:
     """Convert DynamoDB items to an MLflow Run entity."""
     info = _item_to_run_info(item)
@@ -139,11 +150,50 @@ def _item_to_run(
         tags=[RunTag(t["key"], t["value"]) for t in tags],
         params=[Param(p["key"], p["value"]) for p in params],
         metrics=[
-            Metric(m["key"], float(m["value"]), m.get("timestamp", 0), m.get("step", 0))
+            Metric(m["key"], float(m["value"]), int(m.get("timestamp", 0)), int(m.get("step", 0)))
             for m in metrics
         ],
     )
-    return Run(run_info=info, run_data=data)
+
+    # Build RunInputs from input/dataset/input-tag items
+    run_inputs = None
+    if input_items:
+        # Index datasets by name#digest
+        ds_map: dict[str, dict[str, Any]] = {}
+        for d in dataset_items or []:
+            key = f"{d['name']}#{d['digest']}"
+            ds_map[key] = d
+
+        # Index input tags by the INPUT SK prefix they belong to
+        itag_map: dict[str, list[dict[str, Any]]] = {}
+        for t in input_tag_items or []:
+            # SK format: R#<run_id>#INPUT#<uuid>#ITAG#<key>
+            sk = t["SK"]
+            itag_prefix = sk[: sk.index(SK_INPUT_TAG_SUFFIX)]
+            itag_map.setdefault(itag_prefix, []).append(t)
+
+        dataset_inputs = []
+        for inp in input_items:
+            ds_key = f"{inp['dataset_name']}#{inp['dataset_digest']}"
+            ds_item = ds_map.get(ds_key)
+            if ds_item is None:
+                continue
+            dataset = Dataset(
+                name=ds_item["name"],
+                digest=ds_item["digest"],
+                source_type=ds_item.get("source_type", ""),
+                source=ds_item.get("source", ""),
+                schema=str(ds_item["schema"]) if ds_item.get("schema") is not None else None,
+                profile=str(ds_item["profile"]) if ds_item.get("profile") is not None else None,
+            )
+            # The INPUT item SK is the prefix for its ITAG children
+            inp_sk = inp["SK"]
+            itags = [InputTag(key=t["key"], value=t["value"]) for t in itag_map.get(inp_sk, [])]
+            dataset_inputs.append(DatasetInput(dataset=dataset, tags=itags))
+
+        run_inputs = RunInputs(dataset_inputs=dataset_inputs)
+
+    return Run(run_info=info, run_data=data, run_inputs=run_inputs)
 
 
 class DynamoDBTrackingStore(AbstractStore):
@@ -436,7 +486,10 @@ class DynamoDBTrackingStore(AbstractStore):
         if order_by:
             experiments = self._sort_experiments(experiments, order_by)
 
-        return experiments[:max_results] if max_results else experiments
+        from mlflow.store.entities import PagedList
+
+        results = experiments[:max_results] if max_results else experiments
+        return PagedList(results, token=None)
 
     # ------------------------------------------------------------------
     # search_experiments helpers
@@ -735,11 +788,14 @@ class DynamoDBTrackingStore(AbstractStore):
             # LSI attributes
             LSI1_SK: f"active#{run_id}",
             LSI3_SK: f"RUNNING#{run_id}",
-            LSI4_SK: run_name.lower() if run_name else "",
             # GSI1: reverse lookup run_id -> experiment_id
             GSI1_PK: f"{GSI1_RUN_PREFIX}{run_id}",
             GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
         }
+
+        # LSI4 is sparse — only set when run_name is non-empty (DynamoDB rejects empty string keys)
+        if run_name:
+            item[LSI4_SK] = run_name.lower()
 
         self._table.put_item(item, condition="attribute_not_exists(PK)")
 
@@ -794,12 +850,48 @@ class DynamoDBTrackingStore(AbstractStore):
             sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}",
         )
 
-        return _item_to_run(item, tag_items, param_items, metric_items)
+        # Query input items (INPUT links and their ITAG children share the same prefix)
+        all_input_items = self._table.query(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk_prefix=f"{run_prefix}{SK_INPUT_PREFIX}",
+        )
+        # Separate INPUT link items from ITAG items
+        input_items = []
+        input_tag_items = []
+        for it in all_input_items:
+            if SK_INPUT_TAG_SUFFIX in it["SK"]:
+                input_tag_items.append(it)
+            else:
+                input_items.append(it)
+
+        # Query dataset items for this experiment
+        dataset_items = []
+        if input_items:
+            dataset_items = self._table.query(
+                pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+                sk_prefix=SK_DATASET_PREFIX,
+            )
+
+        return _item_to_run(
+            item,
+            tag_items,
+            param_items,
+            metric_items,
+            input_items=input_items,
+            dataset_items=dataset_items,
+            input_tag_items=input_tag_items,
+        )
 
     def update_run_info(
-        self, run_id: str, run_status: str, end_time: int, run_name: str
+        self, run_id: str, run_status: str | int, end_time: int, run_name: str
     ) -> RunInfo:
         """Update run status, end_time, and run_name."""
+        from mlflow.entities import RunStatus
+
+        # MLflow may pass status as protobuf enum int (e.g. 3 for FINISHED)
+        if isinstance(run_status, int):
+            run_status = RunStatus.to_string(run_status)
+
         experiment_id = self._resolve_run_experiment(run_id)
 
         # Get current run to compute duration
@@ -817,8 +909,12 @@ class DynamoDBTrackingStore(AbstractStore):
             "status": run_status,
             "run_name": run_name,
             LSI3_SK: f"{run_status}#{run_id}",
-            LSI4_SK: run_name.lower() if run_name else "",
         }
+        removes: list[str] = []
+        if run_name:
+            updates[LSI4_SK] = run_name.lower()
+        else:
+            removes.append(LSI4_SK)
 
         if end_time is not None:
             updates["end_time"] = end_time
@@ -831,6 +927,7 @@ class DynamoDBTrackingStore(AbstractStore):
             pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
             sk=f"{SK_RUN_PREFIX}{run_id}",
             updates=updates,
+            removes=removes if removes else None,
         )
 
         assert updated_item is not None  # update always returns ALL_NEW
@@ -1330,15 +1427,18 @@ class DynamoDBTrackingStore(AbstractStore):
             limit=max_results,
         )
 
-        return [
+        from mlflow.store.entities import PagedList
+
+        metrics = [
             Metric(
                 key=item["key"],
                 value=float(item["value"]),
-                timestamp=item.get("timestamp", 0),
-                step=item.get("step", 0),
+                timestamp=int(item.get("timestamp", 0)),
+                step=int(item.get("step", 0)),
             )
             for item in items
         ]
+        return PagedList(metrics, token=None)
 
     def set_tag(self, run_id: str, tag: RunTag) -> None:
         """Set a tag on a run."""
@@ -1500,16 +1600,18 @@ class DynamoDBTrackingStore(AbstractStore):
             "execution_duration": execution_duration,
             "state": state_str,
             "tags": {},
-            # LSI attributes
-            LSI1_SK: request_time,
-            LSI2_SK: request_time + execution_duration,
-            LSI3_SK: f"{state_str}#{request_time}",
-            LSI4_SK: trace_name.lower() if trace_name else "~",  # DynamoDB rejects empty strings
-            LSI5_SK: execution_duration,
+            # LSI attributes (must be strings, zero-padded for sort order)
+            LSI1_SK: f"{request_time:020d}",
+            LSI2_SK: f"{request_time + execution_duration:020d}",
+            LSI3_SK: f"{state_str}#{request_time:020d}",
+            LSI5_SK: f"{execution_duration:020d}",
             # GSI1: reverse lookup trace_id -> experiment_id
             GSI1_PK: f"{GSI1_TRACE_PREFIX}{trace_id}",
             GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
         }
+
+        if trace_name:
+            item[LSI4_SK] = trace_name.lower()
 
         if ttl is not None:
             item["ttl"] = ttl
@@ -1554,6 +1656,17 @@ class DynamoDBTrackingStore(AbstractStore):
         if trace_info.tags:
             for tag_key, tag_value in trace_info.tags.items():
                 self._write_trace_tag(experiment_id, trace_id, tag_key, tag_value, ttl)
+
+        # Ensure artifact location tag is set (required by MLflow trace export)
+        artifact_loc_tag = "mlflow.artifactLocation"
+        if artifact_loc_tag not in (trace_info.tags or {}):
+            exp = self.get_experiment(experiment_id)
+            artifact_loc = exp.artifact_location or self._artifact_uri
+            if artifact_loc:
+                self._write_trace_tag(experiment_id, trace_id, artifact_loc_tag, artifact_loc, ttl)
+                if trace_info.tags is None:
+                    trace_info.tags = {}
+                trace_info.tags[artifact_loc_tag] = artifact_loc
 
         return trace_info
 
@@ -1750,7 +1863,7 @@ class DynamoDBTrackingStore(AbstractStore):
         )
 
         if not experiment_ids:
-            experiment_ids = []
+            experiment_ids = locations or []
 
         # 1. Parse filter and split into span vs non-span predicates
         predicates = parse_trace_filter(filter_string)

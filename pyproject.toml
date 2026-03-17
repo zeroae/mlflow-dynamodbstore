@@ -108,5 +108,6 @@ markers = [
     "integration: integration tests (moto server)",
     "compatibility: MLflow test suite compatibility",
     "smoke: real DynamoDB (needs AWS creds)",
+    "e2e: end-to-end tests (mlflow server over HTTP)",
 ]
 addopts = "--strict-markers --import-mode=importlib"

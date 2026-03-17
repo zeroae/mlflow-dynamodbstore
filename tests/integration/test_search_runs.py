@@ -46,9 +46,7 @@ class TestSearchRunsIntegration:
         # Verify that ordering returns all 3 runs and they are sorted by metric value
         assert len(runs) == 3
         values = [float(r.data.metrics.get("acc", 0)) for r in runs]
-        # The RANK-based implementation stores inverted values, so ASC query
-        # returns highest-first (descending by value)
-        assert values == sorted(values, reverse=True)
+        assert values == sorted(values)
 
     def test_search_by_tag(self, tracking_store):
         exp_id = tracking_store.create_experiment("tag-test", artifact_location="s3://b")
