@@ -186,11 +186,18 @@ class TestDeleteScorer:
         versions = tracking_store.list_scorer_versions(exp_id, "accuracy")
         assert [v.scorer_version for v in versions] == [1, 3, 4]
 
-    def test_delete_nonexistent_raises(self, tracking_store):
+    def test_delete_nonexistent_scorer_raises(self, tracking_store):
         """delete_scorer for missing scorer raises."""
         exp_id = _create_experiment(tracking_store)
         with pytest.raises(MlflowException, match="not found"):
             tracking_store.delete_scorer(exp_id, "no-such")
+
+    def test_delete_nonexistent_version_raises(self, tracking_store):
+        """delete_scorer for missing version raises."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        with pytest.raises(MlflowException, match="not found"):
+            tracking_store.delete_scorer(exp_id, "accuracy", version=99)
 
 
 class TestUpsertOnlineScoringConfig:
@@ -223,6 +230,12 @@ class TestUpsertOnlineScoringConfig:
             tracking_store.upsert_online_scoring_config(exp_id, "accuracy", 1.5)
         with pytest.raises(MlflowException, match="sample_rate"):
             tracking_store.upsert_online_scoring_config(exp_id, "accuracy", -0.1)
+
+    def test_upsert_nonexistent_scorer_raises(self, tracking_store):
+        """upsert for missing scorer raises."""
+        exp_id = _create_experiment(tracking_store)
+        with pytest.raises(MlflowException, match="not found"):
+            tracking_store.upsert_online_scoring_config(exp_id, "no-such", 0.5)
 
     def test_config_with_filter_string(self, tracking_store):
         """upsert stores filter_string."""
