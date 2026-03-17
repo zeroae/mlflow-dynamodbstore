@@ -19,6 +19,7 @@ from mlflow.entities.assessment import ExpectationValue, FeedbackValue
 from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
+from mlflow.utils.mlflow_tags import MLFLOW_ARTIFACT_LOCATION
 
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_CLIENT_PREFIX,
@@ -77,6 +78,26 @@ class TestStartTrace:
         assert fetched.request_time == 1709251200000
         assert fetched.execution_duration == 500
         assert fetched.state == TraceState.OK
+
+    def test_start_trace_sets_artifact_location_tag(self, tracking_store):
+        """start_trace must set mlflow.artifactLocation tag from experiment."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id)
+
+        result = tracking_store.start_trace(trace_info)
+
+        assert MLFLOW_ARTIFACT_LOCATION in result.tags
+        assert "traces/tr-abc123/artifacts" in result.tags[MLFLOW_ARTIFACT_LOCATION]
+
+    def test_start_trace_with_none_tags(self, tracking_store):
+        """start_trace should handle tags=None and still set artifact location."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, tags=None)
+
+        result = tracking_store.start_trace(trace_info)
+
+        assert result.tags is not None
+        assert MLFLOW_ARTIFACT_LOCATION in result.tags
 
     def test_trace_has_ttl(self, tracking_store):
         """Verifies trace META item has TTL from CONFIG#TTL_POLICY.trace_retention_days."""
