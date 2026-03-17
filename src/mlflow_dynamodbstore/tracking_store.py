@@ -13,14 +13,17 @@ if TYPE_CHECKING:
 
 from mlflow.entities import (
     Assessment,
+    Dataset,
     DatasetInput,
     Experiment,
     ExperimentTag,
+    InputTag,
     Metric,
     Param,
     Run,
     RunData,
     RunInfo,
+    RunInputs,
     RunTag,
     TraceInfo,
     TraceLocation,
@@ -137,6 +140,9 @@ def _item_to_run(
     tags: list[dict[str, Any]],
     params: list[dict[str, Any]],
     metrics: list[dict[str, Any]],
+    input_items: list[dict[str, Any]] | None = None,
+    dataset_items: list[dict[str, Any]] | None = None,
+    input_tag_items: list[dict[str, Any]] | None = None,
 ) -> Run:
     """Convert DynamoDB items to an MLflow Run entity."""
     info = _item_to_run_info(item)
@@ -148,7 +154,46 @@ def _item_to_run(
             for m in metrics
         ],
     )
-    return Run(run_info=info, run_data=data)
+
+    # Build RunInputs from input/dataset/input-tag items
+    run_inputs = None
+    if input_items:
+        # Index datasets by name#digest
+        ds_map: dict[str, dict[str, Any]] = {}
+        for d in dataset_items or []:
+            key = f"{d['name']}#{d['digest']}"
+            ds_map[key] = d
+
+        # Index input tags by the INPUT SK prefix they belong to
+        itag_map: dict[str, list[dict[str, Any]]] = {}
+        for t in input_tag_items or []:
+            # SK format: R#<run_id>#INPUT#<uuid>#ITAG#<key>
+            sk = t["SK"]
+            itag_prefix = sk[: sk.index(SK_INPUT_TAG_SUFFIX)]
+            itag_map.setdefault(itag_prefix, []).append(t)
+
+        dataset_inputs = []
+        for inp in input_items:
+            ds_key = f"{inp['dataset_name']}#{inp['dataset_digest']}"
+            ds_item = ds_map.get(ds_key)
+            if ds_item is None:
+                continue
+            dataset = Dataset(
+                name=ds_item["name"],
+                digest=ds_item["digest"],
+                source_type=ds_item.get("source_type", ""),
+                source=ds_item.get("source", ""),
+                schema=str(ds_item["schema"]) if ds_item.get("schema") is not None else None,
+                profile=str(ds_item["profile"]) if ds_item.get("profile") is not None else None,
+            )
+            # The INPUT item SK is the prefix for its ITAG children
+            inp_sk = inp["SK"]
+            itags = [InputTag(key=t["key"], value=t["value"]) for t in itag_map.get(inp_sk, [])]
+            dataset_inputs.append(DatasetInput(dataset=dataset, tags=itags))
+
+        run_inputs = RunInputs(dataset_inputs=dataset_inputs)
+
+    return Run(run_info=info, run_data=data, run_inputs=run_inputs)
 
 
 class DynamoDBTrackingStore(AbstractStore):
@@ -805,7 +850,37 @@ class DynamoDBTrackingStore(AbstractStore):
             sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}",
         )
 
-        return _item_to_run(item, tag_items, param_items, metric_items)
+        # Query input items (INPUT links and their ITAG children share the same prefix)
+        all_input_items = self._table.query(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk_prefix=f"{run_prefix}{SK_INPUT_PREFIX}",
+        )
+        # Separate INPUT link items from ITAG items
+        input_items = []
+        input_tag_items = []
+        for it in all_input_items:
+            if SK_INPUT_TAG_SUFFIX in it["SK"]:
+                input_tag_items.append(it)
+            else:
+                input_items.append(it)
+
+        # Query dataset items for this experiment
+        dataset_items = []
+        if input_items:
+            dataset_items = self._table.query(
+                pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+                sk_prefix=SK_DATASET_PREFIX,
+            )
+
+        return _item_to_run(
+            item,
+            tag_items,
+            param_items,
+            metric_items,
+            input_items=input_items,
+            dataset_items=dataset_items,
+            input_tag_items=input_tag_items,
+        )
 
     def update_run_info(
         self, run_id: str, run_status: str | int, end_time: int, run_name: str
