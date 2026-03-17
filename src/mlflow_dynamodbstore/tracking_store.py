@@ -2902,6 +2902,39 @@ class DynamoDBTrackingStore(AbstractStore):
                 rmeta_item["ttl"] = ttl
             self._table.put_item(rmeta_item)
 
+    def batch_get_trace_infos(
+        self, trace_ids: list[str], location: str | None = None
+    ) -> list[TraceInfo]:
+        """Get trace metadata for given trace IDs without loading spans."""
+        if not trace_ids:
+            return []
+
+        seen: set[str] = set()
+        results: list[TraceInfo] = []
+
+        for trace_id in trace_ids:
+            if trace_id in seen:
+                continue
+            seen.add(trace_id)
+
+            try:
+                if location:
+                    experiment_id = location
+                else:
+                    experiment_id = self._resolve_trace_experiment(trace_id)
+            except MlflowException:
+                continue  # Skip non-existent traces
+
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+            if meta is None:
+                continue
+
+            trace_info = self._build_trace_info(experiment_id, trace_id, meta)
+            results.append(trace_info)
+
+        return results
+
     # ------------------------------------------------------------------
     # Assessment CRUD
     # ------------------------------------------------------------------

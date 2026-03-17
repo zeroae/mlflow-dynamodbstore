@@ -1603,3 +1603,60 @@ class TestStartTraceSessionTracker:
         pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
         item = tracking_store._table.get_item(pk=pk, sk="SESS#session-ttl")
         assert "ttl" in item
+
+
+class TestBatchGetTraceInfos:
+    """Tests for batch_get_trace_infos."""
+
+    def _create_traces(self, tracking_store, exp_id, count=3):
+        """Helper: create multiple traces, return their IDs."""
+        trace_ids = []
+        for i in range(count):
+            tid = f"tr-batch-info-{i}"
+            trace_info = _make_trace_info(
+                exp_id,
+                trace_id=tid,
+                request_time=1000 + i * 100,
+            )
+            tracking_store.start_trace(trace_info)
+            trace_ids.append(tid)
+        return trace_ids
+
+    def test_batch_get_single_trace(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tids = self._create_traces(tracking_store, exp_id, count=1)
+        result = tracking_store.batch_get_trace_infos(tids)
+        assert len(result) == 1
+        assert result[0].trace_id == tids[0]
+
+    def test_batch_get_multiple_traces(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tids = self._create_traces(tracking_store, exp_id, count=3)
+        result = tracking_store.batch_get_trace_infos(tids)
+        assert len(result) == 3
+        returned_ids = {t.trace_id for t in result}
+        assert returned_ids == set(tids)
+
+    def test_nonexistent_trace_excluded(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tids = self._create_traces(tracking_store, exp_id, count=1)
+        result = tracking_store.batch_get_trace_infos(tids + ["nonexistent-trace"])
+        assert len(result) == 1
+        assert result[0].trace_id == tids[0]
+
+    def test_empty_list_returns_empty(self, tracking_store):
+        result = tracking_store.batch_get_trace_infos([])
+        assert result == []
+
+    def test_duplicate_ids_deduplicated(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tids = self._create_traces(tracking_store, exp_id, count=1)
+        result = tracking_store.batch_get_trace_infos([tids[0], tids[0]])
+        assert len(result) == 1
+
+    def test_with_location_skips_resolution(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tids = self._create_traces(tracking_store, exp_id, count=1)
+        result = tracking_store.batch_get_trace_infos(tids, location=exp_id)
+        assert len(result) == 1
+        assert result[0].trace_id == tids[0]
