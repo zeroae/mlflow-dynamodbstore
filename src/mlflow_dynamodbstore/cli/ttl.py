@@ -1,4 +1,4 @@
-"""cleanup-expired CLI command."""
+"""ttl CLI commands."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import time
 import boto3
 import click
 
+from mlflow_dynamodbstore.cli import CliContext, pass_context
+from mlflow_dynamodbstore.dynamodb.config import ConfigReader
 from mlflow_dynamodbstore.dynamodb.schema import (
     PK_EXPERIMENT_PREFIX,
     SK_EXPERIMENT_META,
@@ -14,23 +16,72 @@ from mlflow_dynamodbstore.dynamodb.schema import (
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 
 
-@click.command("cleanup-expired")
-@click.option("--table", required=True, help="DynamoDB table name")
-@click.option("--region", required=True, help="AWS region")
+@click.group("ttl")
+def ttl() -> None:
+    """Manage TTL retention policies."""
+    pass
+
+
+@ttl.command("show")
+@pass_context
+def show(ctx: CliContext) -> None:
+    """Show current TTL policy."""
+    ddb_table = DynamoDBTable(ctx.name, ctx.region, ctx.endpoint_url)
+    config = ConfigReader(table=ddb_table)
+    policy = config.get_ttl_policy()
+    for key, value in sorted(policy.items()):
+        status = "disabled" if value == 0 else f"{value} days"
+        click.echo(f"{key}: {status}")
+
+
+@ttl.command("set")
+@click.option("--soft-deleted-retention-days", type=int, default=None)
+@click.option("--trace-retention-days", type=int, default=None)
+@click.option("--metric-history-retention-days", type=int, default=None)
+@pass_context
+def set_(
+    ctx: CliContext,
+    soft_deleted_retention_days: int | None,
+    trace_retention_days: int | None,
+    metric_history_retention_days: int | None,
+) -> None:
+    """Set TTL policy values."""
+    ddb_table = DynamoDBTable(ctx.name, ctx.region, ctx.endpoint_url)
+    config = ConfigReader(table=ddb_table)
+    kwargs: dict[str, int] = {}
+    if soft_deleted_retention_days is not None:
+        kwargs["soft_deleted_retention_days"] = soft_deleted_retention_days
+    if trace_retention_days is not None:
+        kwargs["trace_retention_days"] = trace_retention_days
+    if metric_history_retention_days is not None:
+        kwargs["metric_history_retention_days"] = metric_history_retention_days
+    if not kwargs:
+        click.echo("No values provided. Use --help for options.")
+        return
+    config.set_ttl_policy(**kwargs)
+    click.echo("TTL policy updated.")
+
+
+@ttl.command("cleanup")
 @click.option("--dry-run", is_flag=True, help="Report orphans without setting TTL")
-def cleanup_expired(table: str, region: str, dry_run: bool) -> None:
+@pass_context
+def cleanup(ctx: CliContext, dry_run: bool) -> None:
     """Find and expire orphaned children of TTL-deleted experiments.
 
     Scans for experiment partitions whose META item has been removed by
     DynamoDB TTL, then sets ``ttl = now`` on all remaining children so
     DynamoDB will garbage-collect them.
     """
-    ddb_table = DynamoDBTable(table_name=table, region=region)
+    ddb_table = DynamoDBTable(ctx.name, ctx.region, ctx.endpoint_url)
 
     # Scan the main table for all unique EXP# partition keys.
     # We use a raw boto3 scan with a projection to minimise read cost.
-    resource = boto3.resource("dynamodb", region_name=region)
-    raw_table = resource.Table(table)
+    resource = boto3.resource(
+        "dynamodb",
+        region_name=ctx.region,
+        endpoint_url=ctx.endpoint_url,
+    )
+    raw_table = resource.Table(ctx.name)
 
     exp_pks: set[str] = set()
     scan_kwargs: dict[str, object] = {
