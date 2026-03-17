@@ -1,0 +1,1924 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="DynamoDB-backed MLflow tracking store, model registry, and auth plugin">
+      
+      
+        <meta name="author" content="ZeroAE">
+      
+      
+        <link rel="canonical" href="https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-17-logged-models-design/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
+    
+    
+      
+        <title>Phase 1b: Logged Models — DynamoDB Implementation - mlflow-dynamodbstore</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#phase-1b-logged-models-dynamodb-implementation" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="mlflow-dynamodbstore" class="md-header__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            mlflow-dynamodbstore
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Phase 1b: Logged Models — DynamoDB Implementation
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/zeroae/mlflow-dynamodbstore" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/mlflow-dynamodbstore
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="mlflow-dynamodbstore" class="md-nav__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    mlflow-dynamodbstore
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/zeroae/mlflow-dynamodbstore" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/mlflow-dynamodbstore
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/workspaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workspaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/xray-integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    X-Ray Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/ttl-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TTL Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/upgrading/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/access-patterns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Access Patterns
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../contributing/development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADRs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    ADRs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../adr/001-single-table-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single Table Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dynamodb-item-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DynamoDB Item Design
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DynamoDB Item Design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#item-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Item Types
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#id-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ID Generation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gsi-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GSI Usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lsi-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LSI Usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#artifact-location" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artifact Location
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#access-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Access Patterns
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Access Patterns">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#filter-string-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filter String Strategy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rank-items-for-logged-model-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RANK Items for Logged Model Metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scan-risk-assessment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scan Risk Assessment
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#store-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Store Methods
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Store Methods">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#search" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Search
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metrics-internal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metrics (internal)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#run-association" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run Association
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#schema-constants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema Constants
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing Strategy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Testing Strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#unit-tests-moto-direct-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unit Tests (moto, direct store)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#integration-tests-moto-server-rest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration Tests (moto server, REST)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#e2e-tests-full-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        E2E Tests (full server)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/zeroae/mlflow-dynamodbstore/edit/main/docs/superpowers/specs/2026-03-17-logged-models-design.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="phase-1b-logged-models-dynamodb-implementation">Phase 1b: Logged Models — DynamoDB Implementation<a class="headerlink" href="#phase-1b-logged-models-dynamodb-implementation" title="Permanent link">&para;</a></h1>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p>The MLflow 3.x UI calls <code>search_logged_models</code> on every experiment overview page load. The DynamoDB tracking store does not implement this method, causing 500 errors. This spec covers the second sub-phase: Logged Models.</p>
+<p>Logged Models are experiment-scoped entities that represent ML models created during training or evaluation. They have a lifecycle (PENDING → READY/FAILED), carry tags, params, and metrics, and support search with complex filter expressions across attributes, metrics, params, and tags.</p>
+<h2 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h2>
+<p>8 store methods requiring implementation:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Category</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>create_logged_model</code></td>
+<td>Lifecycle</td>
+</tr>
+<tr>
+<td><code>get_logged_model</code></td>
+<td>Lifecycle</td>
+</tr>
+<tr>
+<td><code>finalize_logged_model</code></td>
+<td>Lifecycle</td>
+</tr>
+<tr>
+<td><code>delete_logged_model</code></td>
+<td>Lifecycle (soft delete + TTL)</td>
+</tr>
+<tr>
+<td><code>search_logged_models</code></td>
+<td>Search</td>
+</tr>
+<tr>
+<td><code>set_logged_model_tags</code></td>
+<td>Tags</td>
+</tr>
+<tr>
+<td><code>delete_logged_model_tag</code></td>
+<td>Tags</td>
+</tr>
+<tr>
+<td><code>record_logged_model</code></td>
+<td>Run association</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Not overridden</strong> (concrete implementations in <code>AbstractStore</code> that delegate to methods above):
+- <code>set_model_versions_tags</code> — reads the existing <code>mlflow.modelVersions</code> tag (JSON array), appends the new name/version pair, writes back via <code>set_logged_model_tags</code>. Works once <code>get_logged_model</code> and <code>set_logged_model_tags</code> are implemented.
+- <code>log_logged_model_params</code> — not a separate store method; params are passed to <code>create_logged_model</code> via the <code>params</code> argument.</p>
+<h2 id="dynamodb-item-design">DynamoDB Item Design<a class="headerlink" href="#dynamodb-item-design" title="Permanent link">&para;</a></h2>
+<p>Logged Models are experiment-scoped (each belongs to exactly one experiment), so they live under the existing <code>EXP#&lt;exp_id&gt;</code> partition — same pattern as runs and traces.</p>
+<p><strong>Note on original design spec divergence</strong>: The original design spec (2026-03-15) placed logged models under runs (<code>R#&lt;ulid&gt;#LM#&lt;model_id&gt;</code>), reflecting MLflow V2's run-scoped model tracking. MLflow V3 introduced <code>LoggedModel</code> as a standalone experiment-scoped entity with its own lifecycle, status, and independent CRUD — no longer nested under runs. This spec uses <code>LM#&lt;model_id&gt;</code> directly under <code>EXP#&lt;exp_id&gt;</code> to match the V3 data model.</p>
+<h3 id="item-types">Item Types<a class="headerlink" href="#item-types" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>PK</th>
+<th>SK</th>
+<th>lsi1sk</th>
+<th>lsi2sk</th>
+<th>lsi3sk</th>
+<th>lsi4sk</th>
+<th>Attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Model META</td>
+<td><code>EXP#&lt;exp_id&gt;</code></td>
+<td><code>LM#&lt;model_id&gt;</code></td>
+<td><code>active#&lt;model_id&gt;</code> or <code>deleted#&lt;model_id&gt;</code></td>
+<td><code>&lt;creation_timestamp_ms&gt;</code></td>
+<td><code>&lt;status&gt;#&lt;model_id&gt;</code></td>
+<td><code>lower(name)</code></td>
+<td>name, artifact_location, creation_timestamp_ms, last_updated_timestamp_ms, status, lifecycle_stage, model_type, source_run_id, status_message, tags (denormalized dict), params (denormalized dict), workspace</td>
+</tr>
+<tr>
+<td>Model Tag</td>
+<td><code>EXP#&lt;exp_id&gt;</code></td>
+<td><code>LM#&lt;model_id&gt;#TAG#&lt;key&gt;</code></td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>key, value</td>
+</tr>
+<tr>
+<td>Model Param</td>
+<td><code>EXP#&lt;exp_id&gt;</code></td>
+<td><code>LM#&lt;model_id&gt;#PARAM#&lt;key&gt;</code></td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>key, value</td>
+</tr>
+<tr>
+<td>Model Metric</td>
+<td><code>EXP#&lt;exp_id&gt;</code></td>
+<td><code>LM#&lt;model_id&gt;#METRIC#&lt;metric_name&gt;#&lt;run_id&gt;</code></td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>metric_name, metric_value (Decimal), metric_timestamp_ms, metric_step, run_id, dataset_name, dataset_digest</td>
+</tr>
+<tr>
+<td>RANK (global metric)</td>
+<td><code>EXP#&lt;exp_id&gt;</code></td>
+<td><code>RANK#lm#&lt;metric_name&gt;#&lt;inverted_value&gt;#&lt;model_id&gt;</code></td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>model_id, metric_name, metric_value (Decimal)</td>
+</tr>
+<tr>
+<td>RANK (dataset-scoped)</td>
+<td><code>EXP#&lt;exp_id&gt;</code></td>
+<td><code>RANK#lmd#&lt;metric_name&gt;#&lt;dataset_name&gt;#&lt;dataset_digest&gt;#&lt;inverted_value&gt;#&lt;model_id&gt;</code></td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>model_id, metric_name, metric_value (Decimal), dataset_name, dataset_digest</td>
+</tr>
+</tbody>
+</table>
+<h3 id="id-generation">ID Generation<a class="headerlink" href="#id-generation" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>model_id</code>: <code>m-&lt;ulid&gt;</code> — matches SQLAlchemy store's <code>m-{uuid}</code> format but uses ULID for time-sortability.</li>
+</ul>
+<h3 id="gsi-usage">GSI Usage<a class="headerlink" href="#gsi-usage" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>GSI</th>
+<th>PK</th>
+<th>SK</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GSI1</td>
+<td><code>LM#&lt;model_id&gt;</code></td>
+<td><code>EXP#&lt;exp_id&gt;</code></td>
+<td>Reverse lookup: find experiment for a model_id. Written on META items.</td>
+</tr>
+</tbody>
+</table>
+<p>No new GSI prefixes needed for listing — logged models are queried within an experiment using the existing partition + SK prefix pattern, consistent with how runs and traces work.</p>
+<h3 id="lsi-usage">LSI Usage<a class="headerlink" href="#lsi-usage" title="Permanent link">&para;</a></h3>
+<p>LSIs are overloaded within the <code>EXP#&lt;exp_id&gt;</code> partition, following the existing convention:</p>
+<table>
+<thead>
+<tr>
+<th>LSI</th>
+<th>Model META usage</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LSI1</td>
+<td><code>active#&lt;model_id&gt;</code> or <code>deleted#&lt;model_id&gt;</code></td>
+<td>Filter by lifecycle_stage</td>
+</tr>
+<tr>
+<td>LSI2</td>
+<td><code>&lt;creation_timestamp_ms&gt;</code></td>
+<td>Sort by creation time</td>
+</tr>
+<tr>
+<td>LSI3</td>
+<td><code>&lt;status&gt;#&lt;model_id&gt;</code></td>
+<td>Filter by status (PENDING, READY, FAILED)</td>
+</tr>
+<tr>
+<td>LSI4</td>
+<td><code>lower(name)</code></td>
+<td>Sort/filter by name</td>
+</tr>
+</tbody>
+</table>
+<p>Tag, Param, Metric, and RANK items do not populate LSI attributes.</p>
+<h3 id="artifact-location">Artifact Location<a class="headerlink" href="#artifact-location" title="Permanent link">&para;</a></h3>
+<p>Computed on create: <code>&lt;experiment.artifact_location&gt;/models/&lt;model_id&gt;/artifacts/</code> — matching the SQLAlchemy store convention.</p>
+<h2 id="access-patterns">Access Patterns<a class="headerlink" href="#access-patterns" title="Permanent link">&para;</a></h2>
+<p>Every store method maps to Query or GetItem — never Scan.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Access Pattern</th>
+<th>Caller</th>
+<th>Operation</th>
+<th>Table/Index</th>
+<th>Key Condition</th>
+<th>Filter</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP1</td>
+<td>Get model by ID (known experiment)</td>
+<td><code>get_logged_model</code></td>
+<td>GetItem</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK=LM#&lt;model_id&gt;</code></td>
+<td>—</td>
+<td>O(1)</td>
+</tr>
+<tr>
+<td>AP2</td>
+<td>Get model by ID (unknown experiment)</td>
+<td><code>get_logged_model</code></td>
+<td>Query</td>
+<td>GSI1</td>
+<td><code>PK=LM#&lt;model_id&gt;</code></td>
+<td>—</td>
+<td>Returns experiment_id, then AP1</td>
+</tr>
+<tr>
+<td>AP3</td>
+<td>Get tags for model</td>
+<td><code>get_logged_model</code></td>
+<td>Query</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with LM#&lt;model_id&gt;#TAG#</code></td>
+<td>—</td>
+<td>Bounded by tag count</td>
+</tr>
+<tr>
+<td>AP4</td>
+<td>Get params for model</td>
+<td><code>get_logged_model</code></td>
+<td>Query</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with LM#&lt;model_id&gt;#PARAM#</code></td>
+<td>—</td>
+<td>Bounded by param count</td>
+</tr>
+<tr>
+<td>AP5</td>
+<td>Get metrics for model</td>
+<td><code>get_logged_model</code></td>
+<td>Query</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with LM#&lt;model_id&gt;#METRIC#</code></td>
+<td>—</td>
+<td>Bounded by metric count</td>
+</tr>
+<tr>
+<td>AP6</td>
+<td>Search models in experiments</td>
+<td><code>search_logged_models</code></td>
+<td>Query</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with LM#</code></td>
+<td><code>lifecycle_stage != deleted</code></td>
+<td>One query per experiment_id; merge results</td>
+</tr>
+<tr>
+<td>AP7</td>
+<td>Search models — sort by creation time</td>
+<td><code>search_logged_models</code></td>
+<td>Query</td>
+<td>LSI2</td>
+<td><code>PK=EXP#&lt;exp_id&gt;</code></td>
+<td><code>SK begins_with LM#</code></td>
+<td>Default sort order</td>
+</tr>
+<tr>
+<td>AP8</td>
+<td>Search models — filter by status</td>
+<td><code>search_logged_models</code></td>
+<td>Query</td>
+<td>LSI3</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, lsi3sk begins_with &lt;status&gt;#</code></td>
+<td><code>SK begins_with LM#</code></td>
+<td>Status-scoped</td>
+</tr>
+<tr>
+<td>AP9</td>
+<td>Search models — sort by name</td>
+<td><code>search_logged_models</code></td>
+<td>Query</td>
+<td>LSI4</td>
+<td><code>PK=EXP#&lt;exp_id&gt;</code></td>
+<td><code>SK begins_with LM#</code></td>
+<td>Name-sorted</td>
+</tr>
+<tr>
+<td>AP10</td>
+<td>Soft delete model</td>
+<td><code>delete_logged_model</code></td>
+<td>UpdateItem + BatchWriteItem</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK=LM#&lt;model_id&gt;</code></td>
+<td>—</td>
+<td>Set lifecycle_stage=deleted + TTL on META, children, and RANK items</td>
+</tr>
+<tr>
+<td>AP11</td>
+<td>Finalize model</td>
+<td><code>finalize_logged_model</code></td>
+<td>UpdateItem</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK=LM#&lt;model_id&gt;</code></td>
+<td>—</td>
+<td>Set status, update LSI3</td>
+</tr>
+<tr>
+<td>AP12</td>
+<td>ORDER BY metric DESC (global)</td>
+<td><code>search_logged_models</code></td>
+<td>Query</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with RANK#lm#&lt;metric_name&gt;#</code></td>
+<td>—</td>
+<td>ScanIndexForward=True (inverted values → descending); collect model_ids, then batch-get META</td>
+</tr>
+<tr>
+<td>AP13</td>
+<td>ORDER BY metric DESC (dataset-scoped)</td>
+<td><code>search_logged_models</code></td>
+<td>Query</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with RANK#lmd#&lt;metric_name&gt;#&lt;dataset_name&gt;#&lt;dataset_digest&gt;#</code></td>
+<td>—</td>
+<td>Same inverted-value trick; scoped to dataset</td>
+</tr>
+<tr>
+<td>AP14</td>
+<td>Filter metric &gt; threshold</td>
+<td><code>search_logged_models</code></td>
+<td>Query</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK between RANK#lm#&lt;metric&gt;#&lt;inv(threshold)&gt; and RANK#lm#&lt;metric&gt;#&lt;inv(min)&gt;</code></td>
+<td>—</td>
+<td>Range query on inverted values</td>
+</tr>
+<tr>
+<td>AP15</td>
+<td>Filter metric &gt; threshold (dataset-scoped)</td>
+<td><code>search_logged_models</code></td>
+<td>Query</td>
+<td>Table</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK between RANK#lmd#&lt;metric&gt;#&lt;ds_name&gt;#&lt;ds_digest&gt;#&lt;inv(threshold)&gt; and ...</code></td>
+<td>—</td>
+<td>Range query scoped to dataset</td>
+</tr>
+</tbody>
+</table>
+<h3 id="filter-string-strategy">Filter String Strategy<a class="headerlink" href="#filter-string-strategy" title="Permanent link">&para;</a></h3>
+<p><code>search_logged_models</code> supports filter expressions like <code>name = 'foo'</code>, <code>metrics.accuracy &gt; 0.9</code>, <code>params.lr = '0.01'</code>, <code>tags.env = 'prod'</code>.</p>
+<p><strong>Attribute filters</strong> (name, status, model_type, source_run_id): applied in-memory against denormalized META fields. For status, can use LSI3 to pre-filter.</p>
+<p><strong>Metrics filters</strong>: use RANK items for DynamoDB-native range queries. When <code>filter_string</code> contains <code>metrics.accuracy &gt; 0.5</code>, query <code>RANK#lm#accuracy#</code> with SK range condition (AP14). With dataset scope via the <code>datasets</code> parameter, query <code>RANK#lmd#accuracy#&lt;dataset_name&gt;#&lt;dataset_digest&gt;#</code> (AP15). The RANK query returns model_ids directly — no need to load metric sub-items per model.</p>
+<p><strong>Params/Tags filters</strong>: require loading sub-items per candidate model, applied in-memory. This matches the existing <code>search_traces</code> approach for span-level filters.</p>
+<h3 id="rank-items-for-logged-model-metrics">RANK Items for Logged Model Metrics<a class="headerlink" href="#rank-items-for-logged-model-metrics" title="Permanent link">&para;</a></h3>
+<p>RANK items are materialized sort/filter indexes for metric values, following the same pattern as run metric RANK items in the original design spec.</p>
+<p><strong>Two RANK item types:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>SK Pattern</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Global</td>
+<td><code>RANK#lm#&lt;metric_name&gt;#&lt;inverted_value&gt;#&lt;model_id&gt;</code></td>
+<td>ORDER BY / filter on metric without dataset scope</td>
+</tr>
+<tr>
+<td>Dataset-scoped</td>
+<td><code>RANK#lmd#&lt;metric_name&gt;#&lt;dataset_name&gt;#&lt;dataset_digest&gt;#&lt;inverted_value&gt;#&lt;model_id&gt;</code></td>
+<td>ORDER BY / filter on metric scoped to a specific dataset</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Value inversion</strong>: Metric values are inverted (subtracted from a large constant) and zero-padded so that lexicographic ascending sort in DynamoDB yields descending numeric order. This is the same technique used for run RANK items.</p>
+<p><strong>Write path</strong>: When a metric is logged on a logged model, write:
+1. The metric sub-item (<code>LM#&lt;model_id&gt;#METRIC#&lt;metric_name&gt;#&lt;run_id&gt;</code>).
+2. A global RANK item (<code>RANK#lm#&lt;metric_name&gt;#&lt;inv_value&gt;#&lt;model_id&gt;</code>).
+3. If the metric has dataset_name + dataset_digest: a dataset-scoped RANK item (<code>RANK#lmd#...</code>).</p>
+<p>Only the <strong>latest value</strong> per (metric_name, model_id) is kept in RANK items — the previous RANK item is deleted and replaced on each update. The previous RANK SK is reconstructed from the existing metric sub-item's value before overwriting. For dataset-scoped RANK items, the key is (metric_name, dataset_name, dataset_digest, model_id).</p>
+<p><strong>Note</strong>: The metric write path (metric sub-item + RANK items) is implemented as an internal method in the store. The higher-level orchestration that calls it (evaluation runs logging metrics on models) is out of scope for Phase 1b, but the store method to write a metric on a logged model is in scope.</p>
+<p><strong>Soft delete</strong>: RANK items receive TTL along with all other children on <code>delete_logged_model</code>. They are excluded from search results by cross-referencing the model's lifecycle_stage against META items.</p>
+<p><strong>DynamoDB-native queries enabled:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Query</th>
+<th>DynamoDB Operation</th>
+<th>Access Pattern</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ORDER BY metrics.accuracy DESC</code></td>
+<td><code>SK begins_with RANK#lm#accuracy#</code>, ScanIndexForward=True</td>
+<td>AP12</td>
+</tr>
+<tr>
+<td><code>ORDER BY metrics.accuracy ASC</code></td>
+<td><code>SK begins_with RANK#lm#accuracy#</code>, ScanIndexForward=False</td>
+<td>AP12</td>
+</tr>
+<tr>
+<td><code>metrics.accuracy &gt; 0.5</code></td>
+<td><code>SK between RANK#lm#accuracy#&lt;inv(0.5)&gt;... and RANK#lm#accuracy#&lt;inv(max)&gt;...</code></td>
+<td>AP14</td>
+</tr>
+<tr>
+<td>Dataset-scoped ORDER BY</td>
+<td><code>SK begins_with RANK#lmd#accuracy#eval_set#abc123#</code></td>
+<td>AP13</td>
+</tr>
+<tr>
+<td>Dataset-scoped filter</td>
+<td>Same range query with <code>RANK#lmd#</code> prefix</td>
+<td>AP15</td>
+</tr>
+</tbody>
+</table>
+<h3 id="scan-risk-assessment">Scan Risk Assessment<a class="headerlink" href="#scan-risk-assessment" title="Permanent link">&para;</a></h3>
+<p><strong>All 15 access patterns are efficient.</strong> No table scans. Every operation uses GetItem, Query with precise key conditions, or UpdateItem. RANK items enable DynamoDB-native metric sorting and filtering without loading sub-items per model. Search operations query within experiment partitions (bounded).</p>
+<h2 id="store-methods">Store Methods<a class="headerlink" href="#store-methods" title="Permanent link">&para;</a></h2>
+<h3 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h3>
+<p><strong><code>create_logged_model(experiment_id, name, source_run_id, tags, params, model_type)</code></strong>
+1. Verify experiment exists.
+2. Generate <code>m-&lt;ulid&gt;</code> model_id.
+3. Compute artifact_location: <code>&lt;experiment.artifact_location&gt;/models/&lt;model_id&gt;/artifacts/</code>.
+4. Put META item with status=PENDING, lifecycle_stage=active, GSI1 and LSI projections.
+5. Write tag items if provided + denormalize to META.
+6. Write param items if provided + denormalize to META.
+7. Return <code>LoggedModel</code> entity.</p>
+<p><strong><code>get_logged_model(model_id, allow_deleted=False)</code></strong>
+1. Resolve experiment_id via GSI1 (<code>LM#&lt;model_id&gt;</code>).
+2. GetItem META from table.
+3. If not found or (lifecycle_stage=deleted and not allow_deleted): raise RESOURCE_DOES_NOT_EXIST.
+4. Query tags, params, metrics sub-items.
+5. Return <code>LoggedModel</code> entity.</p>
+<p><strong><code>finalize_logged_model(model_id, status)</code></strong>
+1. Resolve experiment_id via GSI1.
+2. UpdateItem on META: set status (READY or FAILED), update last_updated_timestamp_ms, update LSI3.
+3. Return updated <code>LoggedModel</code> entity.</p>
+<p><strong><code>delete_logged_model(model_id)</code></strong>
+1. Resolve experiment_id via GSI1.
+2. Compute <code>ttl = now + soft_deleted_retention_days</code>.
+3. UpdateItem on META: set lifecycle_stage=deleted, ttl=\&lt;ttl&gt;, update LSI1 to <code>deleted#&lt;model_id&gt;</code>, update last_updated_timestamp_ms.
+4. Query all child items (<code>SK begins_with LM#&lt;model_id&gt;#</code>) — tags, params, metrics.
+5. For each child item: UpdateItem to set ttl=\&lt;ttl&gt;.
+6. Construct RANK item SKs from metric sub-items found in step 4: for each metric item, build the corresponding <code>RANK#lm#&lt;metric_name&gt;#&lt;inv_value&gt;#&lt;model_id&gt;</code> SK (and <code>RANK#lmd#...</code> if dataset-scoped). UpdateItem on each RANK item to set ttl=\&lt;ttl&gt;.
+7. Soft-deleted models are excluded from <code>search_logged_models</code> by LSI1 lifecycle filter. After retention expires, DynamoDB TTL auto-deletes all items.</p>
+<p>This matches the existing <code>delete_run</code> pattern exactly.</p>
+<h3 id="search">Search<a class="headerlink" href="#search" title="Permanent link">&para;</a></h3>
+<p><strong><code>search_logged_models(experiment_ids, filter_string, datasets, max_results, order_by, page_token)</code></strong>
+1. Parse filter_string into attribute/metric/param/tag predicates. Parse order_by.
+2. <strong>If order_by is a metric</strong> (e.g., <code>metrics.accuracy</code>):
+   a. For each experiment_id: query RANK items (<code>SK begins_with RANK#lm#&lt;metric&gt;#</code> or <code>RANK#lmd#&lt;metric&gt;#&lt;ds_name&gt;#&lt;ds_digest&gt;#</code>). This returns model_ids pre-sorted by metric value.
+   b. Batch-get META items for the returned model_ids.
+   c. Exclude soft-deleted models (lifecycle_stage=deleted).
+3. <strong>Otherwise</strong> (order_by is an attribute like creation_time, name):
+   a. For each experiment_id: query META items using appropriate LSI (LSI2 for creation_time, LSI4 for name), filtering <code>SK begins_with LM#</code> to exclude non-model items.
+   b. Exclude soft-deleted models.
+4. <strong>If filter includes metric predicates</strong> (e.g., <code>metrics.accuracy &gt; 0.5</code>):
+   a. Query RANK items with range condition (AP14/AP15) to get matching model_ids.
+   b. Intersect with candidate set from step 2 or 3.
+5. For attribute predicates: apply in-memory against META fields.
+6. For param/tag predicates: lazy-load sub-items per candidate model, apply in-memory.
+7. Apply pagination: cursor-based token encoding model_id of last result.
+8. Return <code>PagedList[LoggedModel]</code>.</p>
+<h3 id="tags">Tags<a class="headerlink" href="#tags" title="Permanent link">&para;</a></h3>
+<p><strong><code>set_logged_model_tags(model_id, tags)</code></strong>
+1. Resolve experiment_id via GSI1.
+2. For each tag: put item <code>SK=LM#&lt;model_id&gt;#TAG#&lt;key&gt;</code> (upsert).
+3. Update denormalized tags dict on META, update last_updated_timestamp_ms.</p>
+<p><strong><code>delete_logged_model_tag(model_id, key)</code></strong>
+1. Resolve experiment_id via GSI1.
+2. Delete item <code>SK=LM#&lt;model_id&gt;#TAG#&lt;key&gt;</code>.
+3. Remove key from denormalized tags dict on META, update last_updated_timestamp_ms.</p>
+<h3 id="metrics-internal">Metrics (internal)<a class="headerlink" href="#metrics-internal" title="Permanent link">&para;</a></h3>
+<p><strong><code>_log_logged_model_metric(experiment_id, model_id, metric_name, metric_value, metric_timestamp_ms, metric_step, run_id, dataset_name=None, dataset_digest=None)</code></strong>
+1. If metric sub-item already exists for this (model_id, metric_name, run_id): read existing value to reconstruct old RANK SK for deletion.
+2. Put metric sub-item <code>SK=LM#&lt;model_id&gt;#METRIC#&lt;metric_name&gt;#&lt;run_id&gt;</code>.
+3. Delete old RANK item (if value changed) and put new global RANK item <code>SK=RANK#lm#&lt;metric_name&gt;#&lt;inv_value&gt;#&lt;model_id&gt;</code>.
+4. If dataset_name and dataset_digest: delete old dataset-scoped RANK item and put new <code>SK=RANK#lmd#&lt;metric_name&gt;#&lt;dataset_name&gt;#&lt;dataset_digest&gt;#&lt;inv_value&gt;#&lt;model_id&gt;</code>.
+5. Update last_updated_timestamp_ms on META.</p>
+<h3 id="run-association">Run Association<a class="headerlink" href="#run-association" title="Permanent link">&para;</a></h3>
+<p><strong><code>record_logged_model(run_id, mlflow_model)</code></strong>
+1. Get run to find experiment_id.
+2. Read the run's <code>mlflow.loggedModels</code> tag (JSON array).
+3. Append model info dict to the array.
+4. Write back the updated tag value.</p>
+<h2 id="schema-constants">Schema Constants<a class="headerlink" href="#schema-constants" title="Permanent link">&para;</a></h2>
+<p>New constants to add to <code>dynamodb/schema.py</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Logged Model sort keys (within EXP# partition)</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">SK_LM_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;LM#&quot;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># RANK prefixes for logged model metrics</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">SK_RANK_LM_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;RANK#lm#&quot;</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">SK_RANK_LMD_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;RANK#lmd#&quot;</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="c1"># GSI1 prefix for logged model reverse lookup</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">GSI1_LM_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;LM#&quot;</span>
+</span></code></pre></div>
+<p>No new partition key prefixes needed — logged models reuse the existing <code>EXP#&lt;exp_id&gt;</code> partition family.</p>
+<p><strong>Migration note</strong>: The existing <code>SK_LOGGED_MODEL_PREFIX = "#LM#"</code> (with leading <code>#</code>) in <code>schema.py</code> is the V2 run-scoped pattern (<code>R#&lt;ulid&gt;#LM#&lt;model_id&gt;</code>). The new <code>SK_LM_PREFIX = "LM#"</code> (no leading <code>#</code>) is the V3 experiment-scoped pattern. Both coexist — the old constant supports legacy run-scoped model items, the new constant supports standalone logged models.</p>
+<h2 id="testing-strategy">Testing Strategy<a class="headerlink" href="#testing-strategy" title="Permanent link">&para;</a></h2>
+<h3 id="unit-tests-moto-direct-store">Unit Tests (moto, direct store)<a class="headerlink" href="#unit-tests-moto-direct-store" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Lifecycle</strong>: create → get → finalize (READY) → get; create → finalize (FAILED)</li>
+<li><strong>Soft delete with TTL</strong>: create → delete → get raises; get with allow_deleted=True succeeds; verify TTL set on META and all children</li>
+<li><strong>Tags</strong>: set, overwrite, delete, verify denormalized dict on META stays in sync</li>
+<li><strong>Params</strong>: log params on create via <code>create_logged_model(params=...)</code></li>
+<li><strong>Search</strong>: across multiple experiments, filter by name/status/model_type, filter by tag/param, order by creation_time (default), order by name</li>
+<li><strong>Metrics filter via RANK</strong>: search with <code>metrics.accuracy &gt; 0.5</code> uses RANK item range query, not in-memory filtering</li>
+<li><strong>Metrics order via RANK</strong>: ORDER BY <code>metrics.accuracy DESC</code> uses RANK item prefix query</li>
+<li><strong>Dataset-scoped metrics</strong>: filter and order by metric with dataset_name + dataset_digest uses <code>RANK#lmd#</code> items</li>
+<li><strong>RANK lifecycle</strong>: verify RANK items receive TTL on soft delete</li>
+<li><strong>Pagination</strong>: search with max_results and page_token</li>
+<li><strong>Artifact location</strong>: verify computed path matches <code>&lt;exp_artifact_loc&gt;/models/&lt;model_id&gt;/artifacts/</code></li>
+<li><strong>Status state machine</strong>: PENDING → READY works, PENDING → FAILED works</li>
+<li><strong>record_logged_model</strong>: appends to run's <code>mlflow.loggedModels</code> tag</li>
+<li><strong>set_model_versions_tags</strong>: inherited from AbstractStore, works via <code>get_logged_model</code> + <code>set_logged_model_tags</code></li>
+<li><strong>Edge cases</strong>: get non-existent model raises, finalize non-existent raises, delete idempotent</li>
+</ul>
+<h3 id="integration-tests-moto-server-rest">Integration Tests (moto server, REST)<a class="headerlink" href="#integration-tests-moto-server-rest" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>MlflowClient</code> round-trip: create → get → finalize → search → delete</li>
+<li>Tag and param operations via client</li>
+<li>Search with filter_string via client</li>
+</ul>
+<h3 id="e2e-tests-full-server">E2E Tests (full server)<a class="headerlink" href="#e2e-tests-full-server" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Logged model CRUD via HTTP endpoints</li>
+<li>Search logged models returns (currently 500s → should return empty list)</li>
+<li>Verify experiment overview page loads without 500s</li>
+</ul>
+<h3 id="coverage">Coverage<a class="headerlink" href="#coverage" title="Permanent link">&para;</a></h3>
+<p>100% patch coverage on new code.</p>
+<h2 id="out-of-scope">Out of Scope<a class="headerlink" href="#out-of-scope" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Artifact upload/download (handled by artifact repository layer, not tracking store)</li>
+<li><code>ListLoggedModelArtifacts</code> handler (artifact repo concern)</li>
+<li>Logged model metrics ingestion pipeline (metrics are written by evaluation runs, not by the store methods in scope)</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/zeroae/mlflow-dynamodbstore" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/mlflow-dynamodbstore/" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,2723 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="DynamoDB-backed MLflow tracking store, model registry, and auth plugin">
+      
+      
+        <meta name="author" content="ZeroAE">
+      
+      
+        <link rel="canonical" href="https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-17-ai-gateway-design/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
+    
+    
+      
+        <title>Phase 5: AI Gateway — DynamoDB Implementation - mlflow-dynamodbstore</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#phase-5-ai-gateway-dynamodb-implementation" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="mlflow-dynamodbstore" class="md-header__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            mlflow-dynamodbstore
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Phase 5: AI Gateway — DynamoDB Implementation
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/zeroae/mlflow-dynamodbstore" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/mlflow-dynamodbstore
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="mlflow-dynamodbstore" class="md-nav__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    mlflow-dynamodbstore
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/zeroae/mlflow-dynamodbstore" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/mlflow-dynamodbstore
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/workspaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workspaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/xray-integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    X-Ray Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/ttl-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TTL Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/upgrading/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/access-patterns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Access Patterns
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../contributing/development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADRs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    ADRs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../adr/001-single-table-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single Table Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dynamodb-item-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DynamoDB Item Design
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DynamoDB Item Design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#partition-families" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Partition Families
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#item-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Item Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Item Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#secrets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Secrets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#model-definitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model Definitions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoints
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#id-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ID Generation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gsi-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GSI Usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lsi-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LSI Usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#access-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Access Patterns
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Access Patterns">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#secrets_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Secrets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#model-definitions_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model Definitions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#endpoints_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoints
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#model-attachment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model Attachment
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bindings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bindings
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scan-risk-assessment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scan Risk Assessment
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#encryption-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Encryption Design
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Encryption Design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kek-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        KEK Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#encryption-flow-create_gateway_secret" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Encryption Flow (create_gateway_secret)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#decryption-flow-internal-for-endpoint-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decryption Flow (internal, for endpoint proxy)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dynamodb-binary-attribute" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DynamoDB Binary Attribute
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#store-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Store Methods
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Store Methods">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#secrets_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Secrets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#model-definitions_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model Definitions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#endpoints_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoints
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#model-attachment_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model Attachment
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bindings_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bindings
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tags_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tags
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#schema-constants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema Constants
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#entity-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Entity Mapping
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#secret-cache-invalidation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Secret Cache Invalidation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing Strategy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Testing Strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#unit-tests-moto-direct-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unit Tests (moto, direct store)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#integration-tests-moto-server-rest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration Tests (moto server, REST)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#e2e-tests-full-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        E2E Tests (full server)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementation-sub-phases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation Sub-Phases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Implementation Sub-Phases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-5a-secrets-5-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 5a: Secrets (5 methods)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-5b-model-definitions-5-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 5b: Model Definitions (5 methods)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-5c-endpoints-attachments-bindings-tags-12-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 5c: Endpoints, Attachments, Bindings, Tags (12 methods)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/zeroae/mlflow-dynamodbstore/edit/main/docs/superpowers/specs/2026-03-17-ai-gateway-design.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="phase-5-ai-gateway-dynamodb-implementation">Phase 5: AI Gateway — DynamoDB Implementation<a class="headerlink" href="#phase-5-ai-gateway-dynamodb-implementation" title="Permanent link">&para;</a></h1>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p>Phases 1–4 achieved full <code>AbstractStore</code> tracking parity. Phase 5 implements the <code>GatewayStoreMixin</code> — 22 methods across secrets, model definitions, endpoints, bindings, and tags — completing full parity with the <code>SqlAlchemyStore</code>.</p>
+<p><code>AbstractStore</code> inherits from <code>GatewayStoreMixin</code>, so <code>DynamoDBTrackingStore</code> already inherits all 22 methods as <code>NotImplementedError</code> stubs. The gateway enables MLflow to route LLM requests through configured endpoints (e.g., OpenAI, Anthropic, Bedrock), manage API credentials, and bind endpoints to scorers for online evaluation.</p>
+<h2 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h2>
+<p>22 store methods across 6 categories:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Category</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>create_gateway_secret</code></td>
+<td>Secrets</td>
+</tr>
+<tr>
+<td><code>get_secret_info</code></td>
+<td>Secrets</td>
+</tr>
+<tr>
+<td><code>update_gateway_secret</code></td>
+<td>Secrets</td>
+</tr>
+<tr>
+<td><code>delete_gateway_secret</code></td>
+<td>Secrets</td>
+</tr>
+<tr>
+<td><code>list_secret_infos</code></td>
+<td>Secrets</td>
+</tr>
+<tr>
+<td><code>create_gateway_model_definition</code></td>
+<td>Model Definitions</td>
+</tr>
+<tr>
+<td><code>get_gateway_model_definition</code></td>
+<td>Model Definitions</td>
+</tr>
+<tr>
+<td><code>list_gateway_model_definitions</code></td>
+<td>Model Definitions</td>
+</tr>
+<tr>
+<td><code>update_gateway_model_definition</code></td>
+<td>Model Definitions</td>
+</tr>
+<tr>
+<td><code>delete_gateway_model_definition</code></td>
+<td>Model Definitions</td>
+</tr>
+<tr>
+<td><code>create_gateway_endpoint</code></td>
+<td>Endpoints</td>
+</tr>
+<tr>
+<td><code>get_gateway_endpoint</code></td>
+<td>Endpoints</td>
+</tr>
+<tr>
+<td><code>list_gateway_endpoints</code></td>
+<td>Endpoints</td>
+</tr>
+<tr>
+<td><code>update_gateway_endpoint</code></td>
+<td>Endpoints</td>
+</tr>
+<tr>
+<td><code>delete_gateway_endpoint</code></td>
+<td>Endpoints</td>
+</tr>
+<tr>
+<td><code>attach_model_to_endpoint</code></td>
+<td>Model Attachment</td>
+</tr>
+<tr>
+<td><code>detach_model_from_endpoint</code></td>
+<td>Model Attachment</td>
+</tr>
+<tr>
+<td><code>create_endpoint_binding</code></td>
+<td>Bindings</td>
+</tr>
+<tr>
+<td><code>delete_endpoint_binding</code></td>
+<td>Bindings</td>
+</tr>
+<tr>
+<td><code>list_endpoint_bindings</code></td>
+<td>Bindings</td>
+</tr>
+<tr>
+<td><code>set_gateway_endpoint_tag</code></td>
+<td>Tags</td>
+</tr>
+<tr>
+<td><code>delete_gateway_endpoint_tag</code></td>
+<td>Tags</td>
+</tr>
+</tbody>
+</table>
+<h2 id="dynamodb-item-design">DynamoDB Item Design<a class="headerlink" href="#dynamodb-item-design" title="Permanent link">&para;</a></h2>
+<p>Gateway entities get their own partition families — they are independent of experiments and runs. This follows the same cross-experiment pattern used for evaluation datasets (<code>DS#&lt;dataset_id&gt;</code>).</p>
+<p><strong>Workspace scoping</strong>: All gateway entities store a <code>workspace</code> attribute on their META items. GSI PK values that include <code>&lt;workspace&gt;</code> use <code>self._workspace</code> (set during store initialization, default <code>"default"</code>) — the same pattern used by experiments, registered models, and Phase 3 sessions. All store methods that construct GSI PK values with <code>&lt;ws&gt;</code> substitute <code>self._workspace</code>.</p>
+<h3 id="partition-families">Partition Families<a class="headerlink" href="#partition-families" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Prefix</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GW_SECRET#&lt;secret_id&gt;</code></td>
+<td>Secret items</td>
+</tr>
+<tr>
+<td><code>GW_MODELDEF#&lt;model_def_id&gt;</code></td>
+<td>Model definition items</td>
+</tr>
+<tr>
+<td><code>GW_ENDPOINT#&lt;endpoint_id&gt;</code></td>
+<td>Endpoint + children (mappings, bindings, tags)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="item-types">Item Types<a class="headerlink" href="#item-types" title="Permanent link">&para;</a></h3>
+<h4 id="secrets">Secrets<a class="headerlink" href="#secrets" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>PK</th>
+<th>SK</th>
+<th>Attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Secret META</td>
+<td><code>GW_SECRET#&lt;secret_id&gt;</code></td>
+<td><code>GW#META</code></td>
+<td>secret_name, encrypted_value (Binary), wrapped_dek (Binary), kek_version, masked_value (JSON), provider, auth_config (JSON), created_at, last_updated_at, created_by, last_updated_by, workspace</td>
+</tr>
+</tbody>
+</table>
+<h4 id="model-definitions">Model Definitions<a class="headerlink" href="#model-definitions" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>PK</th>
+<th>SK</th>
+<th>Attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ModelDef META</td>
+<td><code>GW_MODELDEF#&lt;model_def_id&gt;</code></td>
+<td><code>GW#META</code></td>
+<td>name, secret_id, provider, model_name, created_at, last_updated_at, created_by, last_updated_by, workspace</td>
+</tr>
+</tbody>
+</table>
+<h4 id="endpoints">Endpoints<a class="headerlink" href="#endpoints" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>PK</th>
+<th>SK</th>
+<th>Attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Endpoint META</td>
+<td><code>GW_ENDPOINT#&lt;endpoint_id&gt;</code></td>
+<td><code>GW#META</code></td>
+<td>name, routing_strategy, fallback_config (JSON), experiment_id, usage_tracking, created_at, last_updated_at, created_by, last_updated_by, workspace, tags (denormalized dict)</td>
+</tr>
+<tr>
+<td>Model Mapping</td>
+<td><code>GW_ENDPOINT#&lt;endpoint_id&gt;</code></td>
+<td><code>GW#MAP#&lt;model_def_id&gt;#&lt;linkage_type&gt;</code></td>
+<td>model_definition_id, weight (Decimal), linkage_type, fallback_order, created_at, created_by</td>
+</tr>
+<tr>
+<td>Binding</td>
+<td><code>GW_ENDPOINT#&lt;endpoint_id&gt;</code></td>
+<td><code>GW#BIND#&lt;resource_type&gt;#&lt;resource_id&gt;</code></td>
+<td>endpoint_id, resource_type, resource_id, created_at, last_updated_at, created_by, last_updated_by, display_name</td>
+</tr>
+<tr>
+<td>Tag</td>
+<td><code>GW_ENDPOINT#&lt;endpoint_id&gt;</code></td>
+<td><code>GW#TAG#&lt;key&gt;</code></td>
+<td>key, value</td>
+</tr>
+</tbody>
+</table>
+<h3 id="id-generation">ID Generation<a class="headerlink" href="#id-generation" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Entity</th>
+<th>Format</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>secret_id</td>
+<td><code>s-&lt;ulid&gt;</code></td>
+<td><code>s-01JARW3QXP000000000000000</code></td>
+</tr>
+<tr>
+<td>model_definition_id</td>
+<td><code>d-&lt;ulid&gt;</code></td>
+<td><code>d-01JARW3QXP000000000000000</code></td>
+</tr>
+<tr>
+<td>endpoint_id</td>
+<td><code>e-&lt;ulid&gt;</code></td>
+<td><code>e-01JARW3QXP000000000000000</code></td>
+</tr>
+<tr>
+<td>mapping_id</td>
+<td>(deterministic, see below)</td>
+<td><code>GW#MAP#&lt;model_def_id&gt;#&lt;linkage_type&gt;</code></td>
+</tr>
+<tr>
+<td>online_scoring_config_id</td>
+<td>ULID</td>
+<td>(from Phase 1c, used in bindings)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Note on ID format divergence</strong>: The SQLAlchemy store generates IDs as <code>s-{uuid4().hex}</code> (32 hex chars). This spec uses <code>s-&lt;ulid&gt;</code> (26 base32 chars) for time-sortability, consistent with all other phases. No MLflow REST handler validates gateway ID length or format — IDs are opaque strings.</p>
+<h3 id="gsi-usage">GSI Usage<a class="headerlink" href="#gsi-usage" title="Permanent link">&para;</a></h3>
+<p>GSIs are shared across all entity types using PK prefix namespacing. Each GSI uses the existing DynamoDB attribute names (<code>gsi1pk</code>/<code>gsi1sk</code>, <code>gsi2pk</code>/<code>gsi2sk</code>, etc.) defined in <code>dynamodb/schema.py</code>. Gateway items write to these same attributes with distinct PK prefixes — no new GSI attribute names or provisioner changes needed. All 5 GSIs already exist with <code>ALL</code> projection.</p>
+<p><strong>Existing GSI co-tenants</strong> (for reference):
+- GSI1: <code>RUN#</code>, <code>TRACE#</code>, <code>CLIENT#</code>, <code>DS#</code> (base), <code>DS_EXP#</code> (Phase 1a), <code>LM#</code> (Phase 1b), <code>SCOR#</code> (Phase 1c)
+- GSI2: <code>EXPERIMENTS#</code>, <code>MODELS#</code>, <code>AUTH_USERS</code>, <code>WORKSPACES</code>, <code>FTS_NAMES#</code> (base), <code>DS_LIST#</code> (Phase 1a), <code>ACTIVE_SCORERS#</code> (Phase 1c), <code>SESSIONS#</code> (Phase 3)
+- GSI3: <code>EXP_NAME#</code>, <code>MODEL_NAME#</code>, <code>ALIAS#</code> (base), <code>DS_NAME#</code> (Phase 1a), <code>SCOR_NAME#</code> (Phase 1c)
+- GSI4: <code>PERM#</code> (base)
+- GSI5: <code>EXP_NAMES#</code>, <code>MODEL_NAMES#</code> (base)</p>
+<table>
+<thead>
+<tr>
+<th>GSI</th>
+<th>Attribute</th>
+<th>PK Value</th>
+<th>SK Value</th>
+<th>Purpose</th>
+<th>Written On</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GSI1</td>
+<td><code>gsi1pk</code>/<code>gsi1sk</code></td>
+<td><code>GW_SECRET_NAME#&lt;workspace&gt;#&lt;secret_name&gt;</code></td>
+<td><code>&lt;secret_id&gt;</code></td>
+<td>Unique secret name lookup</td>
+<td>Secret META</td>
+</tr>
+<tr>
+<td>GSI2</td>
+<td><code>gsi2pk</code>/<code>gsi2sk</code></td>
+<td><code>GW_SECRETS#&lt;workspace&gt;</code></td>
+<td><code>&lt;secret_id&gt;</code></td>
+<td>List all secrets in workspace</td>
+<td>Secret META</td>
+</tr>
+<tr>
+<td>GSI2</td>
+<td><code>gsi2pk</code>/<code>gsi2sk</code></td>
+<td><code>GW_MODELDEFS#&lt;workspace&gt;</code></td>
+<td><code>&lt;model_def_id&gt;</code></td>
+<td>List all model defs in workspace</td>
+<td>ModelDef META</td>
+</tr>
+<tr>
+<td>GSI2</td>
+<td><code>gsi2pk</code>/<code>gsi2sk</code></td>
+<td><code>GW_ENDPOINTS#&lt;workspace&gt;</code></td>
+<td><code>&lt;endpoint_id&gt;</code></td>
+<td>List all endpoints in workspace</td>
+<td>Endpoint META</td>
+</tr>
+<tr>
+<td>GSI2</td>
+<td><code>gsi2pk</code>/<code>gsi2sk</code></td>
+<td><code>GW_BIND#&lt;resource_type&gt;#&lt;resource_id&gt;</code></td>
+<td><code>&lt;endpoint_id&gt;</code></td>
+<td>Reverse lookup: find endpoints by bound resource</td>
+<td>Binding items (only when resource_type + resource_id are known)</td>
+</tr>
+<tr>
+<td>GSI3</td>
+<td><code>gsi3pk</code>/<code>gsi3sk</code></td>
+<td><code>GW_MODELDEF_NAME#&lt;workspace&gt;#&lt;name&gt;</code></td>
+<td><code>&lt;model_def_id&gt;</code></td>
+<td>Unique model def name lookup</td>
+<td>ModelDef META</td>
+</tr>
+<tr>
+<td>GSI3</td>
+<td><code>gsi3pk</code>/<code>gsi3sk</code></td>
+<td><code>GW_ENDPOINT_NAME#&lt;workspace&gt;#&lt;name&gt;</code></td>
+<td><code>&lt;endpoint_id&gt;</code></td>
+<td>Unique endpoint name lookup</td>
+<td>Endpoint META</td>
+</tr>
+<tr>
+<td>GSI4</td>
+<td><code>gsi4pk</code>/<code>gsi4sk</code></td>
+<td><code>GW_MODELDEF_SECRET#&lt;secret_id&gt;</code></td>
+<td><code>&lt;model_def_id&gt;</code></td>
+<td>Find model defs by secret_id</td>
+<td>ModelDef META</td>
+</tr>
+<tr>
+<td>GSI5</td>
+<td><code>gsi5pk</code>/<code>gsi5sk</code></td>
+<td><code>GW_ENDPOINT_MODELDEF#&lt;model_def_id&gt;</code></td>
+<td><code>&lt;endpoint_id&gt;</code></td>
+<td>Find endpoints using a model def</td>
+<td>Model Mapping</td>
+</tr>
+</tbody>
+</table>
+<h3 id="lsi-usage">LSI Usage<a class="headerlink" href="#lsi-usage" title="Permanent link">&para;</a></h3>
+<p>No LSIs used for gateway items — gateway entities are in their own partitions (not under <code>EXP#</code>), and the access patterns are served by GSIs.</p>
+<h2 id="access-patterns">Access Patterns<a class="headerlink" href="#access-patterns" title="Permanent link">&para;</a></h2>
+<p>Every store method maps to Query, GetItem, PutItem, UpdateItem, or DeleteItem — never Scan.</p>
+<h3 id="secrets_1">Secrets<a class="headerlink" href="#secrets_1" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Access Pattern</th>
+<th>Caller</th>
+<th>Operation</th>
+<th>Table/Index</th>
+<th>Key Condition</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP1</td>
+<td>Get secret by ID</td>
+<td><code>get_secret_info(secret_id=)</code></td>
+<td>GetItem</td>
+<td>Table</td>
+<td><code>PK=GW_SECRET#&lt;id&gt;, SK=GW#META</code></td>
+<td>O(1)</td>
+</tr>
+<tr>
+<td>AP2</td>
+<td>Get secret by name</td>
+<td><code>get_secret_info(secret_name=)</code></td>
+<td>Query</td>
+<td>GSI1</td>
+<td><code>PK=GW_SECRET_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+<td>Returns secret_id, then AP1</td>
+</tr>
+<tr>
+<td>AP3</td>
+<td>Check name uniqueness</td>
+<td><code>create_gateway_secret</code></td>
+<td>Query</td>
+<td>GSI1</td>
+<td><code>PK=GW_SECRET_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+<td>Expect 0 results</td>
+</tr>
+<tr>
+<td>AP4</td>
+<td>List all secrets</td>
+<td><code>list_secret_infos</code></td>
+<td>Query</td>
+<td>GSI2</td>
+<td><code>PK=GW_SECRETS#&lt;ws&gt;</code></td>
+<td>Optional FilterExpression on provider</td>
+</tr>
+<tr>
+<td>AP5</td>
+<td>Find model defs using secret</td>
+<td><code>delete_gateway_secret</code> (impact check)</td>
+<td>Query</td>
+<td>GSI4</td>
+<td><code>PK=GW_MODELDEF_SECRET#&lt;secret_id&gt;</code></td>
+<td>Check before delete</td>
+</tr>
+</tbody>
+</table>
+<h3 id="model-definitions_1">Model Definitions<a class="headerlink" href="#model-definitions_1" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Access Pattern</th>
+<th>Caller</th>
+<th>Operation</th>
+<th>Table/Index</th>
+<th>Key Condition</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP6</td>
+<td>Get model def by ID</td>
+<td><code>get_gateway_model_definition(id=)</code></td>
+<td>GetItem</td>
+<td>Table</td>
+<td><code>PK=GW_MODELDEF#&lt;id&gt;, SK=GW#META</code></td>
+<td>O(1)</td>
+</tr>
+<tr>
+<td>AP7</td>
+<td>Get model def by name</td>
+<td><code>get_gateway_model_definition(name=)</code></td>
+<td>Query</td>
+<td>GSI3</td>
+<td><code>PK=GW_MODELDEF_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+<td>Returns ID, then AP6</td>
+</tr>
+<tr>
+<td>AP8</td>
+<td>Check name uniqueness</td>
+<td><code>create_gateway_model_definition</code></td>
+<td>Query</td>
+<td>GSI3</td>
+<td><code>PK=GW_MODELDEF_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+<td>Expect 0 results</td>
+</tr>
+<tr>
+<td>AP9</td>
+<td>List all model defs</td>
+<td><code>list_gateway_model_definitions</code></td>
+<td>Query</td>
+<td>GSI2</td>
+<td><code>PK=GW_MODELDEFS#&lt;ws&gt;</code></td>
+<td>Optional filter on provider, secret_id</td>
+</tr>
+<tr>
+<td>AP10</td>
+<td>Find model defs by secret</td>
+<td><code>list_gateway_model_definitions(secret_id=)</code></td>
+<td>Query</td>
+<td>GSI4</td>
+<td><code>PK=GW_MODELDEF_SECRET#&lt;secret_id&gt;</code></td>
+<td>Efficient filter by secret</td>
+</tr>
+<tr>
+<td>AP11</td>
+<td>Find endpoints using model def</td>
+<td><code>delete_gateway_model_definition</code> (RESTRICT check)</td>
+<td>Query</td>
+<td>GSI5</td>
+<td><code>PK=GW_ENDPOINT_MODELDEF#&lt;model_def_id&gt;</code></td>
+<td>Must be empty to allow delete</td>
+</tr>
+</tbody>
+</table>
+<h3 id="endpoints_1">Endpoints<a class="headerlink" href="#endpoints_1" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Access Pattern</th>
+<th>Caller</th>
+<th>Operation</th>
+<th>Table/Index</th>
+<th>Key Condition</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP12</td>
+<td>Get endpoint by ID</td>
+<td><code>get_gateway_endpoint(id=)</code></td>
+<td>Query</td>
+<td>Table</td>
+<td><code>PK=GW_ENDPOINT#&lt;id&gt;</code> (all items)</td>
+<td>Returns META + mappings + bindings + tags</td>
+</tr>
+<tr>
+<td>AP13</td>
+<td>Get endpoint by name</td>
+<td><code>get_gateway_endpoint(name=)</code></td>
+<td>Query</td>
+<td>GSI3</td>
+<td><code>PK=GW_ENDPOINT_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+<td>Returns ID, then AP12</td>
+</tr>
+<tr>
+<td>AP14</td>
+<td>Check name uniqueness</td>
+<td><code>create_gateway_endpoint</code></td>
+<td>Query</td>
+<td>GSI3</td>
+<td><code>PK=GW_ENDPOINT_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+<td>Expect 0 results</td>
+</tr>
+<tr>
+<td>AP15</td>
+<td>List all endpoints</td>
+<td><code>list_gateway_endpoints</code></td>
+<td>Query</td>
+<td>GSI2</td>
+<td><code>PK=GW_ENDPOINTS#&lt;ws&gt;</code></td>
+<td>Returns endpoint IDs, batch-get META+children</td>
+</tr>
+<tr>
+<td>AP16</td>
+<td>List endpoints by provider</td>
+<td><code>list_gateway_endpoints(provider=)</code></td>
+<td>AP15 → filter</td>
+<td>—</td>
+<td>—</td>
+<td>In-memory: filter endpoints having at least one mapping whose model_def has matching provider</td>
+</tr>
+<tr>
+<td>AP17</td>
+<td>List endpoints by secret</td>
+<td><code>list_gateway_endpoints(secret_id=)</code></td>
+<td>AP10 → AP11</td>
+<td>—</td>
+<td>—</td>
+<td>Find model_defs by secret → find endpoints by model_def → deduplicate</td>
+</tr>
+<tr>
+<td>AP18</td>
+<td>Delete endpoint (cascade)</td>
+<td><code>delete_gateway_endpoint</code></td>
+<td>Query + BatchDelete</td>
+<td>Table</td>
+<td><code>PK=GW_ENDPOINT#&lt;id&gt;</code> (all items)</td>
+<td>Deletes META + all children</td>
+</tr>
+<tr>
+<td>AP19</td>
+<td>Update endpoint model configs</td>
+<td><code>update_gateway_endpoint</code></td>
+<td>BatchDelete + BatchWrite</td>
+<td>Table</td>
+<td><code>SK begins_with GW#MAP#</code> under endpoint PK</td>
+<td>Delete old mappings, write new ones</td>
+</tr>
+</tbody>
+</table>
+<h3 id="model-attachment">Model Attachment<a class="headerlink" href="#model-attachment" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Access Pattern</th>
+<th>Caller</th>
+<th>Operation</th>
+<th>Table/Index</th>
+<th>Key Condition</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP20</td>
+<td>Attach model to endpoint</td>
+<td><code>attach_model_to_endpoint</code></td>
+<td>PutItem (conditional)</td>
+<td>Table</td>
+<td><code>PK=GW_ENDPOINT#&lt;ep_id&gt;, SK=GW#MAP#&lt;model_def_id&gt;#&lt;linkage_type&gt;</code></td>
+<td><code>ConditionExpression: attribute_not_exists(SK)</code> for atomic uniqueness. Writes GSI5 projection.</td>
+</tr>
+<tr>
+<td>AP21</td>
+<td>Detach model from endpoint</td>
+<td><code>detach_model_from_endpoint</code></td>
+<td>DeleteItem</td>
+<td>Table</td>
+<td><code>PK=GW_ENDPOINT#&lt;ep_id&gt;, SK=GW#MAP#&lt;model_def_id&gt;#&lt;linkage_type&gt;</code></td>
+<td>Deterministic SK — no query needed. If <code>linkage_type</code> not specified, query <code>SK begins_with GW#MAP#&lt;model_def_id&gt;#</code> to find all linkages and delete all.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="bindings">Bindings<a class="headerlink" href="#bindings" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Access Pattern</th>
+<th>Caller</th>
+<th>Operation</th>
+<th>Table/Index</th>
+<th>Key Condition</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP22</td>
+<td>Create binding</td>
+<td><code>create_endpoint_binding</code></td>
+<td>PutItem</td>
+<td>Table</td>
+<td><code>PK=GW_ENDPOINT#&lt;ep_id&gt;, SK=GW#BIND#&lt;type&gt;#&lt;res_id&gt;</code></td>
+<td>Composite SK = unique</td>
+</tr>
+<tr>
+<td>AP23</td>
+<td>Delete binding</td>
+<td><code>delete_endpoint_binding</code></td>
+<td>DeleteItem</td>
+<td>Table</td>
+<td>Same as AP22</td>
+<td>O(1)</td>
+</tr>
+<tr>
+<td>AP24</td>
+<td>List bindings (by endpoint)</td>
+<td><code>list_endpoint_bindings(endpoint_id=)</code></td>
+<td>Query</td>
+<td>Table</td>
+<td><code>PK=GW_ENDPOINT#&lt;ep_id&gt;, SK begins_with GW#BIND#</code></td>
+<td>Within endpoint partition</td>
+</tr>
+<tr>
+<td>AP25</td>
+<td>List bindings (by resource)</td>
+<td><code>list_endpoint_bindings(resource_type=, resource_id=)</code></td>
+<td>Query</td>
+<td>GSI2</td>
+<td><code>PK=GW_BIND#&lt;resource_type&gt;#&lt;resource_id&gt;</code></td>
+<td>Direct reverse lookup via GSI2. Returns endpoint_ids; batch-get endpoint META for each.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="tags">Tags<a class="headerlink" href="#tags" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Access Pattern</th>
+<th>Caller</th>
+<th>Operation</th>
+<th>Table/Index</th>
+<th>Key Condition</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP26</td>
+<td>Set tag</td>
+<td><code>set_gateway_endpoint_tag</code></td>
+<td>PutItem + UpdateItem</td>
+<td>Table</td>
+<td><code>PK=GW_ENDPOINT#&lt;ep_id&gt;, SK=GW#TAG#&lt;key&gt;</code></td>
+<td>Also update denormalized tags on META</td>
+</tr>
+<tr>
+<td>AP27</td>
+<td>Delete tag</td>
+<td><code>delete_gateway_endpoint_tag</code></td>
+<td>DeleteItem + UpdateItem</td>
+<td>Table</td>
+<td>Same as AP26</td>
+<td>Remove from denormalized tags</td>
+</tr>
+</tbody>
+</table>
+<h3 id="scan-risk-assessment">Scan Risk Assessment<a class="headerlink" href="#scan-risk-assessment" title="Permanent link">&para;</a></h3>
+<p><strong>All 27 access patterns are efficient.</strong> No table scans. Every operation uses GetItem, Query with precise key conditions, PutItem, UpdateItem, or DeleteItem. Cross-entity lookups (e.g., "endpoints using model def") use dedicated GSI indexes. Binding reverse lookups (AP25) use a GSI2 projection for direct access by resource_type + resource_id. The only in-memory filtering is for <code>list_gateway_endpoints(provider=)</code> which is bounded by the total endpoint count per workspace (typically small — tens, not thousands).</p>
+<h2 id="encryption-design">Encryption Design<a class="headerlink" href="#encryption-design" title="Permanent link">&para;</a></h2>
+<p>The SQLAlchemy store uses envelope encryption with a Key Encryption Key (KEK) and Data Encryption Key (DEK). The DynamoDB store reuses the same encryption infrastructure.</p>
+<h3 id="kek-management">KEK Management<a class="headerlink" href="#kek-management" title="Permanent link">&para;</a></h3>
+<p>Reuse MLflow's <code>KEKManager</code> class, which:
+- Generates/rotates the KEK
+- Stores the KEK in the MLflow tracking server's filesystem or environment
+- Is independent of the backend store</p>
+<p>The DynamoDB store calls <code>KEKManager</code> the same way <code>SqlAlchemyGatewayStoreMixin</code> does.</p>
+<h3 id="encryption-flow-create_gateway_secret">Encryption Flow (create_gateway_secret)<a class="headerlink" href="#encryption-flow-create_gateway_secret" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Generate a random DEK (32 bytes).</li>
+<li>Encrypt secret_value JSON with DEK using AES-GCM.</li>
+<li>AAD (Additional Authenticated Data) = <code>f"{secret_id}:{secret_name}"</code>.</li>
+<li>Output: nonce (12 bytes) + ciphertext + auth tag (16 bytes) → stored as <code>encrypted_value</code> (Binary).</li>
+<li>Wrap DEK with KEK → stored as <code>wrapped_dek</code> (Binary).</li>
+<li>Store <code>kek_version</code> for future KEK rotation.</li>
+<li>Compute masked_value: <code>{"key": "prefix...suffix"}</code> for each key-value pair.</li>
+</ol>
+<h3 id="decryption-flow-internal-for-endpoint-proxy">Decryption Flow (internal, for endpoint proxy)<a class="headerlink" href="#decryption-flow-internal-for-endpoint-proxy" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Read <code>wrapped_dek</code> and <code>kek_version</code>.</li>
+<li>Unwrap DEK using KEK (matching version).</li>
+<li>Decrypt <code>encrypted_value</code> with DEK using AES-GCM and AAD.</li>
+<li>Return plaintext secret_value dict.</li>
+</ol>
+<h3 id="dynamodb-binary-attribute">DynamoDB Binary Attribute<a class="headerlink" href="#dynamodb-binary-attribute" title="Permanent link">&para;</a></h3>
+<p>DynamoDB natively supports Binary (<code>B</code>) attributes. <code>encrypted_value</code> and <code>wrapped_dek</code> are stored as Binary, not Base64-encoded strings. boto3 handles <code>bytes ↔ B</code> conversion automatically.</p>
+<h2 id="store-methods">Store Methods<a class="headerlink" href="#store-methods" title="Permanent link">&para;</a></h2>
+<h3 id="secrets_2">Secrets<a class="headerlink" href="#secrets_2" title="Permanent link">&para;</a></h3>
+<p><strong><code>create_gateway_secret(secret_name, secret_value, provider, auth_config, created_by)</code></strong>
+1. Check name uniqueness via GSI1 (AP3). Raise <code>RESOURCE_ALREADY_EXISTS</code> if taken.
+2. Generate <code>s-&lt;ulid&gt;</code> secret_id.
+3. Encrypt: generate DEK, encrypt secret_value with AES-GCM (AAD = <code>secret_id:secret_name</code>), wrap DEK with KEK.
+4. Compute masked_value.
+5. PutItem: <code>PK=GW_SECRET#&lt;id&gt;, SK=GW#META</code> with GSI1 and GSI2 projections.
+6. Return <code>GatewaySecretInfo</code>.</p>
+<p><strong><code>get_secret_info(secret_id, secret_name)</code></strong>
+1. If <code>secret_id</code>: GetItem (AP1).
+2. If <code>secret_name</code>: Query GSI1 (AP2), then GetItem.
+3. Return <code>GatewaySecretInfo</code> (masked_value, not decrypted).</p>
+<p><strong><code>update_gateway_secret(secret_id, secret_value, auth_config, updated_by)</code></strong>
+1. GetItem to verify exists and get secret_name (needed for AAD).
+2. If <code>secret_value</code>: re-encrypt with new DEK, same AAD, recompute masked_value.
+3. If <code>auth_config</code>: update auth_config attribute.
+4. UpdateItem on META: set changed attributes, update <code>last_updated_at</code>, <code>last_updated_by</code>.
+5. Invalidate secret cache.
+6. Return updated <code>GatewaySecretInfo</code>.</p>
+<p><strong><code>delete_gateway_secret(secret_id)</code></strong>
+1. Verify exists (AP1).
+2. Query model defs using this secret (AP5/GSI4). For each found: UpdateItem to set <code>secret_id=NULL</code> (orphan, don't block delete — matches SQLAlchemy <code>ondelete=SET NULL</code>).
+3. DeleteItem: <code>PK=GW_SECRET#&lt;id&gt;, SK=GW#META</code>.
+4. Invalidate secret cache.</p>
+<p><strong><code>list_secret_infos(provider)</code></strong>
+1. Query GSI2: <code>PK=GW_SECRETS#&lt;ws&gt;</code> (AP4).
+2. If <code>provider</code>: FilterExpression on <code>provider</code> attribute.
+3. Return <code>list[GatewaySecretInfo]</code>.</p>
+<h3 id="model-definitions_2">Model Definitions<a class="headerlink" href="#model-definitions_2" title="Permanent link">&para;</a></h3>
+<p><strong><code>create_gateway_model_definition(name, secret_id, provider, model_name, created_by)</code></strong>
+1. Check name uniqueness via GSI3 (AP8).
+2. Verify secret exists (AP1). Raise <code>RESOURCE_DOES_NOT_EXIST</code> if not.
+3. Generate <code>d-&lt;ulid&gt;</code> model_definition_id.
+4. PutItem: <code>PK=GW_MODELDEF#&lt;id&gt;, SK=GW#META</code> with GSI2, GSI3, GSI4 projections.
+5. Return <code>GatewayModelDefinition</code> with <code>secret_name</code> resolved from step 2.</p>
+<p><strong><code>get_gateway_model_definition(model_definition_id, name)</code></strong>
+1. If <code>model_definition_id</code>: GetItem (AP6).
+2. If <code>name</code>: Query GSI3 (AP7), then GetItem.
+3. Resolve <code>secret_name</code> by reading secret META if <code>secret_id</code> is not NULL.
+4. Return <code>GatewayModelDefinition</code>.</p>
+<p><strong><code>list_gateway_model_definitions(provider, secret_id)</code></strong>
+1. If <code>secret_id</code>: Query GSI4 (AP10) for direct lookup.
+2. Otherwise: Query GSI2 (AP9) for all model defs.
+3. Apply <code>provider</code> filter in-memory if specified.
+4. Batch-resolve <code>secret_name</code> for each model def's <code>secret_id</code>.
+5. Return <code>list[GatewayModelDefinition]</code>.</p>
+<p><strong><code>update_gateway_model_definition(model_definition_id, name, secret_id, model_name, updated_by, provider)</code></strong>
+1. GetItem to verify exists (AP6).
+2. If <code>name</code> changed: check new name uniqueness via GSI3. Update GSI3 projection.
+3. If <code>secret_id</code> is explicitly provided:
+   a. If <code>secret_id</code> is <code>None</code>: set <code>secret_id=NULL</code> on META (intentional orphan — removes GSI4 projection). This matches SQLAlchemy's nullable FK behavior.
+   b. If <code>secret_id</code> is a non-empty string: verify new secret exists (AP1). Update GSI4 projection.
+4. UpdateItem on META with changed attributes.
+5. Invalidate secret cache.
+6. Return updated <code>GatewayModelDefinition</code>.</p>
+<p><strong><code>delete_gateway_model_definition(model_definition_id)</code></strong>
+1. Query GSI5 (AP11) to check if any endpoints use this model def.
+2. If endpoints found: raise <code>INVALID_STATE</code> ("model definition is attached to endpoints").
+3. DeleteItem: <code>PK=GW_MODELDEF#&lt;id&gt;, SK=GW#META</code>.
+4. Invalidate secret cache.</p>
+<h3 id="endpoints_2">Endpoints<a class="headerlink" href="#endpoints_2" title="Permanent link">&para;</a></h3>
+<p><strong><code>create_gateway_endpoint(name, model_configs, created_by, routing_strategy, fallback_config, experiment_id, usage_tracking)</code></strong>
+1. Check name uniqueness via GSI3 (AP14).
+2. If <code>usage_tracking=True</code> and no <code>experiment_id</code>: create a new experiment via <code>self.create_experiment()</code>, tag it with <code>MLFLOW_EXPERIMENT_SOURCE_TYPE=GATEWAY</code>, <code>MLFLOW_EXPERIMENT_SOURCE_ID=&lt;endpoint_id&gt;</code>, <code>MLFLOW_EXPERIMENT_IS_GATEWAY=true</code>.
+3. Generate <code>e-&lt;ulid&gt;</code> endpoint_id.
+4. For each <code>model_config</code> in <code>model_configs</code>:
+   a. Verify model_definition exists (AP6).
+   b. Create mapping item: <code>SK=GW#MAP#&lt;model_def_id&gt;#&lt;linkage_type&gt;</code> with GSI5 projection.
+5. PutItem META: <code>PK=GW_ENDPOINT#&lt;id&gt;, SK=GW#META</code> with GSI2, GSI3 projections.
+6. Batch write mapping items.
+7. Return <code>GatewayEndpoint</code> with <code>model_mappings</code> populated.</p>
+<p><strong><code>get_gateway_endpoint(endpoint_id, name)</code></strong>
+1. If <code>name</code>: resolve to endpoint_id via GSI3 (AP13).
+2. Query all items in partition (AP12): META + mappings + bindings + tags.
+3. For each mapping item: resolve <code>model_definition</code> by reading ModelDef META.
+4. Construct <code>GatewayEndpoint</code> with <code>model_mappings</code>, <code>tags</code>.
+5. Return <code>GatewayEndpoint</code>.</p>
+<p><strong><code>list_gateway_endpoints(provider, secret_id)</code></strong>
+1. If <code>secret_id</code> provided (targeted path — skip full list):
+   a. Find model_defs by secret (GSI4 → AP10). Collect model_def_ids.
+   b. For each model_def_id: find endpoints via GSI5 (AP11). Collect endpoint_ids, deduplicate.
+   c. For each endpoint_id: query partition (AP12) to get META + children.
+   d. Return <code>list[GatewayEndpoint]</code>.
+2. Otherwise (no secret_id filter):
+   a. Query GSI2 (AP15) for all endpoint IDs in workspace.
+   b. For each endpoint_id: query partition (AP12) to get META + children.
+   c. If <code>provider</code>: filter endpoints having at least one mapping whose model_def has matching provider (in-memory, bounded by endpoint count).
+   d. Return <code>list[GatewayEndpoint]</code>.</p>
+<p><strong><code>update_gateway_endpoint(endpoint_id, name, updated_by, routing_strategy, fallback_config, model_configs, experiment_id, usage_tracking)</code></strong>
+1. Get existing endpoint (AP12).
+2. If <code>name</code> changed: check uniqueness, update GSI3 projection.
+3. If <code>usage_tracking</code> changed to True and no experiment_id: auto-create experiment (same as create).
+4. If <code>model_configs</code> provided (full replacement):
+   a. Query existing mappings (<code>SK begins_with GW#MAP#</code>).
+   b. Batch delete all existing mapping items.
+   c. For each new config: verify model_def exists, create mapping item <code>SK=GW#MAP#&lt;model_def_id&gt;#&lt;linkage_type&gt;</code> with GSI5 projection.
+   d. Batch write new mapping items.
+5. UpdateItem on META with changed attributes.
+6. Invalidate secret cache.
+7. Return updated <code>GatewayEndpoint</code>.</p>
+<p><strong><code>delete_gateway_endpoint(endpoint_id)</code></strong>
+1. Query ALL items with <code>PK=GW_ENDPOINT#&lt;id&gt;</code> (AP18).
+2. Batch delete all items (META, mappings, bindings, tags).
+3. GSI entries auto-cleaned.
+4. Invalidate secret cache.</p>
+<h3 id="model-attachment_1">Model Attachment<a class="headerlink" href="#model-attachment_1" title="Permanent link">&para;</a></h3>
+<p><strong><code>attach_model_to_endpoint(endpoint_id, model_config, created_by)</code></strong>
+1. Verify endpoint exists (GetItem META).
+2. Verify model_definition exists (AP6).
+3. Construct deterministic SK: <code>GW#MAP#&lt;model_definition_id&gt;#&lt;linkage_type&gt;</code>.
+4. PutItem with <code>ConditionExpression: attribute_not_exists(SK)</code> (AP20). If condition fails: raise <code>RESOURCE_ALREADY_EXISTS</code>. This atomically enforces the <code>(endpoint_id, model_definition_id, linkage_type)</code> uniqueness constraint — no read-then-write race.
+5. Write GSI5 projection on the mapping item.
+6. Update endpoint META <code>last_updated_at</code>.
+7. Invalidate secret cache.
+8. Return <code>GatewayEndpointModelMapping</code>.</p>
+<p><strong><code>detach_model_from_endpoint(endpoint_id, model_definition_id, linkage_type=None)</code></strong></p>
+<p>The SQLAlchemy store accepts an optional <code>linkage_type</code> to disambiguate when the same model definition is attached with both PRIMARY and FALLBACK linkages. The unique constraint is on <code>(endpoint_id, model_definition_id, linkage_type)</code>.</p>
+<ol>
+<li>If <code>linkage_type</code> specified: construct deterministic SK <code>GW#MAP#&lt;model_definition_id&gt;#&lt;linkage_type&gt;</code>, DeleteItem directly (AP21). If item doesn't exist: raise <code>RESOURCE_DOES_NOT_EXIST</code>.</li>
+<li>If <code>linkage_type</code> not specified: query <code>SK begins_with GW#MAP#&lt;model_definition_id&gt;#</code> to find all linkage variants. If none found: raise <code>RESOURCE_DOES_NOT_EXIST</code>. Delete all matching items.</li>
+<li>Update endpoint META <code>last_updated_at</code>.</li>
+<li>Invalidate secret cache.</li>
+</ol>
+<h3 id="bindings_1">Bindings<a class="headerlink" href="#bindings_1" title="Permanent link">&para;</a></h3>
+<p><strong><code>create_endpoint_binding(endpoint_id, resource_type, resource_id, created_by)</code></strong>
+1. Verify endpoint exists.
+2. PutItem: <code>SK=GW#BIND#&lt;resource_type&gt;#&lt;resource_id&gt;</code> (AP22). Composite SK ensures uniqueness. Write GSI2 projection <code>PK=GW_BIND#&lt;resource_type&gt;#&lt;resource_id&gt;</code> for reverse lookup (AP25).
+3. Invalidate secret cache.
+4. Return <code>GatewayEndpointBinding</code>.</p>
+<p><strong><code>delete_endpoint_binding(endpoint_id, resource_type, resource_id)</code></strong>
+1. GetItem to verify binding exists: <code>SK=GW#BIND#&lt;resource_type&gt;#&lt;resource_id&gt;</code>. If not found: raise <code>RESOURCE_DOES_NOT_EXIST</code> (matches SQLAlchemy behavior — not idempotent).
+2. DeleteItem (AP23).
+3. Invalidate secret cache.</p>
+<p><strong><code>list_endpoint_bindings(endpoint_id, resource_type, resource_id)</code></strong>
+1. If <code>endpoint_id</code>: Query <code>SK begins_with GW#BIND#</code> (AP24).
+   - If <code>resource_type</code> also specified: narrow prefix to <code>GW#BIND#&lt;resource_type&gt;#</code>.
+   - If <code>resource_id</code> also specified: narrow to exact SK.
+2. If no <code>endpoint_id</code> but <code>resource_type</code> and <code>resource_id</code> specified (cross-endpoint query): Query GSI2 <code>PK=GW_BIND#&lt;resource_type&gt;#&lt;resource_id&gt;</code> (AP25) for direct reverse lookup. Returns endpoint_ids; batch-get binding items from each endpoint partition.
+3. If no <code>endpoint_id</code> and no resource filter: Query GSI2 for all endpoints (<code>PK=GW_ENDPOINTS#&lt;ws&gt;</code>), then query bindings per endpoint. Bounded by endpoint count.
+4. For each binding: resolve <code>endpoint_name</code> from META, attach <code>model_mappings</code>.
+5. Return <code>list[GatewayEndpointBinding]</code>.</p>
+<h3 id="tags_1">Tags<a class="headerlink" href="#tags_1" title="Permanent link">&para;</a></h3>
+<p><strong><code>set_gateway_endpoint_tag(endpoint_id, tag)</code></strong>
+1. PutItem: <code>SK=GW#TAG#&lt;key&gt;</code> (upsert) (AP26).
+2. Update denormalized tags dict on META, update <code>last_updated_at</code>.</p>
+<p><strong><code>delete_gateway_endpoint_tag(endpoint_id, key)</code></strong>
+1. DeleteItem: <code>SK=GW#TAG#&lt;key&gt;</code> (AP27).
+2. Remove key from denormalized tags on META, update <code>last_updated_at</code>.</p>
+<h2 id="schema-constants">Schema Constants<a class="headerlink" href="#schema-constants" title="Permanent link">&para;</a></h2>
+<p>New constants to add to <code>dynamodb/schema.py</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Gateway partition prefixes</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">PK_GW_SECRET_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_SECRET#&quot;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">PK_GW_MODELDEF_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_MODELDEF#&quot;</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">PK_GW_ENDPOINT_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_ENDPOINT#&quot;</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1"># Gateway sort keys</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">SK_GW_META</span> <span class="o">=</span> <span class="s2">&quot;GW#META&quot;</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">SK_GW_MAP_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW#MAP#&quot;</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">SK_GW_BIND_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW#BIND#&quot;</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">SK_GW_TAG_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW#TAG#&quot;</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="c1"># GSI prefixes for gateway (logical labels — all use shared gsiNpk/gsiNsk attributes)</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">GSI1_GW_SECRET_NAME_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_SECRET_NAME#&quot;</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="n">GSI2_GW_SECRETS_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_SECRETS#&quot;</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="n">GSI2_GW_MODELDEFS_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_MODELDEFS#&quot;</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="n">GSI2_GW_ENDPOINTS_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_ENDPOINTS#&quot;</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="n">GSI2_GW_BIND_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_BIND#&quot;</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="n">GSI3_GW_MODELDEF_NAME_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_MODELDEF_NAME#&quot;</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="n">GSI3_GW_ENDPOINT_NAME_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_ENDPOINT_NAME#&quot;</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="n">GSI4_GW_MODELDEF_SECRET_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_MODELDEF_SECRET#&quot;</span>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="n">GSI5_GW_ENDPOINT_MODELDEF_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;GW_ENDPOINT_MODELDEF#&quot;</span>
+</span></code></pre></div>
+<h2 id="entity-mapping">Entity Mapping<a class="headerlink" href="#entity-mapping" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>MLflow Entity</th>
+<th>DynamoDB Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GatewaySecretInfo.secret_id</code></td>
+<td>Extracted from PK (<code>GW_SECRET#&lt;id&gt;</code>)</td>
+</tr>
+<tr>
+<td><code>GatewaySecretInfo.secret_name</code></td>
+<td>META <code>secret_name</code> attribute</td>
+</tr>
+<tr>
+<td><code>GatewaySecretInfo.masked_values</code></td>
+<td>META <code>masked_value</code> attribute (singular in DB, plural in entity — JSON → dict). When constructing entity, pass DB's <code>masked_value</code> to entity's <code>masked_values</code> parameter.</td>
+</tr>
+<tr>
+<td><code>GatewaySecretInfo.provider</code></td>
+<td>META <code>provider</code> attribute</td>
+</tr>
+<tr>
+<td><code>GatewaySecretInfo.auth_config</code></td>
+<td>META <code>auth_config</code> attribute (JSON → dict)</td>
+</tr>
+<tr>
+<td><code>GatewayModelDefinition.model_definition_id</code></td>
+<td>Extracted from PK</td>
+</tr>
+<tr>
+<td><code>GatewayModelDefinition.name</code></td>
+<td>META <code>name</code> attribute</td>
+</tr>
+<tr>
+<td><code>GatewayModelDefinition.secret_id</code></td>
+<td>META <code>secret_id</code> attribute (nullable)</td>
+</tr>
+<tr>
+<td><code>GatewayModelDefinition.secret_name</code></td>
+<td>Resolved from Secret META (lazy)</td>
+</tr>
+<tr>
+<td><code>GatewayModelDefinition.provider</code></td>
+<td>META <code>provider</code> attribute</td>
+</tr>
+<tr>
+<td><code>GatewayModelDefinition.model_name</code></td>
+<td>META <code>model_name</code> attribute</td>
+</tr>
+<tr>
+<td><code>GatewayEndpoint.endpoint_id</code></td>
+<td>Extracted from PK</td>
+</tr>
+<tr>
+<td><code>GatewayEndpoint.name</code></td>
+<td>META <code>name</code> attribute</td>
+</tr>
+<tr>
+<td><code>GatewayEndpoint.model_mappings</code></td>
+<td>Mapping items (<code>SK begins_with GW#MAP#</code>)</td>
+</tr>
+<tr>
+<td><code>GatewayEndpoint.tags</code></td>
+<td>Tag items (<code>SK begins_with GW#TAG#</code>) + denormalized</td>
+</tr>
+<tr>
+<td><code>GatewayEndpoint.routing_strategy</code></td>
+<td>META <code>routing_strategy</code> attribute → <code>RoutingStrategy</code> enum</td>
+</tr>
+<tr>
+<td><code>GatewayEndpoint.fallback_config</code></td>
+<td>META <code>fallback_config</code> attribute (JSON → <code>FallbackConfig</code>)</td>
+</tr>
+<tr>
+<td><code>GatewayEndpoint.experiment_id</code></td>
+<td>META <code>experiment_id</code> attribute</td>
+</tr>
+<tr>
+<td><code>GatewayEndpoint.usage_tracking</code></td>
+<td>META <code>usage_tracking</code> attribute (bool)</td>
+</tr>
+<tr>
+<td><code>GatewayEndpointModelMapping.mapping_id</code></td>
+<td>Synthesized as <code>&lt;model_def_id&gt;:&lt;linkage_type&gt;</code> from SK (<code>GW#MAP#&lt;model_def_id&gt;#&lt;linkage_type&gt;</code>)</td>
+</tr>
+<tr>
+<td><code>GatewayEndpointModelMapping.model_definition</code></td>
+<td>Resolved from ModelDef META</td>
+</tr>
+<tr>
+<td><code>GatewayEndpointBinding.resource_type</code></td>
+<td>Extracted from SK (<code>GW#BIND#&lt;type&gt;#&lt;id&gt;</code>)</td>
+</tr>
+<tr>
+<td><code>GatewayEndpointBinding.resource_id</code></td>
+<td>Extracted from SK</td>
+</tr>
+</tbody>
+</table>
+<h2 id="secret-cache-invalidation">Secret Cache Invalidation<a class="headerlink" href="#secret-cache-invalidation" title="Permanent link">&para;</a></h2>
+<p>The SQLAlchemy store calls <code>_invalidate_secret_cache()</code> after every gateway mutation — not just secret mutations. The cache (<code>config_resolver.py</code>) builds <code>GatewayEndpointConfig</code> objects that include resolved secrets, model definitions, and endpoint configurations. Any change to any gateway entity can invalidate this cache.</p>
+<p>The DynamoDB store calls the same inherited <code>_invalidate_secret_cache()</code> method after <strong>all 11 mutation methods</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>create_gateway_secret</code></td>
+<td>New secret available</td>
+</tr>
+<tr>
+<td><code>update_gateway_secret</code></td>
+<td>Secret value or auth_config changed</td>
+</tr>
+<tr>
+<td><code>delete_gateway_secret</code></td>
+<td>Secret removed; model defs orphaned</td>
+</tr>
+<tr>
+<td><code>update_gateway_model_definition</code></td>
+<td>Model def may now point to different secret</td>
+</tr>
+<tr>
+<td><code>delete_gateway_model_definition</code></td>
+<td>Model def removed from endpoint configs</td>
+</tr>
+<tr>
+<td><code>update_gateway_endpoint</code></td>
+<td>Model mappings or routing config changed</td>
+</tr>
+<tr>
+<td><code>delete_gateway_endpoint</code></td>
+<td>Endpoint removed</td>
+</tr>
+<tr>
+<td><code>attach_model_to_endpoint</code></td>
+<td>New model mapping affects endpoint config</td>
+</tr>
+<tr>
+<td><code>detach_model_from_endpoint</code></td>
+<td>Model mapping removed</td>
+</tr>
+<tr>
+<td><code>create_endpoint_binding</code></td>
+<td>New binding affects config resolution</td>
+</tr>
+<tr>
+<td><code>delete_endpoint_binding</code></td>
+<td>Binding removed</td>
+</tr>
+</tbody>
+</table>
+<p>No additional cache infrastructure is needed — the inherited <code>_invalidate_secret_cache()</code> method handles it.</p>
+<h2 id="testing-strategy">Testing Strategy<a class="headerlink" href="#testing-strategy" title="Permanent link">&para;</a></h2>
+<h3 id="unit-tests-moto-direct-store">Unit Tests (moto, direct store)<a class="headerlink" href="#unit-tests-moto-direct-store" title="Permanent link">&para;</a></h3>
+<p><strong>Secrets:</strong>
+- CRUD lifecycle: create → get (by ID) → get (by name) → update → delete
+- Name uniqueness: duplicate name in workspace rejected
+- Update secret_value: re-encryption, masked_value changes
+- Update auth_config only: secret_value unchanged
+- Delete cascades to model_defs: orphaned model_defs get <code>secret_id=NULL</code>
+- List with provider filter
+- Encryption round-trip: create with known value, verify decryption matches (via internal method)
+- Binary storage: verify <code>encrypted_value</code> and <code>wrapped_dek</code> stored as Binary</p>
+<p><strong>Model Definitions:</strong>
+- CRUD lifecycle: create → get (by ID) → get (by name) → update → delete
+- Name uniqueness within workspace
+- RESTRICT delete: model def attached to endpoint cannot be deleted
+- Update name: GSI3 projection updated
+- Update secret_id: GSI4 projection updated, old secret orphaned
+- secret_name resolution: resolved from Secret META
+- Orphaned model def (secret deleted): <code>secret_id=NULL</code>, <code>secret_name=None</code></p>
+<p><strong>Endpoints:</strong>
+- CRUD lifecycle: create with model configs → get → update → delete
+- Name uniqueness within workspace
+- Cascade delete: META + mappings + bindings + tags all deleted
+- Model config replacement on update: old mappings deleted, new created
+- Auto-experiment creation: <code>usage_tracking=True</code> creates tagged experiment
+- Get returns full entity: mappings + bindings + tags
+- Routing strategy and fallback config serialization</p>
+<p><strong>Model Attachment:</strong>
+- Attach and detach model
+- Duplicate attachment rejected (atomic via ConditionExpression)
+- Concurrent duplicate attachment — both PutItem race, one fails with ConditionalCheckFailedException → RESOURCE_ALREADY_EXISTS
+- Detach with linkage_type — removes specific linkage
+- Detach without linkage_type — removes all linkages for that model_def
+- Detach non-existent raises error
+- Same model_def with PRIMARY and FALLBACK — two separate mapping items
+- GSI5 projection: find endpoints by model_def works after attach</p>
+<p><strong>Bindings:</strong>
+- Create and delete binding
+- Delete non-existent binding raises RESOURCE_DOES_NOT_EXIST (not idempotent — matches SQLAlchemy)
+- List by endpoint_id
+- List by resource_type + resource_id (cross-endpoint via GSI2 reverse lookup)
+- Composite SK uniqueness: same resource can't bind twice to same endpoint</p>
+<p><strong>Tags:</strong>
+- Set, overwrite, delete
+- Denormalized tags dict on META stays in sync</p>
+<h3 id="integration-tests-moto-server-rest">Integration Tests (moto server, REST)<a class="headerlink" href="#integration-tests-moto-server-rest" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Gateway secret CRUD via REST endpoints</li>
+<li>Model definition CRUD with secret resolution</li>
+<li>Endpoint CRUD with model configs</li>
+<li>Binding operations via REST</li>
+</ul>
+<h3 id="e2e-tests-full-server">E2E Tests (full server)<a class="headerlink" href="#e2e-tests-full-server" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Create secret → create model def → create endpoint → verify proxy works</li>
+<li>Endpoint with usage_tracking creates experiment automatically</li>
+</ul>
+<h3 id="coverage">Coverage<a class="headerlink" href="#coverage" title="Permanent link">&para;</a></h3>
+<p>100% patch coverage on new code.</p>
+<h2 id="implementation-sub-phases">Implementation Sub-Phases<a class="headerlink" href="#implementation-sub-phases" title="Permanent link">&para;</a></h2>
+<p>Given the size (22 methods), this phase should be implemented in 3 sub-phases:</p>
+<h3 id="phase-5a-secrets-5-methods">Phase 5a: Secrets (5 methods)<a class="headerlink" href="#phase-5a-secrets-5-methods" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>create_gateway_secret</code>, <code>get_secret_info</code>, <code>update_gateway_secret</code>, <code>delete_gateway_secret</code>, <code>list_secret_infos</code></li>
+<li>Foundation — model defs and endpoints depend on secrets</li>
+</ul>
+<h3 id="phase-5b-model-definitions-5-methods">Phase 5b: Model Definitions (5 methods)<a class="headerlink" href="#phase-5b-model-definitions-5-methods" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>create_gateway_model_definition</code>, <code>get_gateway_model_definition</code>, <code>list_gateway_model_definitions</code>, <code>update_gateway_model_definition</code>, <code>delete_gateway_model_definition</code></li>
+<li>Depends on Phase 5a for secret resolution</li>
+</ul>
+<h3 id="phase-5c-endpoints-attachments-bindings-tags-12-methods">Phase 5c: Endpoints, Attachments, Bindings, Tags (12 methods)<a class="headerlink" href="#phase-5c-endpoints-attachments-bindings-tags-12-methods" title="Permanent link">&para;</a></h3>
+<ul>
+<li>All endpoint CRUD, attach/detach, binding CRUD, tag operations</li>
+<li>Depends on Phase 5b for model_definition resolution</li>
+</ul>
+<h2 id="out-of-scope">Out of Scope<a class="headerlink" href="#out-of-scope" title="Permanent link">&para;</a></h2>
+<ul>
+<li>KEK management infrastructure (reuses MLflow's built-in <code>KEKManager</code>)</li>
+<li>Gateway proxy/routing logic (MLflow server, not tracking store)</li>
+<li>AI Gateway configuration file format</li>
+<li>Secret rotation scheduler</li>
+<li>Endpoint health checks / circuit breaker</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/zeroae/mlflow-dynamodbstore" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/mlflow-dynamodbstore/" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
+      
+    
+  </body>
+</html>

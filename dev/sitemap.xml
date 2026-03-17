@@ -61,7 +61,39 @@
          <lastmod>2026-03-17</lastmod>
     </url>
     <url>
+         <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/plans/2026-03-17-evaluation-datasets/</loc>
+         <lastmod>2026-03-17</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/plans/2026-03-17-phase2-core-gaps/</loc>
+         <lastmod>2026-03-17</lastmod>
+    </url>
+    <url>
          <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-15-mlflow-dynamodbstore-design/</loc>
+         <lastmod>2026-03-17</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-16-evaluation-datasets-design/</loc>
+         <lastmod>2026-03-17</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-17-advanced-traces-design/</loc>
+         <lastmod>2026-03-17</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-17-ai-gateway-design/</loc>
+         <lastmod>2026-03-17</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-17-logged-models-design/</loc>
+         <lastmod>2026-03-17</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-17-remaining-parity-design/</loc>
+         <lastmod>2026-03-17</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-17-scorers-design/</loc>
          <lastmod>2026-03-17</lastmod>
     </url>
     <url>
