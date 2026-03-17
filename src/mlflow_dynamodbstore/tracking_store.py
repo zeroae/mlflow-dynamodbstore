@@ -39,6 +39,7 @@ from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
+from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
 from mlflow.utils.mlflow_tags import MLFLOW_ARTIFACT_LOCATION
@@ -2669,3 +2670,128 @@ class DynamoDBTrackingStore(AbstractStore):
         pk = f"{PK_DATASET_PREFIX}{dataset_id}"
         items = self._table.query(pk=pk, sk_prefix=SK_DATASET_EXP_PREFIX)
         return [item["SK"][len(SK_DATASET_EXP_PREFIX) :] for item in items]
+
+    def search_datasets(
+        self,
+        experiment_ids: list[str] | None = None,
+        filter_string: str | None = None,
+        max_results: int = 1000,
+        order_by: list[str] | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[EvaluationDataset]:
+        """Search evaluation datasets with optional filtering, ordering, and pagination.
+
+        Args:
+            experiment_ids: Limit results to datasets linked to these experiments.
+            filter_string: Filter expression, supports ``name LIKE 'pattern'``.
+            max_results: Maximum number of results per page.
+            order_by: Ordering criteria, e.g. ``["name ASC"]``.
+            page_token: Opaque token for fetching the next page.
+
+        Returns:
+            A PagedList of EvaluationDataset objects.
+        """
+        import re
+
+        from mlflow_dynamodbstore.dynamodb.pagination import (
+            decode_page_token,
+            encode_page_token,
+        )
+
+        # Decode pagination state
+        token_state = decode_page_token(page_token)
+        offset = token_state["offset"] if token_state else 0
+
+        # --- Collect all matching dataset META items ---
+        if experiment_ids:
+            # AP5 + AP13: query GSI1 for each experiment, then get META items
+            dataset_ids: list[str] = []
+            seen: set[str] = set()
+            for exp_id in experiment_ids:
+                gsi1_pk = f"{GSI1_DS_EXP_PREFIX}{exp_id}"
+                link_items = self._table.query(pk=gsi1_pk, index_name="gsi1")
+                for item in link_items:
+                    did = item[GSI1_SK]
+                    if did not in seen:
+                        seen.add(did)
+                        dataset_ids.append(did)
+
+            all_datasets: list[EvaluationDataset] = []
+            for did in dataset_ids:
+                pk = f"{PK_DATASET_PREFIX}{did}"
+                meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+                if meta is None:
+                    continue
+                all_datasets.append(
+                    EvaluationDataset(
+                        dataset_id=did,
+                        name=meta["name"],
+                        digest=meta["digest"],
+                        created_time=int(meta["created_time"]),
+                        last_update_time=int(meta["last_update_time"]),
+                        tags=meta.get("tags") or {},
+                    )
+                )
+        else:
+            # AP4: query GSI2 for all datasets in workspace
+            gsi2_pk = f"{GSI2_DS_LIST_PREFIX}{self._workspace}"
+            meta_items = self._table.query(pk=gsi2_pk, index_name="gsi2")
+            all_datasets = []
+            for item in meta_items:
+                did = item[GSI2_SK]
+                pk = f"{PK_DATASET_PREFIX}{did}"
+                meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+                if meta is None:
+                    continue
+                all_datasets.append(
+                    EvaluationDataset(
+                        dataset_id=did,
+                        name=meta["name"],
+                        digest=meta["digest"],
+                        created_time=int(meta["created_time"]),
+                        last_update_time=int(meta["last_update_time"]),
+                        tags=meta.get("tags") or {},
+                    )
+                )
+
+        # --- Apply filter_string in-memory ---
+        if filter_string:
+            # Support: name LIKE 'pattern%' or name LIKE '%pattern%'
+            like_match = re.match(
+                r"""name\s+LIKE\s+['"](.+)['"]\s*$""", filter_string.strip(), re.IGNORECASE
+            )
+            if like_match:
+                pattern = like_match.group(1)
+                if pattern.startswith("%") and pattern.endswith("%"):
+                    substring = pattern.strip("%")
+                    all_datasets = [d for d in all_datasets if substring in d.name]
+                elif pattern.endswith("%"):
+                    prefix = pattern.rstrip("%")
+                    all_datasets = [d for d in all_datasets if d.name.startswith(prefix)]
+                elif pattern.startswith("%"):
+                    suffix = pattern.lstrip("%")
+                    all_datasets = [d for d in all_datasets if d.name.endswith(suffix)]
+                else:
+                    all_datasets = [d for d in all_datasets if d.name == pattern]
+
+        # --- Apply order_by in-memory ---
+        if order_by:
+            for criterion in reversed(order_by):
+                parts = criterion.strip().split()
+                field = parts[0].lower()
+                direction = parts[1].upper() if len(parts) > 1 else "ASC"
+                reverse = direction == "DESC"
+                if field == "name":
+                    all_datasets.sort(key=lambda d: d.name, reverse=reverse)
+                elif field == "created_time":
+                    all_datasets.sort(key=lambda d: d.created_time, reverse=reverse)
+                elif field == "last_update_time":
+                    all_datasets.sort(key=lambda d: d.last_update_time, reverse=reverse)
+
+        # --- Apply pagination ---
+        total = len(all_datasets)
+        page = all_datasets[offset : offset + max_results]
+        next_offset = offset + len(page)
+        next_token = encode_page_token({"offset": next_offset}) if next_offset < total else None
+
+        return PagedList(page, next_token)

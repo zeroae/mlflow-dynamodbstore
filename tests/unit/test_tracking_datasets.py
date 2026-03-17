@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from mlflow.entities import EvaluationDataset
 from mlflow.exceptions import MlflowException
+from mlflow.store.entities.paged_list import PagedList
 
 
 class TestCreateDataset:
@@ -65,3 +66,59 @@ class TestDeleteDataset:
 
     def test_delete_nonexistent_is_idempotent(self, tracking_store):
         tracking_store.delete_dataset("eval_nonexistent")  # no error
+
+
+class TestSearchDatasets:
+    def test_search_all_in_workspace(self, tracking_store):
+        tracking_store.create_dataset(name="ds-alpha")
+        tracking_store.create_dataset(name="ds-beta")
+        results = tracking_store.search_datasets()
+        assert len(results) == 2
+
+    def test_search_by_experiment_id(self, tracking_store):
+        exp_id = tracking_store.create_experiment("exp-search")
+        ds1 = tracking_store.create_dataset(name="linked", experiment_ids=[exp_id])
+        tracking_store.create_dataset(name="unlinked")
+        results = tracking_store.search_datasets(experiment_ids=[exp_id])
+        assert len(results) == 1
+        assert results[0].dataset_id == ds1.dataset_id
+
+    def test_search_by_name_prefix_filter(self, tracking_store):
+        tracking_store.create_dataset(name="prod-dataset")
+        tracking_store.create_dataset(name="dev-dataset")
+        results = tracking_store.search_datasets(filter_string="name LIKE 'prod%'")
+        assert len(results) == 1
+        assert results[0].name == "prod-dataset"
+
+    def test_search_by_name_substring_filter(self, tracking_store):
+        tracking_store.create_dataset(name="my-prod-dataset")
+        tracking_store.create_dataset(name="my-dev-dataset")
+        results = tracking_store.search_datasets(filter_string="name LIKE '%prod%'")
+        assert len(results) == 1
+        assert results[0].name == "my-prod-dataset"
+
+    def test_search_order_by_name(self, tracking_store):
+        tracking_store.create_dataset(name="charlie")
+        tracking_store.create_dataset(name="alpha")
+        tracking_store.create_dataset(name="bravo")
+        results = tracking_store.search_datasets(order_by=["name ASC"])
+        names = [r.name for r in results]
+        assert names == ["alpha", "bravo", "charlie"]
+
+    def test_search_pagination(self, tracking_store):
+        for i in range(5):
+            tracking_store.create_dataset(name=f"page-ds-{i}")
+        page1 = tracking_store.search_datasets(max_results=2)
+        assert len(page1) == 2
+        assert page1.token is not None
+        page2 = tracking_store.search_datasets(max_results=2, page_token=page1.token)
+        assert len(page2) == 2
+
+    def test_search_returns_paged_list(self, tracking_store):
+        tracking_store.create_dataset(name="paged")
+        results = tracking_store.search_datasets()
+        assert isinstance(results, PagedList)
+
+    def test_search_empty(self, tracking_store):
+        results = tracking_store.search_datasets()
+        assert len(results) == 0
