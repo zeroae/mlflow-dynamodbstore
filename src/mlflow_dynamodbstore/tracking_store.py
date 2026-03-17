@@ -250,7 +250,8 @@ class DynamoDBTrackingStore(AbstractStore):
         artifact_uri: str | None = None,
     ) -> None:
         uri = parse_dynamodb_uri(store_uri)
-        ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
+        if uri.deploy:
+            ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
         self._uri = uri
         self._cache = ResolutionCache()

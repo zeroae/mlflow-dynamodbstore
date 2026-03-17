@@ -30,10 +30,12 @@ class DynamoDBTable:
     def __init__(
         self,
         table_name: str,
-        region: str = "us-east-1",
+        region: str | None = None,
         endpoint_url: str | None = None,
     ) -> None:
-        kwargs: dict[str, Any] = {"region_name": region}
+        kwargs: dict[str, Any] = {}
+        if region:
+            kwargs["region_name"] = region
         if endpoint_url:
             kwargs["endpoint_url"] = endpoint_url
         resource = boto3.resource("dynamodb", **kwargs)

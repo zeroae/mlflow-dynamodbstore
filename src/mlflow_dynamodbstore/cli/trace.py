@@ -1,9 +1,10 @@
-"""cache-spans CLI command."""
+"""trace CLI commands."""
 
 from __future__ import annotations
 
 import click
 
+from mlflow_dynamodbstore.cli._context import CliContext, pass_context
 from mlflow_dynamodbstore.dynamodb.schema import (
     PK_EXPERIMENT_PREFIX,
     SK_TRACE_PREFIX,
@@ -12,16 +13,21 @@ from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.tracking_store import DynamoDBTrackingStore
 
 
-@click.command("cache-spans")
-@click.option("--table", required=True, help="DynamoDB table name")
-@click.option("--region", required=True, help="AWS region")
+@click.group("trace")
+def trace() -> None:
+    """Trace operations."""
+    pass
+
+
+@trace.command("cache")
 @click.option("--experiment-id", required=True, multiple=True, help="Experiment ID(s)")
 @click.option("--days", type=int, default=None, help="Only process traces newer than N days")
-def cache_spans(table: str, region: str, experiment_id: tuple[str, ...], days: int | None) -> None:
+@pass_context
+def cache(ctx: CliContext, experiment_id: tuple[str, ...], days: int | None) -> None:
     """Pre-cache X-Ray spans for traces."""
-    ddb_table = DynamoDBTable(table_name=table, region=region)
+    ddb_table = DynamoDBTable(ctx.name, ctx.region, ctx.endpoint_url)
     store = DynamoDBTrackingStore(
-        store_uri=f"dynamodb://{region}/{table}",
+        store_uri=f"dynamodb://{ctx.region}/{ctx.name}",
         artifact_uri="",  # Not needed for trace operations
     )
 

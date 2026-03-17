@@ -1,24 +1,43 @@
 """Admin CLI for mlflow-dynamodbstore."""
 
-import click
+from __future__ import annotations
 
-from mlflow_dynamodbstore.cli.cache_spans import cache_spans
-from mlflow_dynamodbstore.cli.cleanup_expired import cleanup_expired
-from mlflow_dynamodbstore.cli.delete_workspace import delete_workspace
-from mlflow_dynamodbstore.cli.denormalize_tags import denormalize_tags
-from mlflow_dynamodbstore.cli.fts_trigrams import fts_trigrams
-from mlflow_dynamodbstore.cli.ttl_policy import ttl_policy
+import cloup
+
+from mlflow_dynamodbstore.cli._context import CliContext, pass_context
+
+__all__ = ["CliContext", "pass_context", "cli"]
 
 
-@click.group()
-def cli() -> None:
+@cloup.group()
+@cloup.option("--name", default="mlflow", show_default=True, help="Stack/table name")
+@cloup.option("--region", default=None, help="AWS region (omit to use boto3 default chain)")
+@cloup.option("--endpoint-url", default=None, help="Custom endpoint URL (for LocalStack/testing)")
+@cloup.pass_context
+def cli(ctx: cloup.Context, name: str, region: str | None, endpoint_url: str | None) -> None:
     """mlflow-dynamodbstore admin commands."""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj = CliContext(name=name, region=region, endpoint_url=endpoint_url)
 
 
-cli.add_command(cache_spans)
-cli.add_command(cleanup_expired)
-cli.add_command(delete_workspace)
-cli.add_command(denormalize_tags)
-cli.add_command(fts_trigrams)
-cli.add_command(ttl_policy)
+from mlflow_dynamodbstore.cli.deploy import deploy  # noqa: E402
+from mlflow_dynamodbstore.cli.destroy import destroy  # noqa: E402
+from mlflow_dynamodbstore.cli.fts import fts  # noqa: E402
+from mlflow_dynamodbstore.cli.tag import tag  # noqa: E402
+from mlflow_dynamodbstore.cli.trace import trace  # noqa: E402
+from mlflow_dynamodbstore.cli.ttl import ttl  # noqa: E402
+from mlflow_dynamodbstore.cli.workspace import workspace  # noqa: E402
+
+cli.section(
+    "Stack Lifecycle",
+    deploy,
+    destroy,
+)
+cli.section(
+    "Configuration",
+    tag,
+    ttl,
+    fts,
+    trace,
+    workspace,
+)

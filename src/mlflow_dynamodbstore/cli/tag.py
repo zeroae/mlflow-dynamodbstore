@@ -1,26 +1,26 @@
-"""denormalize-tags CLI commands."""
+"""tag CLI commands."""
 
 from __future__ import annotations
 
 import click
 
+from mlflow_dynamodbstore.cli._context import CliContext, pass_context
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 
 
-@click.group("denormalize-tags")
-def denormalize_tags() -> None:
+@click.group("tag")
+def tag() -> None:
     """Manage tag denormalization patterns."""
     pass
 
 
-@denormalize_tags.command("list")
-@click.option("--table", required=True, help="DynamoDB table name")
-@click.option("--region", required=True, help="AWS region")
+@tag.command("list")
 @click.option("--experiment-id", default=None, help="Show effective patterns for an experiment")
-def list_patterns(table: str, region: str, experiment_id: str | None) -> None:
+@pass_context
+def list_(ctx: CliContext, experiment_id: str | None) -> None:
     """List denormalization patterns."""
-    ddb_table = DynamoDBTable(table_name=table, region=region)
+    ddb_table = DynamoDBTable(ctx.name, ctx.region, ctx.endpoint_url)
     config = ConfigReader(table=ddb_table)
     if experiment_id:
         patterns = config.get_effective_denormalize_patterns(experiment_id)
@@ -30,14 +30,13 @@ def list_patterns(table: str, region: str, experiment_id: str | None) -> None:
         click.echo(p)
 
 
-@denormalize_tags.command("add")
-@click.option("--table", required=True, help="DynamoDB table name")
-@click.option("--region", required=True, help="AWS region")
+@tag.command("add")
 @click.option("--experiment-id", default=None, help="Add per-experiment pattern")
 @click.argument("pattern")
-def add_pattern(table: str, region: str, experiment_id: str | None, pattern: str) -> None:
+@pass_context
+def add(ctx: CliContext, experiment_id: str | None, pattern: str) -> None:
     """Add a denormalization pattern."""
-    ddb_table = DynamoDBTable(table_name=table, region=region)
+    ddb_table = DynamoDBTable(ctx.name, ctx.region, ctx.endpoint_url)
     config = ConfigReader(table=ddb_table)
     if experiment_id:
         patterns = config.get_experiment_denormalize_patterns(experiment_id)
@@ -52,14 +51,13 @@ def add_pattern(table: str, region: str, experiment_id: str | None, pattern: str
     click.echo(f"Added pattern: {pattern}")
 
 
-@denormalize_tags.command("remove")
-@click.option("--table", required=True, help="DynamoDB table name")
-@click.option("--region", required=True, help="AWS region")
+@tag.command("remove")
 @click.option("--experiment-id", default=None, help="Remove per-experiment pattern")
 @click.argument("pattern")
-def remove_pattern(table: str, region: str, experiment_id: str | None, pattern: str) -> None:
+@pass_context
+def remove(ctx: CliContext, experiment_id: str | None, pattern: str) -> None:
     """Remove a denormalization pattern."""
-    ddb_table = DynamoDBTable(table_name=table, region=region)
+    ddb_table = DynamoDBTable(ctx.name, ctx.region, ctx.endpoint_url)
     config = ConfigReader(table=ddb_table)
     if experiment_id:
         patterns = config.get_experiment_denormalize_patterns(experiment_id)
@@ -74,27 +72,30 @@ def remove_pattern(table: str, region: str, experiment_id: str | None, pattern: 
     click.echo(f"Removed pattern: {pattern}")
 
 
-@denormalize_tags.command("backfill")
-@click.option("--table", required=True, help="DynamoDB table name")
-@click.option("--region", required=True, help="AWS region")
+@tag.command("backfill")
 @click.option("--experiment-id", default=None, help="Backfill only this experiment")
-def backfill(table: str, region: str, experiment_id: str | None) -> None:
+@pass_context
+def backfill(ctx: CliContext, experiment_id: str | None) -> None:
     """Backfill denormalized tags onto META items.
 
     Scans tag items, matches against configured patterns, and updates META items
     with denormalized tag attributes.
     """
+    import boto3
+
     from mlflow_dynamodbstore.dynamodb.schema import PK_CONFIG  # noqa: F401
 
-    ddb_table = DynamoDBTable(table_name=table, region=region)
+    ddb_table = DynamoDBTable(ctx.name, ctx.region, ctx.endpoint_url)
     config = ConfigReader(table=ddb_table)
 
     # Query all tag items (SK begins with "TAG#")
     # We need to scan since tags are spread across experiments
-    import boto3
-
-    resource = boto3.resource("dynamodb", region_name=region)
-    raw_table = resource.Table(table)
+    resource = boto3.resource(
+        "dynamodb",
+        region_name=ctx.region,
+        endpoint_url=ctx.endpoint_url,
+    )
+    raw_table = resource.Table(ctx.name)
 
     scan_kwargs: dict[str, object] = {
         "FilterExpression": "begins_with(SK, :tag_prefix)",

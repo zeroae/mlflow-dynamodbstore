@@ -21,7 +21,7 @@ dependencies = [
     "boto3",
     "python-ulid>=3.0.0",
     "snowballstemmer",
-    "click>=8.0.0",
+    "cloup>=3.0.0",
 ]
 
 [project.scripts]
@@ -54,6 +54,7 @@ dev = [
     "requests",
     "pre-commit",
     "diff-cover",
+    "chardet<6",  # requests hardcodes chardet<6 in its compatibility check
     "flask-wtf>=1.2.2",
 ]
 docs = [
@@ -90,12 +91,16 @@ module = ["mlflow_dynamodbstore._version"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["ulid.*", "snowballstemmer.*", "moto.*", "boto3", "boto3.*", "botocore", "botocore.*"]
+module = ["ulid.*", "snowballstemmer.*", "moto.*", "boto3", "boto3.*", "botocore", "botocore.*", "cloup", "cloup.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["mlflow.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["mlflow_dynamodbstore.cli", "mlflow_dynamodbstore.cli.*"]
+disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
 module = ["mlflow_dynamodbstore.tracking_store", "mlflow_dynamodbstore.registry_store", "mlflow_dynamodbstore.workspace_store"]
