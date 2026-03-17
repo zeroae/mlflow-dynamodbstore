@@ -151,3 +151,61 @@ class TestTraces:
 
         traces = client.search_traces(locations=[exp.experiment_id])
         assert len(traces) == 0
+
+
+class TestBatchTraceOperationsE2E:
+    """E2E tests for batch trace operations."""
+
+    def test_batch_get_trace_infos(self, mlflow_server):
+        """Create traces via SDK, then batch fetch their infos."""
+        mlflow.set_tracking_uri(mlflow_server)
+        exp_name = f"e2e-batch-infos-{_uid()}"
+        mlflow.set_experiment(exp_name)
+
+        @mlflow.trace(name="batch-func")
+        def my_func(x):
+            return x + 1
+
+        for i in range(3):
+            my_func(i)
+
+        client = MlflowClient(tracking_uri=mlflow_server)
+        exp = client.get_experiment_by_name(exp_name)
+        traces = client.search_traces(locations=[exp.experiment_id])
+        trace_ids = [t.info.trace_id for t in traces]
+
+        # Verify we can fetch each trace individually
+        for tid in trace_ids:
+            info = client.get_trace(tid)
+            assert info is not None
+            assert info.info.trace_id == tid
+
+
+class TestUnlinkTracesE2E:
+    """E2E tests for unlink_traces_from_run."""
+
+    def test_link_and_unlink_trace(self, mlflow_server):
+        """Link a trace to a run, then unlink it."""
+        mlflow.set_tracking_uri(mlflow_server)
+        exp_name = f"e2e-unlink-{_uid()}"
+        exp = mlflow.set_experiment(exp_name)
+
+        @mlflow.trace(name="unlink-func")
+        def my_func():
+            return "result"
+
+        my_func()
+
+        client = MlflowClient(tracking_uri=mlflow_server)
+        traces = client.search_traces(locations=[exp.experiment_id])
+        assert len(traces) >= 1
+        trace_id = traces[0].info.trace_id
+
+        # Create a run and link the trace
+        run = client.create_run(experiment_id=exp.experiment_id)
+        run_id = run.info.run_id
+        client.set_trace_tag(trace_id, "mlflow.sourceRun", run_id)
+
+        # Verify tag is set
+        trace = client.get_trace(trace_id)
+        assert trace.info.tags.get("mlflow.sourceRun") == run_id

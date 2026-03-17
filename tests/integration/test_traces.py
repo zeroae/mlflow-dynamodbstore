@@ -391,3 +391,181 @@ class TestTraceLifecycle:
         # META should be gone
         meta_after = tracking_store._table.get_item(pk=pk, sk="T#tr-client")
         assert meta_after is None
+
+
+class TestBatchTraceOperations:
+    """Integration tests for batch_get_traces and batch_get_trace_infos."""
+
+    def test_batch_get_trace_infos_round_trip(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-batch-infos", artifact_location="s3://b")
+        trace_ids = []
+        for i in range(3):
+            tid = f"tr-int-batch-{i}"
+            tracking_store.start_trace(_make_trace_info(exp_id, tid, request_time=1000 + i))
+            trace_ids.append(tid)
+
+        result = tracking_store.batch_get_trace_infos(trace_ids)
+        assert len(result) == 3
+        assert {t.trace_id for t in result} == set(trace_ids)
+
+    def test_batch_get_traces_without_spans(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-batch-traces", artifact_location="s3://b")
+        tracking_store.start_trace(_make_trace_info(exp_id, "tr-int-bt-1"))
+
+        result = tracking_store.batch_get_traces(["tr-int-bt-1"])
+        assert len(result) == 1
+        assert result[0].info.trace_id == "tr-int-bt-1"
+        assert result[0].data.spans == []
+
+    def test_batch_nonexistent_excluded(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-batch-ne", artifact_location="s3://b")
+        tracking_store.start_trace(_make_trace_info(exp_id, "tr-int-exists"))
+
+        result = tracking_store.batch_get_trace_infos(["tr-int-exists", "tr-int-ghost"])
+        assert len(result) == 1
+
+
+class TestSessionTracker:
+    """Integration tests for session tracker and find_completed_sessions."""
+
+    def test_session_tracker_created(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-sessions", artifact_location="s3://b")
+        tracking_store.start_trace(
+            _make_trace_info(
+                exp_id,
+                "tr-int-sess-1",
+                request_time=1000,
+                trace_metadata={
+                    TraceTagKey.TRACE_NAME: "my-trace",
+                    "mlflow.traceSession": "session-int-1",
+                },
+            )
+        )
+
+        pk = f"EXP#{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-int-1")
+        assert item is not None
+        assert item["session_id"] == "session-int-1"
+
+    def test_find_completed_sessions_round_trip(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-find-sess", artifact_location="s3://b")
+        for i, ts in enumerate([1000, 2000, 3000]):
+            tracking_store.start_trace(
+                _make_trace_info(
+                    exp_id,
+                    f"tr-int-fs-{i}",
+                    request_time=ts,
+                    trace_metadata={
+                        TraceTagKey.TRACE_NAME: "my-trace",
+                        "mlflow.traceSession": "sess-find-1",
+                    },
+                )
+            )
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=0,
+            max_last_trace_timestamp_ms=9999,
+        )
+        assert len(result) == 1
+        assert result[0].session_id == "sess-find-1"
+        assert result[0].first_trace_timestamp_ms == 1000
+        assert result[0].last_trace_timestamp_ms == 3000
+
+
+class TestLinkUnlinkOperations:
+    """Integration tests for link/unlink operations."""
+
+    def test_link_prompts_to_trace(self, tracking_store):
+        import json
+
+        from mlflow.entities.model_registry import PromptVersion
+
+        exp_id = tracking_store.create_experiment("test-link-prompts", artifact_location="s3://b")
+        tracking_store.start_trace(_make_trace_info(exp_id, "tr-int-lp-1"))
+
+        pv = PromptVersion(name="my-prompt", version=1, template="hello {name}")
+        tracking_store.link_prompts_to_trace("tr-int-lp-1", [pv])
+
+        fetched = tracking_store.get_trace_info("tr-int-lp-1")
+        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        assert len(versions) == 1
+        assert versions[0]["name"] == "my-prompt"
+
+    def test_unlink_traces_from_run(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-unlink", artifact_location="s3://b")
+        base_time = int(time.time() * 1000)
+        tracking_store.start_trace(_make_trace_info(exp_id, "tr-int-ul-1", request_time=base_time))
+
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=base_time,
+            tags=[],
+            run_name="test-run",
+        )
+        run_id = run.info.run_id
+
+        tracking_store.link_traces_to_run(["tr-int-ul-1"], run_id)
+        fetched = tracking_store.get_trace_info("tr-int-ul-1")
+        assert TraceMetadataKey.SOURCE_RUN in fetched.trace_metadata
+
+        tracking_store.unlink_traces_from_run(["tr-int-ul-1"], run_id)
+        fetched = tracking_store.get_trace_info("tr-int-ul-1")
+        assert TraceMetadataKey.SOURCE_RUN not in fetched.trace_metadata
+
+
+class TestLogSpansIntegration:
+    """Integration tests for log_spans."""
+
+    def test_log_spans_creates_item(self, tracking_store):
+        import json
+        from unittest.mock import MagicMock
+
+        exp_id = tracking_store.create_experiment("test-log-spans", artifact_location="s3://b")
+        tracking_store.start_trace(_make_trace_info(exp_id, "tr-int-ls-1"))
+
+        span = MagicMock()
+        span.trace_id = "tr-int-ls-1"
+        span.to_dict.return_value = {
+            "name": "root",
+            "trace_id": "tr-int-ls-1",
+            "span_id": "span-1",
+        }
+        tracking_store.log_spans(exp_id, [span])
+
+        pk = f"EXP#{exp_id}"
+        cached = tracking_store._table.get_item(pk=pk, sk="T#tr-int-ls-1#SPANS")
+        assert cached is not None
+        data = json.loads(cached["data"])
+        assert len(data) == 1
+        assert data[0]["name"] == "root"
+
+
+class TestCorrelationIntegration:
+    """Integration tests for calculate_trace_filter_correlation."""
+
+    def test_basic_correlation(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-corr", artifact_location="s3://b")
+        base_time = int(time.time() * 1000)
+
+        # 3 traces: 2 with tag.a=1, 2 with tag.b=2, 1 with both
+        tracking_store.start_trace(
+            _make_trace_info(exp_id, "tr-c-0", request_time=base_time, tags={"a": "1", "b": "2"})
+        )
+        tracking_store.start_trace(
+            _make_trace_info(exp_id, "tr-c-1", request_time=base_time + 1, tags={"a": "1"})
+        )
+        tracking_store.start_trace(
+            _make_trace_info(exp_id, "tr-c-2", request_time=base_time + 2, tags={"b": "2"})
+        )
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.a = '1'",
+            filter_string2="tag.b = '2'",
+        )
+        assert result.total_count == 3
+        assert result.filter1_count == 2
+        assert result.filter2_count == 2
+        assert result.joint_count == 1
