@@ -95,13 +95,40 @@ Every store method maps to Query or GetItem — never Scan.
 
 ### Filter String Strategy
 
+Follows the same `parse → plan → execute` pattern as run search (`parse_run_filter` → `plan_run_query` → `execute_query`) and trace search (`parse_trace_filter` → `plan_trace_query` → `execute_trace_query`) in `dynamodb/search.py`.
+
+**Three new functions in `dynamodb/search.py`:**
+
+**`parse_logged_model_filter(filter_string)`**
+- Delegates to MLflow's `SearchLoggedModelsUtils.parse_search_filter(filter_string)`.
+- Returns `list[FilterPredicate]` with field_type in `{attribute, metric, param, tag}`.
+- Valid attribute keys: `name`, `model_id`, `model_type`, `status`, `source_run_id`, `creation_timestamp`, `last_updated_timestamp`.
+
+**`plan_logged_model_query(predicates, order_by, datasets)`**
+- Returns a `QueryPlan` with the optimal DynamoDB execution strategy.
+- Strategy selection priority:
+  1. **RANK** — metric in `order_by` (global or dataset-scoped)
+  2. **LSI3** — `status=` filter predicate
+  3. **LSI4** — `order_by name`
+  4. **LSI2** — `order_by creation_timestamp` or default
+  5. **Default** — LSI1 lifecycle filter (`active#`)
+- Metric filter predicates (e.g., `metrics.accuracy > 0.5`) are classified as `rank_filters` on the QueryPlan, executed as RANK range queries and intersected with the primary result set.
+- Remaining predicates become `post_filters` (attribute checks on META, param/tag sub-item lookups).
+
+**`execute_logged_model_query(table, plan, pk, max_results, page_token, predicates)`**
+- Dispatches to `_execute_lm_rank`, `_execute_lm_index`, etc. based on `plan.strategy`.
+- For RANK strategy: queries `RANK#lm#<metric>#` or `RANK#lmd#<metric>#<ds>#<digest>#`, extracts model_ids, batch-gets META items.
+- For index strategy: queries the chosen LSI with `SK begins_with LM#` filter to exclude non-model items.
+- Applies `plan.rank_filters`: queries RANK items with range conditions, intersects with candidate model_ids.
+- Applies `plan.post_filters`: attribute filters against META fields, param/tag sub-item lookups per candidate.
+- Pagination: offset-based with `encode_page_token`/`decode_page_token`.
+- Returns `(list[dict], next_page_token)`.
+
+**QueryPlan extensions:**
+- Add `rank_filters: list[FilterPredicate]` field — metric predicates that use RANK range queries.
+- Add `datasets: list[dict] | None` field — dataset context for scoping RANK queries.
+
 `search_logged_models` supports filter expressions like `name = 'foo'`, `metrics.accuracy > 0.9`, `params.lr = '0.01'`, `tags.env = 'prod'`.
-
-**Attribute filters** (name, status, model_type, source_run_id): applied in-memory against denormalized META fields. For status, can use LSI3 to pre-filter.
-
-**Metrics filters**: use RANK items for DynamoDB-native range queries. When `filter_string` contains `metrics.accuracy > 0.5`, query `RANK#lm#accuracy#` with SK range condition (AP14). With dataset scope via the `datasets` parameter, query `RANK#lmd#accuracy#<dataset_name>#<dataset_digest>#` (AP15). The RANK query returns model_ids directly — no need to load metric sub-items per model.
-
-**Params/Tags filters**: require loading sub-items per candidate model, applied in-memory. This matches the existing `search_traces` approach for span-level filters.
 
 ### RANK Items for Logged Model Metrics
 
@@ -180,21 +207,14 @@ This matches the existing `delete_run` pattern exactly.
 ### Search
 
 **`search_logged_models(experiment_ids, filter_string, datasets, max_results, order_by, page_token)`**
-1. Parse filter_string into attribute/metric/param/tag predicates. Parse order_by.
-2. **If order_by is a metric** (e.g., `metrics.accuracy`):
-   a. For each experiment_id: query RANK items (`SK begins_with RANK#lm#<metric>#` or `RANK#lmd#<metric>#<ds_name>#<ds_digest>#`). This returns model_ids pre-sorted by metric value.
-   b. Batch-get META items for the returned model_ids.
-   c. Exclude soft-deleted models (lifecycle_stage=deleted).
-3. **Otherwise** (order_by is an attribute like creation_time, name):
-   a. For each experiment_id: query META items using appropriate LSI (LSI2 for creation_time, LSI4 for name), filtering `SK begins_with LM#` to exclude non-model items.
-   b. Exclude soft-deleted models.
-4. **If filter includes metric predicates** (e.g., `metrics.accuracy > 0.5`):
-   a. Query RANK items with range condition (AP14/AP15) to get matching model_ids.
-   b. Intersect with candidate set from step 2 or 3.
-5. For attribute predicates: apply in-memory against META fields.
-6. For param/tag predicates: lazy-load sub-items per candidate model, apply in-memory.
-7. Apply pagination: cursor-based token encoding model_id of last result.
-8. Return `PagedList[LoggedModel]`.
+1. `predicates = parse_logged_model_filter(filter_string)`
+2. `plan = plan_logged_model_query(predicates, order_by, datasets)`
+3. For each experiment_id:
+   a. `pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"`
+   b. `items, token = execute_logged_model_query(table, plan, pk, max_results, page_token, predicates)`
+4. Merge results across experiments (for multi-experiment queries).
+5. Convert items to `LoggedModel` entities (query tags, params, metrics sub-items per model).
+6. Return `PagedList[LoggedModel]`.
 
 ### Tags
 
@@ -273,9 +293,16 @@ No new partition key prefixes needed — logged models reuse the existing `EXP#<
 
 ### E2E Tests (full server)
 
-- Logged model CRUD via HTTP endpoints
-- Search logged models returns (currently 500s → should return empty list)
-- Verify experiment overview page loads without 500s
+- Logged model CRUD via HTTP endpoints: create → get → finalize → delete
+- **Search validation** (the primary goal — these are the queries the UI sends):
+  - `search_logged_models(experiment_ids=[exp_id])` returns empty list (no 500)
+  - Create multiple models → search returns them all
+  - Search with `filter_string="name = 'model-a'"` returns only matching model
+  - Search with `filter_string="status = 'READY'"` returns only finalized models
+  - Search with `order_by=[{"field_name": "creation_timestamp", "ascending": False}]` returns models in correct order
+  - Search across multiple experiment_ids returns models from both
+- Tag operations via HTTP endpoints
+- Verify experiment overview page loads without 500s (the original bug)
 
 ### Coverage
 

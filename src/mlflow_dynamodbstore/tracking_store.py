@@ -21,6 +21,9 @@ from mlflow.entities import (
     Experiment,
     ExperimentTag,
     InputTag,
+    LoggedModel,
+    LoggedModelParameter,
+    LoggedModelTag,
     Metric,
     Param,
     Run,
@@ -35,6 +38,7 @@ from mlflow.entities import (
     TraceState,
     ViewType,
 )
+from mlflow.entities.logged_model_status import LoggedModelStatus
 from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
@@ -63,6 +67,7 @@ from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_CLIENT_PREFIX,
     GSI1_DS_EXP_PREFIX,
+    GSI1_LM_PREFIX,
     GSI1_PK,
     GSI1_RUN_PREFIX,
     GSI1_SCOR_PREFIX,
@@ -102,9 +107,15 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_FTS_REV_PREFIX,
     SK_INPUT_PREFIX,
     SK_INPUT_TAG_SUFFIX,
+    SK_LM_METRIC_PREFIX,
+    SK_LM_PARAM_PREFIX,
+    SK_LM_PREFIX,
+    SK_LM_TAG_PREFIX,
     SK_METRIC_HISTORY_PREFIX,
     SK_METRIC_PREFIX,
     SK_PARAM_PREFIX,
+    SK_RANK_LM_PREFIX,
+    SK_RANK_LMD_PREFIX,
     SK_RANK_PREFIX,
     SK_RUN_PREFIX,
     SK_SCORER_OSCFG_SUFFIX,
@@ -239,6 +250,50 @@ def _item_to_run(
         run_inputs = RunInputs(dataset_inputs=dataset_inputs)
 
     return Run(run_info=info, run_data=data, run_inputs=run_inputs)
+
+
+def _item_to_logged_model(
+    item: dict[str, Any],
+    tags: list[dict[str, Any]] | None = None,
+    params: list[dict[str, Any]] | None = None,
+    metrics: list[dict[str, Any]] | None = None,
+) -> LoggedModel:
+    """Convert DynamoDB items to a LoggedModel entity."""
+    tag_dict = {t["key"]: t["value"] for t in (tags or [])}
+    param_dict = {p["key"]: p["value"] for p in (params or [])}
+    metric_list = [
+        Metric(
+            key=m["metric_name"],
+            value=float(m["metric_value"]),
+            timestamp=int(m.get("metric_timestamp_ms", 0)),
+            step=int(m.get("metric_step", 0)),
+        )
+        for m in (metrics or [])
+    ]
+
+    # Merge denormalized tags/params from META item with sub-items
+    meta_tags = item.get("tags", {})
+    meta_params = item.get("params", {})
+    for k, v in meta_tags.items():
+        tag_dict.setdefault(k, v)
+    for k, v in meta_params.items():
+        param_dict.setdefault(k, v)
+
+    return LoggedModel(
+        experiment_id=item["experiment_id"],
+        model_id=item["model_id"],
+        name=item.get("name", ""),
+        artifact_location=item.get("artifact_location", ""),
+        creation_timestamp=int(item.get("creation_timestamp_ms", 0)),
+        last_updated_timestamp=int(item.get("last_updated_timestamp_ms", 0)),
+        model_type=item.get("model_type") or None,
+        source_run_id=item.get("source_run_id") or None,
+        status=LoggedModelStatus(item.get("status", "READY")),
+        status_message=item.get("status_message") or None,
+        tags=tag_dict,
+        params=param_dict,
+        metrics=metric_list,
+    )
 
 
 class DynamoDBTrackingStore(AbstractStore):
@@ -946,6 +1001,415 @@ class DynamoDBTrackingStore(AbstractStore):
             input_items=input_items,
             dataset_items=dataset_items,
             input_tag_items=input_tag_items,
+        )
+
+    # ------------------------------------------------------------------
+    # Logged Model CRUD
+    # ------------------------------------------------------------------
+
+    def _resolve_logged_model_experiment(self, model_id: str) -> str:
+        """Resolve experiment_id for a logged model via GSI1."""
+        results = self._table.query(
+            pk=f"{GSI1_LM_PREFIX}{model_id}",
+            index_name="gsi1",
+            limit=1,
+        )
+        if not results:
+            raise MlflowException(
+                f"LoggedModel '{model_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        gsi1sk: str = results[0][GSI1_SK]
+        return gsi1sk.replace(PK_EXPERIMENT_PREFIX, "")
+
+    def create_logged_model(
+        self,
+        experiment_id: str,
+        name: str | None = None,
+        source_run_id: str | None = None,
+        tags: list[LoggedModelTag] | None = None,
+        params: list[LoggedModelParameter] | None = None,
+        model_type: str | None = None,
+    ) -> LoggedModel:
+        """Create a new logged model within an experiment."""
+        exp = self.get_experiment(experiment_id)
+
+        now_ms = int(time.time() * 1000)
+        model_id = f"m-{generate_ulid()}"
+        name = name or model_id
+        artifact_location = f"{exp.artifact_location}/models/{model_id}/artifacts/"
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_LM_PREFIX}{model_id}"
+
+        tag_dict = {t.key: t.value for t in (tags or [])}
+        param_dict = {p.key: p.value for p in (params or [])}
+
+        item: dict[str, Any] = {
+            "PK": pk,
+            "SK": sk,
+            "model_id": model_id,
+            "experiment_id": experiment_id,
+            "name": name,
+            "artifact_location": artifact_location,
+            "creation_timestamp_ms": now_ms,
+            "last_updated_timestamp_ms": now_ms,
+            "status": str(LoggedModelStatus.PENDING),
+            "lifecycle_stage": "active",
+            "model_type": model_type or "",
+            "source_run_id": source_run_id or "",
+            "status_message": "",
+            "tags": tag_dict,
+            "params": param_dict,
+            "workspace": self._workspace,
+            # LSI projections for filtering/sorting
+            LSI1_SK: f"active#{model_id}",
+            LSI2_SK: str(now_ms),
+            LSI3_SK: f"PENDING#{model_id}",
+            LSI4_SK: name.lower(),
+            # GSI1: reverse lookup model_id -> experiment_id
+            GSI1_PK: f"{GSI1_LM_PREFIX}{model_id}",
+            GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+        }
+
+        self._table.put_item(item, condition="attribute_not_exists(SK)")
+
+        # Write tag sub-items
+        for key, value in tag_dict.items():
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}{key}",
+                    "key": key,
+                    "value": value,
+                }
+            )
+
+        # Write param sub-items
+        for key, value in param_dict.items():
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_LM_PREFIX}{model_id}{SK_LM_PARAM_PREFIX}{key}",
+                    "key": key,
+                    "value": value,
+                }
+            )
+
+        return _item_to_logged_model(item)
+
+    def get_logged_model(self, model_id: str, allow_deleted: bool = False) -> LoggedModel:
+        """Fetch a logged model by ID."""
+        experiment_id = self._resolve_logged_model_experiment(model_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_LM_PREFIX}{model_id}"
+
+        meta = self._table.get_item(pk=pk, sk=sk)
+        if meta is None:
+            raise MlflowException(
+                f"LoggedModel '{model_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        if meta.get("lifecycle_stage") == "deleted" and not allow_deleted:
+            raise MlflowException(
+                f"LoggedModel '{model_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Load sub-items
+        tag_items = self._table.query(
+            pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}"
+        )
+        param_items = self._table.query(
+            pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}{SK_LM_PARAM_PREFIX}"
+        )
+        metric_items = self._table.query(
+            pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}{SK_LM_METRIC_PREFIX}"
+        )
+
+        return _item_to_logged_model(meta, tag_items, param_items, metric_items)
+
+    def finalize_logged_model(self, model_id: str, status: LoggedModelStatus) -> LoggedModel:
+        """Update a logged model's status (e.g. READY or FAILED)."""
+        experiment_id = self._resolve_logged_model_experiment(model_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_LM_PREFIX}{model_id}"
+        now_ms = int(time.time() * 1000)
+
+        self._table.update_item(
+            pk=pk,
+            sk=sk,
+            updates={
+                "status": str(status),
+                "last_updated_timestamp_ms": now_ms,
+                LSI3_SK: f"{status}#{model_id}",
+            },
+        )
+        return self.get_logged_model(model_id)
+
+    def delete_logged_model(self, model_id: str) -> None:
+        """Soft-delete a logged model and set TTL on all related items."""
+        experiment_id = self._resolve_logged_model_experiment(model_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_LM_PREFIX}{model_id}"
+        now_ms = int(time.time() * 1000)
+
+        ttl_seconds = self._config.get_soft_deleted_ttl_seconds()
+        ttl_value = int(time.time()) + ttl_seconds if ttl_seconds is not None else None
+
+        updates: dict[str, Any] = {
+            "lifecycle_stage": "deleted",
+            "last_updated_timestamp_ms": now_ms,
+            LSI1_SK: f"deleted#{model_id}",
+        }
+        if ttl_value is not None:
+            updates["ttl"] = ttl_value
+        self._table.update_item(pk=pk, sk=sk, updates=updates)
+
+        # Set TTL on child items (tags, params, metrics)
+        children = self._table.query(pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}#")
+        for child in children:
+            if ttl_value is not None:
+                self._table.update_item(pk=pk, sk=child["SK"], updates={"ttl": ttl_value})
+
+        # Set TTL on RANK items built from metric sub-items
+        metric_children = [c for c in children if SK_LM_METRIC_PREFIX in c["SK"]]
+        for mc in metric_children:
+            inv_value = self._invert_metric_value(float(mc["metric_value"]))
+            rank_sk = f"{SK_RANK_LM_PREFIX}{mc['metric_name']}#{inv_value}#{model_id}"
+            if ttl_value is not None:
+                self._table.update_item(pk=pk, sk=rank_sk, updates={"ttl": ttl_value})
+            if mc.get("dataset_name") and mc.get("dataset_digest"):
+                rank_sk_ds = (
+                    f"{SK_RANK_LMD_PREFIX}{mc['metric_name']}#"
+                    f"{mc['dataset_name']}#{mc['dataset_digest']}#{inv_value}#{model_id}"
+                )
+                if ttl_value is not None:
+                    self._table.update_item(pk=pk, sk=rank_sk_ds, updates={"ttl": ttl_value})
+
+    def set_logged_model_tags(self, model_id: str, tags: list[LoggedModelTag]) -> None:
+        """Set (or overwrite) tags on a logged model."""
+        experiment_id = self._resolve_logged_model_experiment(model_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        now_ms = int(time.time() * 1000)
+
+        tag_dict: dict[str, str] = {}
+        for tag in tags:
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}{tag.key}",
+                    "key": tag.key,
+                    "value": tag.value,
+                }
+            )
+            tag_dict[tag.key] = tag.value
+
+        # Update denormalized tags on META item
+        meta = self._table.get_item(pk=pk, sk=f"{SK_LM_PREFIX}{model_id}") or {}
+        existing_tags: dict[str, str] = meta.get("tags", {})
+        existing_tags.update(tag_dict)
+        self._table.update_item(
+            pk=pk,
+            sk=f"{SK_LM_PREFIX}{model_id}",
+            updates={"tags": existing_tags, "last_updated_timestamp_ms": now_ms},
+        )
+
+    def delete_logged_model_tag(self, model_id: str, key: str) -> None:
+        """Delete a tag from a logged model."""
+        experiment_id = self._resolve_logged_model_experiment(model_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        now_ms = int(time.time() * 1000)
+
+        self._table.delete_item(pk=pk, sk=f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}{key}")
+
+        # Update denormalized tags on META item
+        meta = self._table.get_item(pk=pk, sk=f"{SK_LM_PREFIX}{model_id}") or {}
+        existing_tags: dict[str, str] = meta.get("tags", {})
+        existing_tags.pop(key, None)
+        self._table.update_item(
+            pk=pk,
+            sk=f"{SK_LM_PREFIX}{model_id}",
+            updates={"tags": existing_tags, "last_updated_timestamp_ms": now_ms},
+        )
+
+    def record_logged_model(self, run_id: str, mlflow_model: dict[str, Any]) -> None:
+        """Append a model info dict to the run's mlflow.loggedModels tag."""
+        import json as _json
+
+        run = self.get_run(run_id)
+        experiment_id = run.info.experiment_id
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        tag_sk = f"{SK_RUN_PREFIX}{run_id}{SK_TAG_PREFIX}mlflow.loggedModels"
+        existing = self._table.get_item(pk=pk, sk=tag_sk)
+        models = _json.loads(existing["value"]) if existing else []
+        models.append(mlflow_model)
+        serialized = _json.dumps(models)
+
+        self._table.put_item(
+            {
+                "PK": pk,
+                "SK": tag_sk,
+                "key": "mlflow.loggedModels",
+                "value": serialized,
+            }
+        )
+
+        # Update denormalized tags on run META
+        run_sk = f"{SK_RUN_PREFIX}{run_id}"
+        meta = self._table.get_item(pk=pk, sk=run_sk)
+        run_tags = meta.get("tags", {}) if meta else {}
+        run_tags["mlflow.loggedModels"] = serialized
+        self._table.update_item(pk=pk, sk=run_sk, updates={"tags": run_tags})
+
+    def search_logged_models(
+        self,
+        experiment_ids: list[str],
+        filter_string: str | None = None,
+        datasets: list[dict[str, Any]] | None = None,
+        max_results: int | None = None,
+        order_by: list[dict[str, Any]] | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[LoggedModel]:
+        """Search logged models across experiments using parse/plan/execute pipeline.
+
+        Collects all matching items from every experiment first, then paginates
+        the merged result using an offset-based token.
+        """
+        from mlflow_dynamodbstore.dynamodb.pagination import decode_page_token, encode_page_token
+        from mlflow_dynamodbstore.dynamodb.search import (
+            execute_logged_model_query,
+            parse_logged_model_filter,
+            plan_logged_model_query,
+        )
+
+        max_results = max_results or 100
+        predicates = parse_logged_model_filter(filter_string)
+        plan = plan_logged_model_query(predicates, order_by, datasets)
+
+        # Collect all matching items across experiments (pagination applied later)
+        all_items: list[dict[str, Any]] = []
+        for exp_id in experiment_ids:
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            items = execute_logged_model_query(self._table, plan, pk, predicates)
+            all_items.extend(items)
+
+        # Convert items to LoggedModel entities
+        models: list[LoggedModel] = []
+        for item in all_items:
+            exp_id = item["experiment_id"]
+            model_id = item["model_id"]
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            tag_items = self._table.query(
+                pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}"
+            )
+            param_items = self._table.query(
+                pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}{SK_LM_PARAM_PREFIX}"
+            )
+            metric_items = self._table.query(
+                pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}{SK_LM_METRIC_PREFIX}"
+            )
+            models.append(_item_to_logged_model(item, tag_items, param_items, metric_items))
+
+        # Apply offset-based pagination across the merged result
+        token_data = decode_page_token(page_token)
+        offset = token_data.get("offset", 0) if token_data else 0
+        page = models[offset : offset + max_results]
+        has_more = len(models) > offset + max_results
+        next_token = encode_page_token({"offset": offset + max_results}) if has_more else None
+
+        return PagedList(page, next_token)
+
+    @staticmethod
+    def _invert_metric_value(value: float) -> str:
+        """Invert a metric value for descending sort in DynamoDB RANK items."""
+        max_val = 9999999999.9999
+        inv = max_val - value
+        return f"{inv:020.4f}"
+
+    def _log_logged_model_metric(
+        self,
+        experiment_id: str,
+        model_id: str,
+        metric_name: str,
+        metric_value: float,
+        metric_timestamp_ms: int,
+        metric_step: int,
+        run_id: str,
+        dataset_name: str | None = None,
+        dataset_digest: str | None = None,
+    ) -> None:
+        """Write a metric sub-item and RANK items for a logged model."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        metric_sk = f"{SK_LM_PREFIX}{model_id}{SK_LM_METRIC_PREFIX}{metric_name}#{run_id}"
+
+        # Check for existing metric to delete old RANK item(s) first
+        existing = self._table.get_item(pk=pk, sk=metric_sk)
+        if existing is not None:
+            old_inv = self._invert_metric_value(float(existing["metric_value"]))
+            old_rank_sk = f"{SK_RANK_LM_PREFIX}{metric_name}#{old_inv}#{model_id}"
+            self._table.delete_item(pk=pk, sk=old_rank_sk)
+            if existing.get("dataset_name") and existing.get("dataset_digest"):
+                old_rank_ds = (
+                    f"{SK_RANK_LMD_PREFIX}{metric_name}#"
+                    f"{existing['dataset_name']}#{existing['dataset_digest']}#{old_inv}#{model_id}"
+                )
+                self._table.delete_item(pk=pk, sk=old_rank_ds)
+
+        # Write metric sub-item
+        metric_item: dict[str, Any] = {
+            "PK": pk,
+            "SK": metric_sk,
+            "metric_name": metric_name,
+            "metric_value": Decimal(str(metric_value)),
+            "metric_timestamp_ms": metric_timestamp_ms,
+            "metric_step": metric_step,
+            "run_id": run_id,
+            "model_id": model_id,
+        }
+        if dataset_name:
+            metric_item["dataset_name"] = dataset_name
+        if dataset_digest:
+            metric_item["dataset_digest"] = dataset_digest
+        self._table.put_item(metric_item)
+
+        # Write global RANK item (descending by inverted value)
+        inv_value = self._invert_metric_value(metric_value)
+        self._table.put_item(
+            {
+                "PK": pk,
+                "SK": f"{SK_RANK_LM_PREFIX}{metric_name}#{inv_value}#{model_id}",
+                "model_id": model_id,
+                "metric_name": metric_name,
+                "metric_value": Decimal(str(metric_value)),
+            }
+        )
+
+        # Write dataset-scoped RANK item
+        if dataset_name and dataset_digest:
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": (
+                        f"{SK_RANK_LMD_PREFIX}{metric_name}#"
+                        f"{dataset_name}#{dataset_digest}#{inv_value}#{model_id}"
+                    ),
+                    "model_id": model_id,
+                    "metric_name": metric_name,
+                    "metric_value": Decimal(str(metric_value)),
+                    "dataset_name": dataset_name,
+                    "dataset_digest": dataset_digest,
+                }
+            )
+
+        # Update last_updated_timestamp_ms on the model meta item
+        now_ms = int(time.time() * 1000)
+        self._table.update_item(
+            pk=pk,
+            sk=f"{SK_LM_PREFIX}{model_id}",
+            updates={"last_updated_timestamp_ms": now_ms},
         )
 
     def update_run_info(
