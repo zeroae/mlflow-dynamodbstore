@@ -4,15 +4,14 @@ Workspaces provide logical isolation of experiments, models, and artifacts withi
 
 ## Enabling Workspaces
 
-Set the environment variable before starting the server:
+Pass the `--enable-workspaces` flag when starting the server:
 
 ```bash
-export MLFLOW_ENABLE_WORKSPACES=1
-
 mlflow server \
   --app-name dynamodb-auth \
   --backend-store-uri dynamodb://us-east-1/my-table \
-  --default-artifact-root s3://my-bucket/mlflow-artifacts
+  --default-artifact-root s3://my-bucket/mlflow-artifacts \
+  --enable-workspaces
 ```
 
 !!! note
