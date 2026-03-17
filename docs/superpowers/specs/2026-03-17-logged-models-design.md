@@ -8,7 +8,7 @@ Logged Models are experiment-scoped entities that represent ML models created du
 
 ## Scope
 
-10 store methods:
+8 store methods requiring implementation:
 
 | Method | Category |
 |--------|----------|
@@ -19,13 +19,17 @@ Logged Models are experiment-scoped entities that represent ML models created du
 | `search_logged_models` | Search |
 | `set_logged_model_tags` | Tags |
 | `delete_logged_model_tag` | Tags |
-| `log_logged_model_params` | Params |
 | `record_logged_model` | Run association |
-| `set_model_versions_tags` | Registry link |
+
+**Not overridden** (concrete implementations in `AbstractStore` that delegate to methods above):
+- `set_model_versions_tags` — reads the existing `mlflow.modelVersions` tag (JSON array), appends the new name/version pair, writes back via `set_logged_model_tags`. Works once `get_logged_model` and `set_logged_model_tags` are implemented.
+- `log_logged_model_params` — not a separate store method; params are passed to `create_logged_model` via the `params` argument.
 
 ## DynamoDB Item Design
 
 Logged Models are experiment-scoped (each belongs to exactly one experiment), so they live under the existing `EXP#<exp_id>` partition — same pattern as runs and traces.
+
+**Note on original design spec divergence**: The original design spec (2026-03-15) placed logged models under runs (`R#<ulid>#LM#<model_id>`), reflecting MLflow V2's run-scoped model tracking. MLflow V3 introduced `LoggedModel` as a standalone experiment-scoped entity with its own lifecycle, status, and independent CRUD — no longer nested under runs. This spec uses `LM#<model_id>` directly under `EXP#<exp_id>` to match the V3 data model.
 
 ### Item Types
 
@@ -117,7 +121,9 @@ RANK items are materialized sort/filter indexes for metric values, following the
 2. A global RANK item (`RANK#lm#<metric_name>#<inv_value>#<model_id>`).
 3. If the metric has dataset_name + dataset_digest: a dataset-scoped RANK item (`RANK#lmd#...`).
 
-Only the **latest value** per (metric_name, model_id) is kept in RANK items — the previous RANK item is deleted and replaced on each update. For dataset-scoped RANK items, the key is (metric_name, dataset_name, dataset_digest, model_id).
+Only the **latest value** per (metric_name, model_id) is kept in RANK items — the previous RANK item is deleted and replaced on each update. The previous RANK SK is reconstructed from the existing metric sub-item's value before overwriting. For dataset-scoped RANK items, the key is (metric_name, dataset_name, dataset_digest, model_id).
+
+**Note**: The metric write path (metric sub-item + RANK items) is implemented as an internal method in the store. The higher-level orchestration that calls it (evaluation runs logging metrics on models) is out of scope for Phase 1b, but the store method to write a metric on a logged model is in scope.
 
 **Soft delete**: RANK items receive TTL along with all other children on `delete_logged_model`. They are excluded from search results by cross-referencing the model's lifecycle_stage against META items.
 
@@ -165,9 +171,9 @@ Only the **latest value** per (metric_name, model_id) is kept in RANK items — 
 2. Compute `ttl = now + soft_deleted_retention_days`.
 3. UpdateItem on META: set lifecycle_stage=deleted, ttl=\<ttl\>, update LSI1 to `deleted#<model_id>`, update last_updated_timestamp_ms.
 4. Query all child items (`SK begins_with LM#<model_id>#`) — tags, params, metrics.
-5. Query RANK items (`SK begins_with RANK#lm#` and `RANK#lmd#`) that contain this model_id — extract from SK suffix.
-6. BatchWriteItem: set ttl=\<ttl\> on each child and RANK item.
-6. Soft-deleted models are excluded from `search_logged_models` by LSI1 lifecycle filter. After retention expires, DynamoDB TTL auto-deletes all items.
+5. For each child item: UpdateItem to set ttl=\<ttl\>.
+6. Construct RANK item SKs from metric sub-items found in step 4: for each metric item, build the corresponding `RANK#lm#<metric_name>#<inv_value>#<model_id>` SK (and `RANK#lmd#...` if dataset-scoped). UpdateItem on each RANK item to set ttl=\<ttl\>.
+7. Soft-deleted models are excluded from `search_logged_models` by LSI1 lifecycle filter. After retention expires, DynamoDB TTL auto-deletes all items.
 
 This matches the existing `delete_run` pattern exactly.
 
@@ -190,7 +196,7 @@ This matches the existing `delete_run` pattern exactly.
 7. Apply pagination: cursor-based token encoding model_id of last result.
 8. Return `PagedList[LoggedModel]`.
 
-### Tags & Params
+### Tags
 
 **`set_logged_model_tags(model_id, tags)`**
 1. Resolve experiment_id via GSI1.
@@ -202,11 +208,6 @@ This matches the existing `delete_run` pattern exactly.
 2. Delete item `SK=LM#<model_id>#TAG#<key>`.
 3. Remove key from denormalized tags dict on META, update last_updated_timestamp_ms.
 
-**`log_logged_model_params(model_id, params)`**
-1. Resolve experiment_id via GSI1.
-2. For each param: put item `SK=LM#<model_id>#PARAM#<key>`.
-3. Update denormalized params dict on META, update last_updated_timestamp_ms.
-
 ### Run Association
 
 **`record_logged_model(run_id, mlflow_model)`**
@@ -214,12 +215,6 @@ This matches the existing `delete_run` pattern exactly.
 2. Read the run's `mlflow.loggedModels` tag (JSON array).
 3. Append model info dict to the array.
 4. Write back the updated tag value.
-
-**`set_model_versions_tags(name, version, model_id)`**
-1. Resolve experiment_id via GSI1.
-2. Set tag `SK=LM#<model_id>#TAG#mlflow.registeredModelName` with value = name.
-3. Set tag `SK=LM#<model_id>#TAG#mlflow.registeredModelVersion` with value = version.
-4. Update denormalized tags dict on META.
 
 ## Schema Constants
 
@@ -246,7 +241,7 @@ No new partition key prefixes needed — logged models reuse the existing `EXP#<
 - **Lifecycle**: create → get → finalize (READY) → get; create → finalize (FAILED)
 - **Soft delete with TTL**: create → delete → get raises; get with allow_deleted=True succeeds; verify TTL set on META and all children
 - **Tags**: set, overwrite, delete, verify denormalized dict on META stays in sync
-- **Params**: log params on create, log additional params after create
+- **Params**: log params on create via `create_logged_model(params=...)`
 - **Search**: across multiple experiments, filter by name/status/model_type, filter by tag/param, order by creation_time (default), order by name
 - **Metrics filter via RANK**: search with `metrics.accuracy > 0.5` uses RANK item range query, not in-memory filtering
 - **Metrics order via RANK**: ORDER BY `metrics.accuracy DESC` uses RANK item prefix query
@@ -256,7 +251,7 @@ No new partition key prefixes needed — logged models reuse the existing `EXP#<
 - **Artifact location**: verify computed path matches `<exp_artifact_loc>/models/<model_id>/artifacts/`
 - **Status state machine**: PENDING → READY works, PENDING → FAILED works
 - **record_logged_model**: appends to run's `mlflow.loggedModels` tag
-- **set_model_versions_tags**: sets registry name/version tags
+- **set_model_versions_tags**: inherited from AbstractStore, works via `get_logged_model` + `set_logged_model_tags`
 - **Edge cases**: get non-existent model raises, finalize non-existent raises, delete idempotent
 
 ### Integration Tests (moto server, REST)
