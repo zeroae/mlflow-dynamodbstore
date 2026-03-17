@@ -46,6 +46,8 @@ Evaluation Datasets get their own partition family (`DS#<dataset_id>`) because t
 
 ### GSI Usage
 
+GSI1 is shared across entity types. Existing PK prefixes: `RUN#`, `TRACE#`, `CLIENT#`, `DS#`. The new `DS_EXP#` prefix is lexicographically distinct from all of these. No provisioner changes needed — all 5 GSIs already use `ALL` projection.
+
 | GSI | PK | SK | Purpose |
 |-----|----|----|---------|
 | GSI1 | `DS_EXP#<exp_id>` | `DS#<dataset_id>` | Reverse lookup: find datasets associated with an experiment. Written on Experiment Link items. |
@@ -54,7 +56,9 @@ Evaluation Datasets get their own partition family (`DS#<dataset_id>`) because t
 
 ### Record Deduplication
 
-Each record has an `input_hash` field: SHA256 of the JSON-serialized sorted inputs dict (8-char hex prefix). On upsert, query all records (`SK begins_with DS#REC#`) and filter on `input_hash` to find existing records with matching inputs. If found, update in place; otherwise insert new.
+Each record has an `input_hash` field: SHA256 of the JSON-serialized sorted inputs dict (8-char hex prefix). On upsert, query all records (`SK begins_with DS#REC#`) with a `FilterExpression` on `input_hash` to find existing records with matching inputs. If found, update in place; otherwise insert new.
+
+**Scaling note**: This approach scans all records in the partition with a server-side filter. Acceptable for Phase 1 up to ~10,000 records per dataset. A future phase may add an LSI on `input_hash` or a denormalized hash→record_id map on META if larger datasets are needed.
 
 ### Digest Computation
 
@@ -80,7 +84,7 @@ Dataset digest = first 8 chars of SHA256(`name:last_update_time`). Recomputed on
 
 **`delete_dataset(dataset_id)`**
 1. Query ALL items with `PK=DS#<dataset_id>`.
-2. Batch delete all items (META, tags, records, experiment links).
+2. Batch delete all items (META, tags, records, experiment links). Requires adding a `batch_delete(keys)` method to `DynamoDBTable` (boto3's `batch_writer` supports `delete_item`; the existing `batch_write` only wraps `put_item`).
 3. GSI entries are automatically cleaned up since they project from deleted items.
 
 **`search_datasets(experiment_ids, filter_string, max_results, order_by, page_token)`**
@@ -105,13 +109,13 @@ Dataset digest = first 8 chars of SHA256(`name:last_update_time`). Recomputed on
 6. Return `{inserted: N, updated: M}`.
 
 **`_load_dataset_records(dataset_id, max_results, page_token)`**
-1. Query `SK begins_with DS#REC#` with limit.
-2. Cursor-based pagination using `(created_time, record_id)` encoded as base64 token.
+1. Query `SK begins_with DS#REC#` with `Limit=max_results`.
+2. Cursor-based pagination using DynamoDB's native `LastEvaluatedKey`, encoded via the existing `encode_page_token({"lek": last_evaluated_key})` utility. Requires adding a paginated variant of `DynamoDBTable.query` that accepts `ExclusiveStartKey` and returns `LastEvaluatedKey` instead of auto-exhausting.
 3. Return `(list[DatasetRecord], next_page_token)`.
 
 **`delete_dataset_records(dataset_id, record_ids)`**
-1. Batch delete record items by constructing `SK=DS#REC#<record_id>` for each.
-2. Recompute profile count.
+1. Batch delete record items by constructing `SK=DS#REC#<record_id>` for each (uses `batch_delete`).
+2. Recompute profile count. Schema is not recomputed (may become stale if deleted records were the only source of a field — acceptable for Phase 1).
 3. Update META digest and last_update_time.
 4. Return count of deleted records.
 
@@ -160,10 +164,12 @@ SK_DATASET_TAG_PREFIX = "DS#TAG#"
 SK_DATASET_RECORD_PREFIX = "DS#REC#"
 SK_DATASET_EXP_PREFIX = "DS#EXP#"
 
-# GSI prefixes for datasets
-GSI1_DATASET_EXP_PREFIX = "DS_EXP#"
-GSI2_DATASET_LIST_PREFIX = "DS_LIST#"
-GSI3_DATASET_NAME_PREFIX = "DS_NAME#"
+# GSI prefixes for evaluation datasets
+# Note: GSI1_DS_PREFIX = "DS#" already exists for legacy V2 dataset items.
+# The new DS_EXP# prefix is for experiment-dataset associations (distinct purpose).
+GSI1_DS_EXP_PREFIX = "DS_EXP#"
+GSI2_DS_LIST_PREFIX = "DS_LIST#"
+GSI3_DS_NAME_PREFIX = "DS_NAME#"
 ```
 
 ## Testing Strategy
