@@ -1,13 +1,22 @@
 import boto3
+import pytest
 from moto import mock_aws
 
-from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists, get_stack_name
+from mlflow_dynamodbstore.dynamodb.provisioner import (
+    destroy_stack,
+    ensure_stack_exists,
+)
 
 
 class TestProvisioner:
     @mock_aws
-    def test_stack_name(self):
-        assert get_stack_name("my-table") == "mlflow-dynamodbstore-my-table"
+    def test_stack_name_equals_table_name(self):
+        """Stack name should be the table name directly, no prefix."""
+        ensure_stack_exists(table_name="my-table", region="us-east-1")
+        cfn = boto3.client("cloudformation", region_name="us-east-1")
+        stacks = cfn.list_stacks(StackStatusFilter=["CREATE_COMPLETE"])["StackSummaries"]
+        stack_names = [s["StackName"] for s in stacks]
+        assert "my-table" in stack_names
 
     @mock_aws
     def test_creates_stack_if_not_exists(self):
@@ -15,7 +24,7 @@ class TestProvisioner:
         cfn = boto3.client("cloudformation", region_name="us-east-1")
         stacks = cfn.list_stacks(StackStatusFilter=["CREATE_COMPLETE"])["StackSummaries"]
         stack_names = [s["StackName"] for s in stacks]
-        assert "mlflow-dynamodbstore-test-table" in stack_names
+        assert "test-table" in stack_names
 
     @mock_aws
     def test_table_created_by_stack(self):
@@ -29,21 +38,19 @@ class TestProvisioner:
         ensure_stack_exists(table_name="test-table", region="us-east-1")
         ddb = boto3.client("dynamodb", region_name="us-east-1")
         desc = ddb.describe_table(TableName="test-table")["Table"]
-        lsis = desc.get("LocalSecondaryIndexes", [])
-        assert len(lsis) == 5
+        assert len(desc.get("LocalSecondaryIndexes", [])) == 5
 
     @mock_aws
     def test_table_has_5_gsis(self):
         ensure_stack_exists(table_name="test-table", region="us-east-1")
         ddb = boto3.client("dynamodb", region_name="us-east-1")
         desc = ddb.describe_table(TableName="test-table")["Table"]
-        gsis = desc.get("GlobalSecondaryIndexes", [])
-        assert len(gsis) == 5
+        assert len(desc.get("GlobalSecondaryIndexes", [])) == 5
 
     @mock_aws
     def test_idempotent_if_stack_exists(self):
         ensure_stack_exists(table_name="test-table", region="us-east-1")
-        ensure_stack_exists(table_name="test-table", region="us-east-1")  # no error
+        ensure_stack_exists(table_name="test-table", region="us-east-1")
 
     @mock_aws
     def test_creates_default_workspace(self):
@@ -66,11 +73,25 @@ class TestProvisioner:
         assert "Item" in result
         assert result["Item"]["name"]["S"] == "Default"
 
+
+class TestDestroyStack:
     @mock_aws
-    def test_delete_stack_removes_table(self):
+    def test_destroy_removes_stack_and_table(self):
         ensure_stack_exists(table_name="test-table", region="us-east-1")
-        cfn = boto3.client("cloudformation", region_name="us-east-1")
-        cfn.delete_stack(StackName="mlflow-dynamodbstore-test-table")
+        destroy_stack(table_name="test-table", region="us-east-1")
         ddb = boto3.client("dynamodb", region_name="us-east-1")
         tables = ddb.list_tables()["TableNames"]
         assert "test-table" not in tables
+
+    @mock_aws
+    def test_destroy_retain_keeps_table(self):
+        ensure_stack_exists(table_name="test-table", region="us-east-1")
+        destroy_stack(table_name="test-table", region="us-east-1", retain=True)
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        tables = ddb.list_tables()["TableNames"]
+        assert "test-table" in tables
+
+    @mock_aws
+    def test_destroy_nonexistent_raises(self):
+        with pytest.raises(Exception):
+            destroy_stack(table_name="nope", region="us-east-1")

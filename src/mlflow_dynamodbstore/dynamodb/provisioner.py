@@ -9,15 +9,8 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
-_STACK_PREFIX = "mlflow-dynamodbstore-"
 
-
-def get_stack_name(table_name: str) -> str:
-    """Return the CloudFormation stack name for a given table."""
-    return f"{_STACK_PREFIX}{table_name}"
-
-
-def _build_template(table_name: str) -> dict[str, Any]:
+def _build_template(table_name: str, retain_table: bool = False) -> dict[str, Any]:
     """Build the CloudFormation template as a Python dict."""
     # All attribute definitions needed for keys
     attr_defs = [
@@ -58,31 +51,35 @@ def _build_template(table_name: str) -> dict[str, Any]:
             }
         )
 
+    mlflow_table_resource: dict[str, Any] = {
+        "Type": "AWS::DynamoDB::Table",
+        "Properties": {
+            "TableName": table_name,
+            "AttributeDefinitions": attr_defs,
+            "KeySchema": [
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            "BillingMode": "PAY_PER_REQUEST",
+            "LocalSecondaryIndexes": lsis,
+            "GlobalSecondaryIndexes": gsis,
+            "PointInTimeRecoverySpecification": {
+                "PointInTimeRecoveryEnabled": True,
+            },
+            "TimeToLiveSpecification": {
+                "AttributeName": "ttl",
+                "Enabled": True,
+            },
+        },
+    }
+    if retain_table:
+        mlflow_table_resource["DeletionPolicy"] = "Retain"
+
     return {
         "AWSTemplateFormatVersion": "2010-09-09",
         "Description": f"MLflow DynamoDB store table: {table_name}",
         "Resources": {
-            "MlflowTable": {
-                "Type": "AWS::DynamoDB::Table",
-                "Properties": {
-                    "TableName": table_name,
-                    "AttributeDefinitions": attr_defs,
-                    "KeySchema": [
-                        {"AttributeName": "PK", "KeyType": "HASH"},
-                        {"AttributeName": "SK", "KeyType": "RANGE"},
-                    ],
-                    "BillingMode": "PAY_PER_REQUEST",
-                    "LocalSecondaryIndexes": lsis,
-                    "GlobalSecondaryIndexes": gsis,
-                    "PointInTimeRecoverySpecification": {
-                        "PointInTimeRecoveryEnabled": True,
-                    },
-                    "TimeToLiveSpecification": {
-                        "AttributeName": "ttl",
-                        "Enabled": True,
-                    },
-                },
-            },
+            "MlflowTable": mlflow_table_resource,
         },
     }
 
@@ -193,7 +190,7 @@ def ensure_stack_exists(
 
     Idempotent: safe to call multiple times.
     """
-    stack_name = get_stack_name(table_name)
+    stack_name = table_name
 
     kwargs: dict[str, Any] = {"region_name": region}
     if endpoint_url:
@@ -210,3 +207,42 @@ def ensure_stack_exists(
         cfn.get_waiter("stack_create_complete").wait(StackName=stack_name)
 
     _seed_initial_data(table_name, region, endpoint_url)
+
+
+def destroy_stack(
+    table_name: str,
+    region: str = "us-east-1",
+    endpoint_url: str | None = None,
+    retain: bool = False,
+) -> None:
+    """Delete the CloudFormation stack for a given table.
+
+    Args:
+        table_name: The DynamoDB table name (also the stack name).
+        region: AWS region.
+        endpoint_url: Optional custom endpoint URL.
+        retain: If True, retain the DynamoDB table resource when deleting the stack.
+
+    Raises:
+        ClientError: If the stack does not exist or deletion fails.
+    """
+    kwargs: dict[str, Any] = {"region_name": region}
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+
+    cfn = boto3.client("cloudformation", **kwargs)
+
+    # Verify the stack exists first (raises if not)
+    cfn.describe_stacks(StackName=table_name)
+
+    if retain:
+        # Update the stack to set DeletionPolicy=Retain on the table, then delete
+        retain_template = _build_template(table_name, retain_table=True)
+        cfn.update_stack(
+            StackName=table_name,
+            TemplateBody=json.dumps(retain_template),
+        )
+        cfn.get_waiter("stack_update_complete").wait(StackName=table_name)
+
+    cfn.delete_stack(StackName=table_name)
+    cfn.get_waiter("stack_delete_complete").wait(StackName=table_name)
