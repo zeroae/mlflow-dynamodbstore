@@ -376,3 +376,33 @@ class TestSearchDatasetsLegacy:
         exp_id = tracking_store.create_experiment("v2-empty")
         results = tracking_store._search_datasets([exp_id])
         assert results == []
+
+    def test_search_datasets_v2_with_data(self, tracking_store):
+        """_search_datasets returns DatasetSummary from D# and DLINK# items."""
+        from mlflow.entities import Dataset, DatasetInput, InputTag
+
+        exp_id = tracking_store.create_experiment("v2-data")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="test",
+            start_time=0,
+            tags=[],
+            run_name="test-run",
+        )
+        dataset = Dataset(
+            name="my-ds",
+            digest="abc123",
+            source_type="local",
+            source="file:///data",
+        )
+        dataset_input = DatasetInput(
+            dataset=dataset,
+            tags=[InputTag(key="mlflow.data.context", value="training")],
+        )
+        tracking_store.log_inputs(run.info.run_id, [dataset_input])
+
+        results = tracking_store._search_datasets([exp_id])
+        assert len(results) >= 1
+        summary = results[0]
+        assert summary.name == "my-ds"
+        assert summary.digest == "abc123"
