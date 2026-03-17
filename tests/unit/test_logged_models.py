@@ -8,6 +8,7 @@ import pytest
 from mlflow.entities import LoggedModelParameter, LoggedModelTag
 from mlflow.entities.logged_model_status import LoggedModelStatus
 from mlflow.exceptions import MlflowException
+from mlflow.store.entities.paged_list import PagedList
 
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_LM_PREFIX,
@@ -316,3 +317,79 @@ class TestLogLoggedModelMetric:
         pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
         rank_items = tracking_store._table.query(pk=pk, sk_prefix=f"{SK_RANK_LM_PREFIX}accuracy#")
         assert len(rank_items) == 1  # Old deleted, new written
+
+
+class TestSearchLoggedModels:
+    def test_search_empty(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        result = tracking_store.search_logged_models(experiment_ids=[exp_id])
+        assert isinstance(result, PagedList)
+        assert len(result) == 0
+
+    def test_search_returns_models(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.create_logged_model(experiment_id=exp_id, name="model-a")
+        tracking_store.create_logged_model(experiment_id=exp_id, name="model-b")
+        result = tracking_store.search_logged_models(experiment_ids=[exp_id])
+        assert len(result) == 2
+
+    def test_search_excludes_deleted(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.create_logged_model(experiment_id=exp_id, name="keep")
+        m2 = tracking_store.create_logged_model(experiment_id=exp_id, name="delete-me")
+        tracking_store.delete_logged_model(m2.model_id)
+        result = tracking_store.search_logged_models(experiment_ids=[exp_id])
+        assert len(result) == 1
+        assert result[0].name == "keep"
+
+    def test_search_filter_by_name(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.create_logged_model(experiment_id=exp_id, name="model-a")
+        tracking_store.create_logged_model(experiment_id=exp_id, name="model-b")
+        result = tracking_store.search_logged_models(
+            experiment_ids=[exp_id], filter_string="name = 'model-a'"
+        )
+        assert len(result) == 1
+        assert result[0].name == "model-a"
+
+    def test_search_filter_by_status(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        m1 = tracking_store.create_logged_model(experiment_id=exp_id, name="ready")
+        tracking_store.finalize_logged_model(m1.model_id, LoggedModelStatus.READY)
+        tracking_store.create_logged_model(experiment_id=exp_id, name="pending")
+        result = tracking_store.search_logged_models(
+            experiment_ids=[exp_id], filter_string="status = 'READY'"
+        )
+        assert len(result) == 1
+        assert result[0].name == "ready"
+
+    def test_search_order_by_name(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.create_logged_model(experiment_id=exp_id, name="beta")
+        tracking_store.create_logged_model(experiment_id=exp_id, name="alpha")
+        result = tracking_store.search_logged_models(
+            experiment_ids=[exp_id],
+            order_by=[{"field_name": "name", "ascending": True}],
+        )
+        assert result[0].name == "alpha"
+        assert result[1].name == "beta"
+
+    def test_search_across_experiments(self, tracking_store):
+        exp_id1 = _create_experiment(tracking_store)
+        exp_id2 = tracking_store.create_experiment("test-exp-2", artifact_location="s3://bucket/a2")
+        tracking_store.create_logged_model(experiment_id=exp_id1, name="m1")
+        tracking_store.create_logged_model(experiment_id=exp_id2, name="m2")
+        result = tracking_store.search_logged_models(experiment_ids=[exp_id1, exp_id2])
+        assert len(result) == 2
+
+    def test_search_pagination(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        for i in range(5):
+            tracking_store.create_logged_model(experiment_id=exp_id, name=f"model-{i}")
+        page1 = tracking_store.search_logged_models(experiment_ids=[exp_id], max_results=2)
+        assert len(page1) == 2
+        assert page1.token is not None
+        page2 = tracking_store.search_logged_models(
+            experiment_ids=[exp_id], max_results=2, page_token=page1.token
+        )
+        assert len(page2) == 2

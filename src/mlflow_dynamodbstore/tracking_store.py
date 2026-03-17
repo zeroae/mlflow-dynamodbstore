@@ -1263,6 +1263,64 @@ class DynamoDBTrackingStore(AbstractStore):
         run_tags["mlflow.loggedModels"] = serialized
         self._table.update_item(pk=pk, sk=run_sk, updates={"tags": run_tags})
 
+    def search_logged_models(
+        self,
+        experiment_ids: list[str],
+        filter_string: str | None = None,
+        datasets: list[dict[str, Any]] | None = None,
+        max_results: int | None = None,
+        order_by: list[dict[str, Any]] | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[LoggedModel]:
+        """Search logged models across experiments using parse/plan/execute pipeline.
+
+        Collects all matching items from every experiment first, then paginates
+        the merged result using an offset-based token.
+        """
+        from mlflow_dynamodbstore.dynamodb.pagination import decode_page_token, encode_page_token
+        from mlflow_dynamodbstore.dynamodb.search import (
+            execute_logged_model_query,
+            parse_logged_model_filter,
+            plan_logged_model_query,
+        )
+
+        max_results = max_results or 100
+        predicates = parse_logged_model_filter(filter_string)
+        plan = plan_logged_model_query(predicates, order_by, datasets)
+
+        # Collect all matching items across experiments (pagination applied later)
+        all_items: list[dict[str, Any]] = []
+        for exp_id in experiment_ids:
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            items = execute_logged_model_query(self._table, plan, pk, predicates)
+            all_items.extend(items)
+
+        # Convert items to LoggedModel entities
+        models: list[LoggedModel] = []
+        for item in all_items:
+            exp_id = item["experiment_id"]
+            model_id = item["model_id"]
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            tag_items = self._table.query(
+                pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}"
+            )
+            param_items = self._table.query(
+                pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}{SK_LM_PARAM_PREFIX}"
+            )
+            metric_items = self._table.query(
+                pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}{SK_LM_METRIC_PREFIX}"
+            )
+            models.append(_item_to_logged_model(item, tag_items, param_items, metric_items))
+
+        # Apply offset-based pagination across the merged result
+        token_data = decode_page_token(page_token)
+        offset = token_data.get("offset", 0) if token_data else 0
+        page = models[offset : offset + max_results]
+        has_more = len(models) > offset + max_results
+        next_token = encode_page_token({"offset": offset + max_results}) if has_more else None
+
+        return PagedList(page, next_token)
+
     @staticmethod
     def _invert_metric_value(value: float) -> str:
         """Invert a metric value for descending sort in DynamoDB RANK items."""
