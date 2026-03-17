@@ -70,13 +70,12 @@ def _configure_mlflow_env(store_uri: str) -> None:
     os.environ["_MLFLOW_SERVER_ARTIFACT_ROOT"] = "/tmp/mlflow-e2e-artifacts"
     os.environ["MLFLOW_FLASK_SERVER_SECRET_KEY"] = "e2e-test-secret-key"
     os.environ["MLFLOW_ENABLE_WORKSPACES"] = "true"
-    # Auth credentials for the dynamodb-auth plugin (admin/password1234 defaults)
-    os.environ["MLFLOW_TRACKING_USERNAME"] = "admin"
-    os.environ["MLFLOW_TRACKING_PASSWORD"] = "password1234"
 
 
 def _create_app():
-    """Build the MLflow Flask app with dynamodb-auth plugin, then wrap in FastAPI."""
+    """Build the MLflow Flask app and wrap in FastAPI."""
+    from mlflow.server import app as flask_app
+    from mlflow.server.fastapi_app import create_fastapi_app
     from mlflow.server.handlers import initialize_backend_stores
 
     store_uri = os.environ["_MLFLOW_SERVER_FILE_STORE"]
@@ -88,14 +87,6 @@ def _create_app():
         registry_store_uri=store_uri,
         default_artifact_root=artifact_root,
     )
-
-    # Build Flask app with auth wired in (replicates --app-name dynamodb-auth)
-    from mlflow_dynamodbstore.auth.app import create_app as create_auth_app
-
-    flask_app = create_auth_app()
-
-    # Wrap in FastAPI (replicates what uvicorn does with mlflow.server.fastapi_app)
-    from mlflow.server.fastapi_app import create_fastapi_app
 
     return create_fastapi_app(flask_app)
 
@@ -232,17 +223,7 @@ def client(mlflow_server) -> MlflowClient:
 
 @pytest.fixture(scope="session")
 def http_session(mlflow_server) -> requests.Session:
-    """Return a requests.Session with base URL and auth pre-configured."""
-    import base64
-
-    username = os.environ.get("MLFLOW_TRACKING_USERNAME", "")
-    password = os.environ.get("MLFLOW_TRACKING_PASSWORD", "")
-
+    """Return a requests.Session with base URL pre-configured."""
     session = requests.Session()
-    if username and password:
-        token = base64.b64encode(f"{username}:{password}".encode()).decode()
-        session.headers["Authorization"] = f"Basic {token}"
-
-    # Store base URL for convenience
     session.base_url = mlflow_server  # type: ignore[attr-defined]
     return session
