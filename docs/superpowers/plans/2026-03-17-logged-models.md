@@ -1,6 +1,6 @@
 # Logged Models Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status: COMPLETE** — All 9 tasks implemented and verified. PR #13.
 
 **Goal:** Implement the 8 `LoggedModel` store methods on `DynamoDBTrackingStore` so the MLflow 3.x UI can create, search, and manage logged models without 500 errors.
 
@@ -10,17 +10,50 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-17-logged-models-design.md`
 
+### Results
+
+| Metric | Value |
+|--------|-------|
+| Public methods implemented | 8 |
+| Internal methods implemented | 1 (`_log_logged_model_metric`) |
+| Unit tests | 49 (39 logged models + 10 search) |
+| E2E tests | 9 |
+| Total test suite | 808 passed, 0 failed |
+| Commits | 10 |
+
+### Commits
+
+| Commit | Description |
+|--------|-------------|
+| `e3a1e3c` | feat(schema): add logged model SK and GSI constants |
+| `562b3b3` | feat: implement create_logged_model and get_logged_model |
+| `4445f9c` | feat: implement finalize, delete, tags for logged models |
+| `e0583bb` | feat: implement record_logged_model |
+| `9f25d4e` | feat: implement _log_logged_model_metric with RANK items |
+| `6df70a2` | feat: add parse/plan/execute for logged model search |
+| `32cfc0b` | feat: implement search_logged_models with parse/plan/execute |
+| `d78442b` | test: add e2e tests for logged model CRUD and search |
+| `d0f852d` | test: improve patch coverage for logged models search |
+
+### Implementation notes
+
+- `set_logged_model_tags` REST API accepts `dict[str, Any]` (not `list[LoggedModelTag]`) — e2e tests adjusted
+- `self._config.get_soft_deleted_ttl_seconds()` used for TTL (not a custom helper) — matches `delete_run` pattern
+- `QueryPlan` extended with `rank_filters` and `datasets` fields (backward-compatible defaults)
+- Pagination handled at `search_logged_models` level after merging across experiments (not in `execute_logged_model_query`)
+
 ---
 
 ### File Structure
 
 | File | Responsibility | Action |
 |------|---------------|--------|
-| `src/mlflow_dynamodbstore/dynamodb/schema.py` | SK/GSI prefix constants | Modify: add `SK_LM_PREFIX`, `SK_RANK_LM_PREFIX`, `SK_RANK_LMD_PREFIX`, `GSI1_LM_PREFIX` |
-| `src/mlflow_dynamodbstore/dynamodb/search.py` | Query parsing, planning, execution | Modify: add `parse_logged_model_filter`, `plan_logged_model_query`, `execute_logged_model_query`, extend `QueryPlan` |
-| `src/mlflow_dynamodbstore/tracking_store.py` | Store method implementations | Modify: add 8 public methods + `_log_logged_model_metric` + `_item_to_logged_model` helper |
-| `tests/unit/test_logged_models.py` | Unit tests for all store methods | Create |
-| `tests/e2e/test_logged_models.py` | E2E tests for search validation | Create |
+| `src/mlflow_dynamodbstore/dynamodb/schema.py` | SK/GSI prefix constants | Modified: added `SK_LM_PREFIX`, `SK_RANK_LM_PREFIX`, `SK_RANK_LMD_PREFIX`, `GSI1_LM_PREFIX` |
+| `src/mlflow_dynamodbstore/dynamodb/search.py` | Query parsing, planning, execution | Modified: added `parse_logged_model_filter`, `plan_logged_model_query`, `execute_logged_model_query`, extended `QueryPlan` |
+| `src/mlflow_dynamodbstore/tracking_store.py` | Store method implementations | Modified: added 8 public methods + `_log_logged_model_metric` + `_item_to_logged_model` helper |
+| `tests/unit/test_logged_models.py` | Unit tests for all store methods | Created |
+| `tests/unit/test_search_logged_models.py` | Unit tests for search parse/plan | Created |
+| `tests/e2e/test_logged_models.py` | E2E tests for search validation | Created |
 
 ---
 
@@ -29,7 +62,7 @@
 **Files:**
 - Modify: `src/mlflow_dynamodbstore/dynamodb/schema.py:37-42`
 
-- [ ] **Step 1: Add logged model constants to schema.py**
+- [x] **Step 1: Add logged model constants to schema.py**
 
 After `SK_LOGGED_MODEL_PREFIX = "#LM#"` (line 37) and before `SK_DATASET_PREFIX` (line 38), add:
 
@@ -48,12 +81,12 @@ After `GSI1_TRACE_PREFIX` in the GSI constants section, add:
 GSI1_LM_PREFIX = "LM#"
 ```
 
-- [ ] **Step 2: Verify imports compile**
+- [x] **Step 2: Verify imports compile**
 
 Run: `uv run python -c "from mlflow_dynamodbstore.dynamodb.schema import SK_LM_PREFIX, SK_RANK_LM_PREFIX, SK_RANK_LMD_PREFIX, GSI1_LM_PREFIX; print('OK')"`
 Expected: `OK`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/dynamodb/schema.py
@@ -68,7 +101,7 @@ git commit -m "feat(schema): add logged model SK and GSI constants"
 - Modify: `src/mlflow_dynamodbstore/tracking_store.py`
 - Create: `tests/unit/test_logged_models.py`
 
-- [ ] **Step 1: Write failing tests for create and get**
+- [x] **Step 1: Write failing tests for create and get**
 
 Create `tests/unit/test_logged_models.py`:
 
@@ -176,12 +209,12 @@ class TestGetLoggedModel:
             tracking_store.get_logged_model("m-nonexistent")
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_logged_models.py -v -x`
 Expected: FAIL — `create_logged_model` not implemented.
 
-- [ ] **Step 3: Implement create_logged_model and get_logged_model**
+- [x] **Step 3: Implement create_logged_model and get_logged_model**
 
 In `src/mlflow_dynamodbstore/tracking_store.py`, add imports and helper:
 
@@ -354,12 +387,12 @@ def get_logged_model(self, model_id: str, allow_deleted: bool = False) -> Logged
     return _item_to_logged_model(meta, tag_items, param_items, metric_items)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_logged_models.py -v`
 Expected: All tests in `TestCreateLoggedModel` and `TestGetLoggedModel` PASS (except tests referencing `delete_logged_model` — mark those `@pytest.mark.skip("implemented in Task 3")` temporarily, or keep them and expect failures for now).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_logged_models.py
@@ -374,7 +407,7 @@ git commit -m "feat: implement create_logged_model and get_logged_model"
 - Modify: `src/mlflow_dynamodbstore/tracking_store.py`
 - Modify: `tests/unit/test_logged_models.py`
 
-- [ ] **Step 1: Write failing tests for finalize, delete, tags**
+- [x] **Step 1: Write failing tests for finalize, delete, tags**
 
 Add to `tests/unit/test_logged_models.py`:
 
@@ -486,12 +519,12 @@ class TestLoggedModelTags:
         assert "env" not in fetched.tags
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_logged_models.py -v -x -k "Finalize or Delete or Tags"`
 Expected: FAIL — methods not implemented.
 
-- [ ] **Step 3: Implement finalize, delete, set_logged_model_tags, delete_logged_model_tag**
+- [x] **Step 3: Implement finalize, delete, set_logged_model_tags, delete_logged_model_tag**
 
 Add to `DynamoDBTrackingStore`:
 
@@ -600,12 +633,12 @@ def _invert_metric_value(value: float) -> str:
 ```
 
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_logged_models.py -v`
 Expected: All tests PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_logged_models.py
@@ -620,7 +653,7 @@ git commit -m "feat: implement finalize, delete, tags for logged models"
 - Modify: `src/mlflow_dynamodbstore/tracking_store.py`
 - Modify: `tests/unit/test_logged_models.py`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Add to `tests/unit/test_logged_models.py`:
 
@@ -649,12 +682,12 @@ class TestRecordLoggedModel:
         assert models[0]["model_id"] == "m-test"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/unit/test_logged_models.py::TestRecordLoggedModel -v -x`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement record_logged_model**
+- [x] **Step 3: Implement record_logged_model**
 
 ```python
 def record_logged_model(self, run_id, mlflow_model):
@@ -685,12 +718,12 @@ def record_logged_model(self, run_id, mlflow_model):
     self._table.update_item(pk=pk, sk=run_sk, updates={"tags": run_tags})
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/unit/test_logged_models.py::TestRecordLoggedModel -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_logged_models.py
@@ -705,7 +738,7 @@ git commit -m "feat: implement record_logged_model"
 - Modify: `src/mlflow_dynamodbstore/tracking_store.py`
 - Modify: `tests/unit/test_logged_models.py`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 ```python
 from decimal import Decimal
@@ -800,12 +833,12 @@ class TestLogLoggedModelMetric:
         assert len(rank_items) == 1  # Old one deleted, new one written
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_logged_models.py::TestLogLoggedModelMetric -v -x`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement _log_logged_model_metric**
+- [x] **Step 3: Implement _log_logged_model_metric**
 
 ```python
 def _log_logged_model_metric(
@@ -883,12 +916,12 @@ def _log_logged_model_metric(
     )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_logged_models.py::TestLogLoggedModelMetric -v`
 Expected: All PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_logged_models.py
@@ -903,7 +936,7 @@ git commit -m "feat: implement _log_logged_model_metric with RANK items"
 - Modify: `src/mlflow_dynamodbstore/dynamodb/search.py`
 - Create: `tests/unit/test_search_logged_models.py`
 
-- [ ] **Step 1: Write failing tests for parse and plan**
+- [x] **Step 1: Write failing tests for parse and plan**
 
 Create `tests/unit/test_search_logged_models.py`:
 
@@ -980,12 +1013,12 @@ class TestPlanLoggedModelQuery:
         assert plan.rank_filters[0].key == "accuracy"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_search_logged_models.py -v -x`
 Expected: FAIL — `parse_logged_model_filter` not found.
 
-- [ ] **Step 3: Implement parse, plan, execute in search.py**
+- [x] **Step 3: Implement parse, plan, execute in search.py**
 
 Add to `src/mlflow_dynamodbstore/dynamodb/search.py`:
 
@@ -1232,12 +1265,12 @@ def execute_logged_model_query(
     return filtered
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_search_logged_models.py -v`
 Expected: All PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/dynamodb/search.py tests/unit/test_search_logged_models.py
@@ -1252,7 +1285,7 @@ git commit -m "feat: add parse/plan/execute for logged model search"
 - Modify: `src/mlflow_dynamodbstore/tracking_store.py`
 - Modify: `tests/unit/test_logged_models.py`
 
-- [ ] **Step 1: Write failing tests for search**
+- [x] **Step 1: Write failing tests for search**
 
 Add to `tests/unit/test_logged_models.py`:
 
@@ -1346,12 +1379,12 @@ class TestSearchLoggedModels:
         assert len(page2) == 2
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_logged_models.py::TestSearchLoggedModels -v -x`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement search_logged_models**
+- [x] **Step 3: Implement search_logged_models**
 
 ```python
 def search_logged_models(
@@ -1403,17 +1436,17 @@ def search_logged_models(
     return PagedList(page, next_token)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_logged_models.py::TestSearchLoggedModels -v`
 Expected: All PASS.
 
-- [ ] **Step 5: Run full unit test suite**
+- [x] **Step 5: Run full unit test suite**
 
 Run: `uv run pytest tests/unit/ -v --tb=short`
 Expected: All PASS (no regressions).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_logged_models.py
@@ -1427,7 +1460,7 @@ git commit -m "feat: implement search_logged_models with parse/plan/execute"
 **Files:**
 - Create: `tests/e2e/test_logged_models.py`
 
-- [ ] **Step 1: Write e2e tests**
+- [x] **Step 1: Write e2e tests**
 
 ```python
 """E2E tests for logged model operations via MLflow client SDK."""
@@ -1557,17 +1590,17 @@ class TestLoggedModelsSearch:
         assert len(result) == 2
 ```
 
-- [ ] **Step 2: Run e2e tests**
+- [x] **Step 2: Run e2e tests**
 
 Run: `uv run pytest tests/e2e/test_logged_models.py -v`
 Expected: All PASS.
 
-- [ ] **Step 3: Run full test suite (unit + integration + e2e)**
+- [x] **Step 3: Run full test suite (unit + integration + e2e)**
 
 Run: `uv run pytest tests/unit/ tests/integration/ tests/e2e/ -v --tb=short`
 Expected: All PASS, no regressions.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/e2e/test_logged_models.py
@@ -1578,23 +1611,23 @@ git commit -m "test: add e2e tests for logged model CRUD and search"
 
 ### Task 9: Final verification and cleanup
 
-- [ ] **Step 1: Verify 100% patch coverage**
+- [x] **Step 1: Verify 100% patch coverage**
 
 Run: `uv run pytest tests/unit/ --cov=mlflow_dynamodbstore --cov-report=term-missing | grep -E "tracking_store|search"`
 
 Check that no lines from the logged models patch are in the "Missing" column.
 
-- [ ] **Step 2: Run linter**
+- [x] **Step 2: Run linter**
 
 Run: `uv run ruff check src/ tests/`
 Expected: No errors.
 
-- [ ] **Step 3: Run type checker**
+- [x] **Step 3: Run type checker**
 
 Run: `uv run mypy src/mlflow_dynamodbstore/tracking_store.py`
 Expected: No errors.
 
-- [ ] **Step 4: Reinstall package and run e2e with live server**
+- [x] **Step 4: Reinstall package and run e2e with live server**
 
 ```bash
 uv pip install -e .
@@ -1602,7 +1635,7 @@ uv run pytest tests/e2e/test_logged_models.py -v
 ```
 Expected: All PASS.
 
-- [ ] **Step 5: Commit any fixups**
+- [x] **Step 5: Commit any fixups**
 
 ```bash
 git add -u
