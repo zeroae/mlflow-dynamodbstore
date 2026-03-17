@@ -36,7 +36,9 @@ from mlflow.entities import (
 )
 from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
+from mlflow.genai.scorers.online.entities import OnlineScorer, OnlineScoringConfig
 from mlflow.protos.databricks_pb2 import (
+    INVALID_PARAMETER_VALUE,
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
@@ -66,6 +68,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_SCOR_PREFIX,
     GSI1_SK,
     GSI1_TRACE_PREFIX,
+    GSI2_ACTIVE_SCORERS_PREFIX,
     GSI2_DS_LIST_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
@@ -2816,6 +2819,135 @@ class DynamoDBTrackingStore(AbstractStore):
                         sk=meta_sk,
                         updates={"latest_version": new_max},
                     )
+
+    def upsert_online_scoring_config(
+        self,
+        experiment_id: str,
+        scorer_name: str,
+        sample_rate: float,
+        filter_string: str | None = None,
+    ) -> OnlineScoringConfig:
+        if not (0.0 <= sample_rate <= 1.0):
+            raise MlflowException(
+                f"sample_rate must be in [0.0, 1.0], got {sample_rate}.",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        scorer_id = self._resolve_scorer_id(experiment_id, scorer_name)
+        if scorer_id is None:
+            raise MlflowException(
+                f"Scorer '{scorer_name}' not found in experiment '{experiment_id}'.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        config_id = generate_ulid()
+        config_sk = f"{SK_SCORER_PREFIX}{scorer_id}{SK_SCORER_OSCFG_SUFFIX}"
+
+        item: dict[str, Any] = {
+            "PK": pk,
+            "SK": config_sk,
+            "online_scoring_config_id": config_id,
+            "scorer_id": scorer_id,
+            "sample_rate": Decimal(str(sample_rate)),
+            "experiment_id": experiment_id,
+        }
+        if filter_string is not None:
+            item["filter_string"] = filter_string
+
+        # GSI2: only index when active (sample_rate > 0)
+        if sample_rate > 0:
+            item[GSI2_PK] = f"{GSI2_ACTIVE_SCORERS_PREFIX}{self._workspace}"
+            item[GSI2_SK] = scorer_id
+
+        self._table.put_item(item)  # atomic overwrite (fixed SK)
+
+        return OnlineScoringConfig(
+            online_scoring_config_id=config_id,
+            scorer_id=scorer_id,
+            sample_rate=sample_rate,
+            experiment_id=experiment_id,
+            filter_string=filter_string,
+        )
+
+    def get_online_scoring_configs(self, scorer_ids: list[str]) -> list[OnlineScoringConfig]:
+        configs: list[OnlineScoringConfig] = []
+        for scorer_id in scorer_ids:
+            # AP11: resolve scorer_id → experiment_id via GSI1
+            results = self._table.query(
+                pk=f"{GSI1_SCOR_PREFIX}{scorer_id}",
+                index_name="gsi1",
+                limit=1,
+            )
+            if not results:
+                continue
+            exp_id = results[0][GSI1_SK][len(PK_EXPERIMENT_PREFIX) :]
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            config_sk = f"{SK_SCORER_PREFIX}{scorer_id}{SK_SCORER_OSCFG_SUFFIX}"
+            item = self._table.get_item(pk=pk, sk=config_sk)
+            if item is None:
+                continue
+            configs.append(
+                OnlineScoringConfig(
+                    online_scoring_config_id=item["online_scoring_config_id"],
+                    scorer_id=item["scorer_id"],
+                    sample_rate=float(item["sample_rate"]),
+                    experiment_id=item["experiment_id"],
+                    filter_string=item.get("filter_string"),
+                )
+            )
+        return configs
+
+    def get_active_online_scorers(self) -> list[OnlineScorer]:
+        # AP9: query GSI2 for active configs
+        items = self._table.query(
+            pk=f"{GSI2_ACTIVE_SCORERS_PREFIX}{self._workspace}",
+            index_name="gsi2",
+        )
+
+        # Deduplicate by scorer_id
+        seen: set[str] = set()
+        unique_items: list[dict[str, Any]] = []
+        for item in items:
+            sid = item["scorer_id"]
+            if sid not in seen:
+                seen.add(sid)
+                unique_items.append(item)
+
+        result: list[OnlineScorer] = []
+        for item in unique_items:
+            scorer_id = item["scorer_id"]
+            exp_id = item["experiment_id"]
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+
+            # Get META for scorer_name
+            meta = self._table.get_item(pk=pk, sk=f"{SK_SCORER_PREFIX}{scorer_id}")
+            if meta is None:
+                continue
+
+            # AP3: get latest version for serialized_scorer
+            versions = self._table.query(
+                pk=pk,
+                sk_prefix=f"{SK_SCORER_PREFIX}{scorer_id}#V#",
+                scan_forward=False,
+                limit=1,
+            )
+            if not versions:
+                continue
+
+            config = OnlineScoringConfig(
+                online_scoring_config_id=item["online_scoring_config_id"],
+                scorer_id=scorer_id,
+                sample_rate=float(item["sample_rate"]),
+                experiment_id=exp_id,
+                filter_string=item.get("filter_string"),
+            )
+            result.append(
+                OnlineScorer(
+                    name=meta["scorer_name"],
+                    serialized_scorer=versions[0]["serialized_scorer"],
+                    online_config=config,
+                )
+            )
+        return result
 
     def delete_traces(
         self,

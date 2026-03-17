@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from mlflow.entities import ScorerVersion
 from mlflow.exceptions import MlflowException
+from mlflow.genai.scorers.online.entities import OnlineScoringConfig
 
 
 def _create_experiment(tracking_store) -> str:
@@ -190,3 +191,84 @@ class TestDeleteScorer:
         exp_id = _create_experiment(tracking_store)
         with pytest.raises(MlflowException, match="not found"):
             tracking_store.delete_scorer(exp_id, "no-such")
+
+
+class TestUpsertOnlineScoringConfig:
+    def test_create_config(self, tracking_store):
+        """upsert creates a new config."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        config = tracking_store.upsert_online_scoring_config(exp_id, "accuracy", sample_rate=0.5)
+        assert isinstance(config, OnlineScoringConfig)
+        assert config.sample_rate == 0.5
+        assert config.filter_string is None
+
+    def test_upsert_replaces_config(self, tracking_store):
+        """upsert overwrites existing config atomically."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        c1 = tracking_store.upsert_online_scoring_config(exp_id, "accuracy", sample_rate=0.5)
+        c2 = tracking_store.upsert_online_scoring_config(
+            exp_id, "accuracy", sample_rate=0.8, filter_string="status = 'OK'"
+        )
+        assert c2.sample_rate == 0.8
+        assert c2.filter_string == "status = 'OK'"
+        assert c1.online_scoring_config_id != c2.online_scoring_config_id
+
+    def test_invalid_sample_rate_raises(self, tracking_store):
+        """upsert rejects sample_rate outside [0.0, 1.0]."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        with pytest.raises(MlflowException, match="sample_rate"):
+            tracking_store.upsert_online_scoring_config(exp_id, "accuracy", 1.5)
+        with pytest.raises(MlflowException, match="sample_rate"):
+            tracking_store.upsert_online_scoring_config(exp_id, "accuracy", -0.1)
+
+    def test_config_with_filter_string(self, tracking_store):
+        """upsert stores filter_string."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        config = tracking_store.upsert_online_scoring_config(
+            exp_id, "accuracy", sample_rate=0.1, filter_string="tag.env = 'prod'"
+        )
+        assert config.filter_string == "tag.env = 'prod'"
+
+
+class TestGetOnlineScoringConfigs:
+    def test_get_configs(self, tracking_store):
+        """get_online_scoring_configs returns configs for given scorer_ids."""
+        exp_id = _create_experiment(tracking_store)
+        s = tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        tracking_store.upsert_online_scoring_config(exp_id, "accuracy", 0.5)
+        configs = tracking_store.get_online_scoring_configs([s.scorer_id])
+        assert len(configs) == 1
+        assert configs[0].scorer_id == s.scorer_id
+        assert configs[0].sample_rate == 0.5
+
+    def test_get_configs_no_config(self, tracking_store):
+        """get_online_scoring_configs returns empty for scorer without config."""
+        exp_id = _create_experiment(tracking_store)
+        s = tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        configs = tracking_store.get_online_scoring_configs([s.scorer_id])
+        assert configs == []
+
+
+class TestGetActiveOnlineScorers:
+    def test_active_scorers(self, tracking_store):
+        """get_active_online_scorers returns scorers with sample_rate > 0."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", '{"name": "acc"}')
+        tracking_store.register_scorer(exp_id, "relevance", '{"name": "rel"}')
+        tracking_store.upsert_online_scoring_config(exp_id, "accuracy", 0.5)
+        tracking_store.upsert_online_scoring_config(exp_id, "relevance", 0.0)
+        active = tracking_store.get_active_online_scorers()
+        assert len(active) == 1
+        assert active[0].name == "accuracy"
+        assert active[0].online_config.sample_rate == 0.5
+
+    def test_no_active_scorers(self, tracking_store):
+        """get_active_online_scorers returns empty when none active."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        active = tracking_store.get_active_online_scorers()
+        assert active == []
