@@ -1525,16 +1525,18 @@ class DynamoDBTrackingStore(AbstractStore):
             "execution_duration": execution_duration,
             "state": state_str,
             "tags": {},
-            # LSI attributes
-            LSI1_SK: request_time,
-            LSI2_SK: request_time + execution_duration,
-            LSI3_SK: f"{state_str}#{request_time}",
-            LSI4_SK: trace_name.lower() if trace_name else "~",  # DynamoDB rejects empty strings
-            LSI5_SK: execution_duration,
+            # LSI attributes (must be strings, zero-padded for sort order)
+            LSI1_SK: f"{request_time:020d}",
+            LSI2_SK: f"{request_time + execution_duration:020d}",
+            LSI3_SK: f"{state_str}#{request_time:020d}",
+            LSI5_SK: f"{execution_duration:020d}",
             # GSI1: reverse lookup trace_id -> experiment_id
             GSI1_PK: f"{GSI1_TRACE_PREFIX}{trace_id}",
             GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
         }
+
+        if trace_name:
+            item[LSI4_SK] = trace_name.lower()
 
         if ttl is not None:
             item["ttl"] = ttl

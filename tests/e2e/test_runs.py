@@ -109,6 +109,68 @@ class TestRuns:
         )
         assert any(r.info.run_id == run.info.run_id for r in runs)
 
+    def test_search_runs_order_by_metric(self, client: MlflowClient, experiment_id):
+        """ORDER BY metrics.score DESC — uses RANK items."""
+        for val in [0.1, 0.9, 0.5]:
+            run = client.create_run(experiment_id)
+            client.log_metric(run.info.run_id, "score", val)
+            client.set_terminated(run.info.run_id, "FINISHED")
+        runs = client.search_runs(
+            experiment_ids=[experiment_id],
+            order_by=["metrics.score DESC"],
+        )
+        scores = [r.data.metrics["score"] for r in runs if "score" in r.data.metrics]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_search_runs_filter_by_metric(self, client: MlflowClient, experiment_id):
+        """Filter metrics.acc > 0.5 — uses RANK items."""
+        for val in [0.3, 0.7, 0.9]:
+            run = client.create_run(experiment_id)
+            client.log_metric(run.info.run_id, "acc", val)
+            client.set_terminated(run.info.run_id, "FINISHED")
+        runs = client.search_runs(
+            experiment_ids=[experiment_id],
+            filter_string="metrics.acc > 0.5",
+        )
+        assert all(r.data.metrics["acc"] > 0.5 for r in runs)
+
+    def test_rename_run(self, client: MlflowClient, experiment_id):
+        run = client.create_run(experiment_id)
+        new_name = f"renamed-{_uid()}"
+        client.update_run(run.info.run_id, name=new_name)
+        fetched = client.get_run(run.info.run_id)
+        assert fetched.info.run_name == new_name
+
+    def test_search_runs_name_like(self, client: MlflowClient):
+        """run_name LIKE '%substring%' — uses FTS."""
+        uid = _uid()
+        exp_id = client.create_experiment(f"e2e-fts-runs-{uid}")
+        run = client.create_run(exp_id, run_name=f"pipeline-{uid}-train")
+        client.set_terminated(run.info.run_id, "FINISHED")
+        runs = client.search_runs(
+            experiment_ids=[exp_id],
+            filter_string=f"run_name LIKE '%{uid}%'",
+        )
+        assert any(r.info.run_id == run.info.run_id for r in runs)
+
+    def test_log_inputs(self, client: MlflowClient, experiment_id):
+        """Log dataset inputs to a run."""
+        from mlflow.entities import Dataset, DatasetInput, InputTag
+
+        run = client.create_run(experiment_id)
+        dataset = Dataset(
+            name="my-dataset",
+            digest="abc123",
+            source_type="local",
+            source="file:///data/train.csv",
+        )
+        client.log_inputs(
+            run.info.run_id,
+            [DatasetInput(dataset=dataset, tags=[InputTag(key="context", value="training")])],
+        )
+        fetched = client.get_run(run.info.run_id)
+        assert len(fetched.inputs.dataset_inputs) >= 1
+
     def test_fluent_api(self, mlflow_server, client: MlflowClient):
         """Test the high-level mlflow.* API that most users use."""
         mlflow.set_tracking_uri(mlflow_server)

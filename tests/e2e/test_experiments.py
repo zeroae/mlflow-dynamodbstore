@@ -81,3 +81,22 @@ class TestExperiments:
         client.rename_experiment(exp_id, new_name)
         exp = client.get_experiment(exp_id)
         assert exp.name == new_name
+
+    def test_search_experiments_name_like_prefix(self, client: MlflowClient):
+        """ILIKE 'prefix%' — uses GSI5."""
+        name = f"e2e-prefix-{_uid()}"
+        client.create_experiment(name)
+        experiments = client.search_experiments(
+            filter_string=f"name ILIKE '{name[:12]}%'",
+        )
+        assert any(e.name == name for e in experiments)
+
+    def test_search_experiments_name_like_contains(self, client: MlflowClient):
+        """LIKE '%substring%' — uses FTS."""
+        uid = _uid()
+        name = f"e2e-fts-{uid}-experiment"
+        client.create_experiment(name)
+        experiments = client.search_experiments(
+            filter_string=f"name LIKE '%{uid}%'",
+        )
+        assert any(e.name == name for e in experiments)

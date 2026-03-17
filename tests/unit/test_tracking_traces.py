@@ -155,7 +155,7 @@ class TestStartTrace:
         assert int(meta[LSI1_SK]) == 1709251200000
         # lsi2sk = end_time_ms = request_time + execution_duration
         assert int(meta[LSI2_SK]) == 1709251200000 + 500
-        assert meta[LSI3_SK] == "OK#1709251200000"
+        assert meta[LSI3_SK] == f"OK#{1709251200000:020d}"
         assert meta[LSI4_SK] == "my-trace"
         assert int(meta[LSI5_SK]) == 500
 
