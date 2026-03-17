@@ -133,3 +133,60 @@ class TestListScorerVersions:
         exp_id = _create_experiment(tracking_store)
         with pytest.raises(MlflowException, match="not found"):
             tracking_store.list_scorer_versions(exp_id, "no-such")
+
+
+class TestDeleteScorer:
+    def test_delete_all_versions(self, tracking_store):
+        """delete_scorer without version removes everything."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 1}')
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 2}')
+        tracking_store.delete_scorer(exp_id, "accuracy")
+        with pytest.raises(MlflowException, match="not found"):
+            tracking_store.get_scorer(exp_id, "accuracy")
+
+    def test_delete_single_version(self, tracking_store):
+        """delete_scorer with version removes only that version."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 1}')
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 2}')
+        tracking_store.delete_scorer(exp_id, "accuracy", version=1)
+        versions = tracking_store.list_scorer_versions(exp_id, "accuracy")
+        assert len(versions) == 1
+        assert versions[0].scorer_version == 2
+
+    def test_delete_last_version_removes_meta(self, tracking_store):
+        """Deleting the only version also removes META."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        tracking_store.delete_scorer(exp_id, "accuracy", version=1)
+        with pytest.raises(MlflowException, match="not found"):
+            tracking_store.get_scorer(exp_id, "accuracy")
+
+    def test_delete_latest_version_updates_cache(self, tracking_store):
+        """After deleting latest version, get_scorer returns new latest."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 1}')
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 2}')
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 3}')
+        tracking_store.delete_scorer(exp_id, "accuracy", version=3)
+        result = tracking_store.get_scorer(exp_id, "accuracy")
+        assert result.scorer_version == 2
+
+    def test_delete_middle_version_creates_gap(self, tracking_store):
+        """After deleting v2 from v1/v2/v3, new registration creates v4."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 1}')
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 2}')
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 3}')
+        tracking_store.delete_scorer(exp_id, "accuracy", version=2)
+        v4 = tracking_store.register_scorer(exp_id, "accuracy", '{"v": 4}')
+        assert v4.scorer_version == 4
+        versions = tracking_store.list_scorer_versions(exp_id, "accuracy")
+        assert [v.scorer_version for v in versions] == [1, 3, 4]
+
+    def test_delete_nonexistent_raises(self, tracking_store):
+        """delete_scorer for missing scorer raises."""
+        exp_id = _create_experiment(tracking_store)
+        with pytest.raises(MlflowException, match="not found"):
+            tracking_store.delete_scorer(exp_id, "no-such")

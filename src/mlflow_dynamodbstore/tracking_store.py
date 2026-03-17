@@ -104,6 +104,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_PARAM_PREFIX,
     SK_RANK_PREFIX,
     SK_RUN_PREFIX,
+    SK_SCORER_OSCFG_SUFFIX,
     SK_SCORER_PREFIX,
     SK_TAG_PREFIX,
     SK_TRACE_PREFIX,
@@ -2766,6 +2767,55 @@ class DynamoDBTrackingStore(AbstractStore):
             )
             for item in items
         ]
+
+    def delete_scorer(self, experiment_id: str, name: str, version: int | None = None) -> None:
+        scorer_id = self._resolve_scorer_id(experiment_id, name)
+        if scorer_id is None:
+            raise MlflowException(
+                f"Scorer '{name}' not found in experiment '{experiment_id}'.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        meta_sk = f"{SK_SCORER_PREFIX}{scorer_id}"
+
+        if version is None:
+            # AP6: delete all items (META + versions + config)
+            items = self._table.query(pk=pk, sk_prefix=f"{SK_SCORER_PREFIX}{scorer_id}")
+            if items:
+                self._table.batch_delete([{"PK": pk, "SK": item["SK"]} for item in items])
+        else:
+            # AP7: delete single version
+            padded = f"{version:010d}"
+            ver_sk = f"{meta_sk}#V#{padded}"
+            item = self._table.get_item(pk=pk, sk=ver_sk)
+            if item is None:
+                raise MlflowException(
+                    f"Scorer '{name}' version {version} not found.",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            self._table.delete_item(pk=pk, sk=ver_sk)
+
+            # Check if any versions remain
+            remaining = self._table.query(pk=pk, sk_prefix=f"{meta_sk}#V#", limit=1)
+            if not remaining:
+                # Delete META and config too
+                self._table.delete_item(pk=pk, sk=meta_sk)
+                self._table.delete_item(pk=pk, sk=f"{meta_sk}{SK_SCORER_OSCFG_SUFFIX}")
+            else:
+                # Update latest_version cache if needed
+                latest = self._table.query(
+                    pk=pk,
+                    sk_prefix=f"{meta_sk}#V#",
+                    scan_forward=False,
+                    limit=1,
+                )
+                if latest:
+                    new_max = int(latest[0]["scorer_version"])
+                    self._table.update_item(
+                        pk=pk,
+                        sk=meta_sk,
+                        updates={"latest_version": new_max},
+                    )
 
     def delete_traces(
         self,
