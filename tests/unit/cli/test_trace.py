@@ -1,5 +1,6 @@
-"""Tests for cache-spans CLI command."""
+"""Tests for trace CLI commands."""
 
+import click
 from click.testing import CliRunner
 from mlflow.entities.trace_info import TraceInfo
 from mlflow.entities.trace_location import (
@@ -11,8 +12,19 @@ from mlflow.entities.trace_state import TraceState
 from mlflow.tracing.constant import TraceTagKey
 from moto import mock_aws
 
-from mlflow_dynamodbstore.cli import cli
+from mlflow_dynamodbstore.cli import CliContext
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
+
+
+@click.group()
+@click.pass_context
+def _test_cli(ctx):
+    ctx.obj = CliContext(name="test", region="us-east-1", endpoint_url=None)
+
+
+from mlflow_dynamodbstore.cli.trace import trace  # noqa: E402
+
+_test_cli.add_command(trace)
 
 
 def _make_trace_info(experiment_id: str, trace_id: str = "tr-cache-test") -> TraceInfo:
@@ -32,12 +44,12 @@ def _make_trace_info(experiment_id: str, trace_id: str = "tr-cache-test") -> Tra
 
 
 @mock_aws
-def test_cache_spans_no_traces():
+def test_trace_cache_no_traces():
     ensure_stack_exists(table_name="test", region="us-east-1")
     runner = CliRunner()
     result = runner.invoke(
-        cli,
-        ["cache-spans", "--table", "test", "--region", "us-east-1", "--experiment-id", "01ABC"],
+        _test_cli,
+        ["trace", "cache", "--experiment-id", "01ABC"],
     )
     assert result.exit_code == 0
     assert "Cached: 0" in result.output
@@ -45,7 +57,7 @@ def test_cache_spans_no_traces():
 
 
 @mock_aws
-def test_cache_spans_with_traces():
+def test_trace_cache_with_traces():
     ensure_stack_exists(table_name="test", region="us-east-1")
     from mlflow_dynamodbstore.tracking_store import DynamoDBTrackingStore
 
@@ -59,24 +71,21 @@ def test_cache_spans_with_traces():
     runner = CliRunner()
     # get_trace calls X-Ray which won't work under moto, but the CLI handles errors gracefully
     result = runner.invoke(
-        cli,
-        ["cache-spans", "--table", "test", "--region", "us-east-1", "--experiment-id", exp_id],
+        _test_cli,
+        ["trace", "cache", "--experiment-id", exp_id],
     )
     assert result.exit_code == 0
 
 
 @mock_aws
-def test_cache_spans_multiple_experiments():
+def test_trace_cache_multiple_experiments():
     ensure_stack_exists(table_name="test", region="us-east-1")
     runner = CliRunner()
     result = runner.invoke(
-        cli,
+        _test_cli,
         [
-            "cache-spans",
-            "--table",
-            "test",
-            "--region",
-            "us-east-1",
+            "trace",
+            "cache",
             "--experiment-id",
             "exp1",
             "--experiment-id",

@@ -14,7 +14,6 @@ class CliContext:
 
 pass_context = click.make_pass_decorator(CliContext)
 
-from mlflow_dynamodbstore.cli.cache_spans import cache_spans  # noqa: E402
 from mlflow_dynamodbstore.cli.delete_workspace import delete_workspace  # noqa: E402
 
 
@@ -24,8 +23,14 @@ def cli() -> None:
     pass
 
 
-cli.add_command(cache_spans)
 cli.add_command(delete_workspace)
+
+
+def _register_trace_command() -> None:
+    """Register trace command. Imported lazily to avoid circular imports."""
+    from mlflow_dynamodbstore.cli.trace import trace
+
+    cli.add_command(trace)
 
 
 def _register_fts_command() -> None:
@@ -52,3 +57,4 @@ def _register_ttl_command() -> None:
 _register_fts_command()
 _register_tag_command()
 _register_ttl_command()
+_register_trace_command()
