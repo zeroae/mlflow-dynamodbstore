@@ -33,6 +33,7 @@ mlflow server \
   --app-name dynamodb-auth \
   --backend-store-uri dynamodb://us-east-1/my-table \
   --default-artifact-root s3://my-bucket/mlflow-artifacts \
+  --enable-workspaces \
   --host 0.0.0.0 \
   --port 5000
 ```
@@ -61,7 +62,8 @@ On first startup, the plugin creates a CloudFormation stack named `mlflow-dynamo
     mlflow server \
       --app-name dynamodb-auth \
       --backend-store-uri dynamodb://localhost:8000/my-table \
-      --default-artifact-root ./mlartifacts
+      --default-artifact-root ./mlartifacts \
+      --enable-workspaces
     ```
 
 ## Configure the Client

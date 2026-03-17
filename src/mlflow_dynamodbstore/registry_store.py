@@ -114,6 +114,11 @@ class DynamoDBRegistryStore(AbstractStore):
         self._config = ConfigReader(self._table)
         self._config.reconcile()
 
+    @property
+    def supports_workspaces(self) -> bool:
+        """DynamoDB registry store always supports workspaces."""
+        return True
+
     # ------------------------------------------------------------------
     # Name -> ULID resolution
     # ------------------------------------------------------------------

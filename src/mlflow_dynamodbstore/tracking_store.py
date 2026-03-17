@@ -224,10 +224,21 @@ class DynamoDBTrackingStore(AbstractStore):
         self._uri = uri
         self._cache = ResolutionCache()
         self._artifact_uri = artifact_uri or "./mlartifacts"
+        self.artifact_root_uri = self._artifact_uri
         self._workspace = "default"
         self._config = ConfigReader(self._table)
         self._config.reconcile()
         super().__init__()
+
+    @property
+    def supports_workspaces(self) -> bool:
+        """DynamoDB store always supports workspaces.
+
+        Workspace scoping is built into the schema (GSI2/GSI3 prefixes,
+        META workspace attribute). The --enable-workspaces server flag
+        controls whether workspace features are active at runtime.
+        """
+        return True
 
     # ------------------------------------------------------------------
     # Experiment CRUD
@@ -755,6 +766,15 @@ class DynamoDBTrackingStore(AbstractStore):
         self._table.put_item(item)
         if self._config.should_denormalize(None, tag.key):
             self._denormalize_tag(pk, SK_EXPERIMENT_META, tag.key, tag.value)
+
+    def delete_experiment_tag(self, experiment_id: str, key: str) -> None:
+        """Delete a tag from an experiment."""
+        self.get_experiment(experiment_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_EXPERIMENT_TAG_PREFIX}{key}"
+        self._table.delete_item(pk=pk, sk=sk)
+        if self._config.should_denormalize(None, key):
+            self._remove_denormalized_tag(pk, SK_EXPERIMENT_META, key)
 
     def _get_experiment_tags(self, experiment_id: str) -> list[ExperimentTag]:
         """Read all tags for an experiment."""

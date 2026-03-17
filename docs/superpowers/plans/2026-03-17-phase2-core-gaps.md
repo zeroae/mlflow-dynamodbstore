@@ -96,28 +96,37 @@ git commit -m "feat: implement delete_experiment_tag"
 - Modify: `src/mlflow_dynamodbstore/tracking_store.py:199-216` (constructor / class definition area)
 - Test: `tests/unit/test_tracking_store.py`
 
+**Design note:** The DynamoDB store's schema has workspace scoping built into every entity (GSI2/GSI3 prefixes include workspace, META items carry workspace attribute). The store always supports workspaces — the user controls whether to enable them at server startup via `--enable-workspaces` / `MLFLOW_ENABLE_WORKSPACES=1`. The SQLAlchemy store returns `False` because it lacks workspace schema; we return `True` because we have it.
+
 - [ ] **Step 1: Write the failing unit tests**
 
 Add to `tests/unit/test_tracking_store.py`:
 
 ```python
-def test_supports_workspaces_default_false(self, tracking_store):
-    """Without MLFLOW_ENABLE_WORKSPACES env var, returns False."""
-    assert tracking_store.supports_workspaces is False
-
-def test_supports_workspaces_enabled(self, monkeypatch, tracking_store):
-    """With MLFLOW_ENABLE_WORKSPACES=1, returns True."""
-    monkeypatch.setenv("MLFLOW_ENABLE_WORKSPACES", "1")
+def test_supports_workspaces(self, tracking_store):
+    """DynamoDB store always supports workspaces."""
     assert tracking_store.supports_workspaces is True
 ```
 
-The property reads `os.environ` on each call, so `monkeypatch.setenv` works with the existing `tracking_store` fixture — no factory needed.
+Add to `tests/unit/test_workspace_store.py` (existing file):
+
+```python
+def test_create_and_delete_workspace(self, workspace_store):
+    """Create a workspace, verify it exists, delete it, verify gone."""
+    workspace_store.create_workspace("test-ws", description="Unit test")
+    ws = workspace_store.get_workspace("test-ws")
+    assert ws["name"] == "test-ws"
+    assert ws["description"] == "Unit test"
+
+    workspace_store.delete_workspace("test-ws")
+    assert workspace_store.get_workspace("test-ws") is None
+```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/unit/test_tracking_store.py -k "supports_workspaces" -v`
+Run: `uv run pytest tests/unit/test_tracking_store.py -k "supports_workspaces" tests/unit/test_workspace_store.py -k "create_and_delete" -v`
 
-Expected: FAIL — property not overridden, returns `False` always.
+Expected: `supports_workspaces` FAILS (inherited `AbstractStore` returns `False`). The workspace CRUD test may already pass if that functionality is implemented — verify.
 
 - [ ] **Step 3: Implement `supports_workspaces` property**
 
@@ -126,13 +135,16 @@ Add to `src/mlflow_dynamodbstore/tracking_store.py` in the `DynamoDBTrackingStor
 ```python
 @property
 def supports_workspaces(self) -> bool:
-    """Return True when workspaces are enabled via MLFLOW_ENABLE_WORKSPACES=1."""
-    return os.environ.get("MLFLOW_ENABLE_WORKSPACES") == "1"
+    """DynamoDB store always supports workspaces.
+
+    Workspace scoping is built into the schema (GSI2/GSI3 prefixes,
+    META workspace attribute). The --enable-workspaces server flag
+    controls whether workspace features are active at runtime.
+    """
+    return True
 ```
 
-Also add `import os` at the top of the file if not already present.
-
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/unit/test_tracking_store.py -k "supports_workspaces" -v`
 
@@ -148,17 +160,33 @@ Expected: All pass.
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_store.py
-git commit -m "feat: implement supports_workspaces property"
+git commit -m "feat: implement supports_workspaces property (always True)"
 ```
 
 ---
 
-### Task 3: E2E test for `delete_experiment_tag`
+### Task 3: E2E tests — delete_experiment_tag + workspace CRUD
 
 **Files:**
+- Modify: `tests/e2e/conftest.py` (enable workspaces on the e2e server)
 - Modify: `tests/e2e/test_experiments.py`
+- Create: `tests/e2e/test_workspaces.py`
 
-- [ ] **Step 1: Add e2e test**
+- [ ] **Step 1: Enable workspaces on the e2e server**
+
+In `tests/e2e/conftest.py`, add `MLFLOW_ENABLE_WORKSPACES=true` to the env dict in both `_start_mlflow_moto` and `_start_mlflow_aws`. This is safe because all existing tests use the "default" workspace implicitly.
+
+In `_start_mlflow_moto` (around line 115):
+```python
+env["MLFLOW_ENABLE_WORKSPACES"] = "true"
+```
+
+In `_start_mlflow_aws` (around line 197):
+```python
+env["MLFLOW_ENABLE_WORKSPACES"] = "true"
+```
+
+- [ ] **Step 2: Add delete_experiment_tag e2e test**
 
 Add after `test_set_experiment_tag` in `tests/e2e/test_experiments.py`:
 
@@ -174,17 +202,92 @@ def test_delete_experiment_tag(self, client: MlflowClient):
     assert "team" not in exp.tags
 ```
 
-- [ ] **Step 2: Run e2e tests**
+- [ ] **Step 3: Create workspace CRUD e2e tests**
 
-Run: `uv run pytest tests/e2e/test_experiments.py -v`
+Create `tests/e2e/test_workspaces.py`:
 
-Expected: All pass including new test.
+```python
+"""E2E tests for workspace CRUD via REST API."""
 
-- [ ] **Step 3: Commit**
+import uuid
+
+import pytest
+import requests
+
+pytestmark = pytest.mark.e2e
+
+
+def _uid() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+class TestWorkspaces:
+    def test_list_workspaces_has_default(self, mlflow_server):
+        """Default workspace exists on startup."""
+        resp = requests.get(
+            f"{mlflow_server}/ajax-api/2.0/mlflow/workspaces",
+            timeout=10,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        names = [ws["name"] for ws in data.get("workspaces", [])]
+        assert "default" in names
+
+    def test_create_and_delete_workspace(self, mlflow_server):
+        """Create a workspace, verify it exists, then delete it."""
+        ws_name = f"e2e-ws-{_uid()}"
+
+        # Create
+        resp = requests.post(
+            f"{mlflow_server}/ajax-api/2.0/mlflow/workspaces",
+            json={"name": ws_name, "description": "test workspace"},
+            timeout=10,
+        )
+        assert resp.status_code == 200
+
+        # Get
+        resp = requests.get(
+            f"{mlflow_server}/ajax-api/2.0/mlflow/workspaces/{ws_name}",
+            timeout=10,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["workspace"]["name"] == ws_name
+
+        # Delete
+        resp = requests.delete(
+            f"{mlflow_server}/ajax-api/2.0/mlflow/workspaces/{ws_name}",
+            timeout=10,
+        )
+        assert resp.status_code == 200
+
+        # Verify deleted
+        resp = requests.get(
+            f"{mlflow_server}/ajax-api/2.0/mlflow/workspaces/{ws_name}",
+            timeout=10,
+        )
+        assert resp.status_code == 404
+```
+
+- [ ] **Step 4: Run e2e tests**
+
+Run: `uv run pytest tests/e2e/test_experiments.py tests/e2e/test_workspaces.py -v`
+
+Expected: All pass. If workspace endpoints return 503, check that `MLFLOW_ENABLE_WORKSPACES` is set in conftest.
+
+- [ ] **Step 5: Run full e2e suite to verify no regressions from enabling workspaces**
+
+Run: `uv run pytest tests/e2e/ -v --tb=short`
+
+Expected: All pass (enabling workspaces should not break existing tests since they all use the "default" workspace implicitly).
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add tests/e2e/test_experiments.py
-git commit -m "test: add e2e test for delete_experiment_tag"
+git add tests/e2e/conftest.py tests/e2e/test_experiments.py tests/e2e/test_workspaces.py
+git commit -m "test: add e2e tests for delete_experiment_tag and workspace CRUD
+
+Enable --enable-workspaces on e2e server to test workspace REST
+endpoints (create, get, list, delete)."
 ```
 
 ---
