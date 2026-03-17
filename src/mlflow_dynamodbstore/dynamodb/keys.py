@@ -254,8 +254,8 @@ def version_meta_lsi(
     run_id: str,
 ) -> dict[str, Any]:
     return {
-        LSI1_SK: {"N": str(creation_time)},
-        LSI2_SK: {"N": str(last_update_time)},
+        LSI1_SK: {"S": f"{creation_time:020d}"},
+        LSI2_SK: {"N": str(last_update_time)},  # lsi2sk is Number in schema
         LSI3_SK: {"S": f"{stage}#{padded_ver}"},
         LSI4_SK: {"S": source_path},
         LSI5_SK: {"S": f"{run_id}#{padded_ver}"},
