@@ -114,6 +114,24 @@ class DynamoDBTable:
         attributes: dict[str, Any] | None = response.get("Attributes")
         return attributes
 
+    def add_attribute(
+        self,
+        pk: str,
+        sk: str,
+        attribute: str,
+        value: int | float,
+    ) -> dict[str, Any]:
+        """Atomically increment an attribute using ADD expression. Returns updated item."""
+        response = self._table.update_item(
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression="ADD #attr :val",
+            ExpressionAttributeNames={"#attr": attribute},
+            ExpressionAttributeValues={":val": value},
+            ReturnValues="UPDATED_NEW",
+        )
+        attributes: dict[str, Any] = response.get("Attributes", {})
+        return attributes
+
     # ------------------------------------------------------------------
     # Query
     # ------------------------------------------------------------------

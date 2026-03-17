@@ -114,3 +114,16 @@ SK_DATASET_EXP_PREFIX = "DS#EXP#"
 GSI1_DS_EXP_PREFIX = "DS_EXP#"
 GSI2_DS_LIST_PREFIX = "DS_LIST#"
 GSI3_DS_NAME_PREFIX = "DS_NAME#"
+
+# ---------------------------------------------------------------------------
+# Scorer sort keys (within EXP# partition)
+# ---------------------------------------------------------------------------
+SK_SCORER_PREFIX = "SCOR#"
+SK_SCORER_OSCFG_SUFFIX = "#OSCFG"
+
+# ---------------------------------------------------------------------------
+# GSI PK prefixes for scorers
+# ---------------------------------------------------------------------------
+GSI1_SCOR_PREFIX = "SCOR#"
+GSI2_ACTIVE_SCORERS_PREFIX = "ACTIVE_SCORERS#"
+GSI3_SCOR_NAME_PREFIX = "SCOR_NAME#"
