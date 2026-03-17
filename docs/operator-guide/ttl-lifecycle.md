@@ -18,12 +18,10 @@ Set any policy to `0` to disable TTL for that category.
 
 ```bash
 # View current policies
-mlflow-dynamodbstore ttl-policy show \
-    --table mlflow --region us-east-1
+mlflow-dynamodbstore --name mlflow --region us-east-1 ttl show
 
 # Update a policy
-mlflow-dynamodbstore ttl-policy set \
-    --table mlflow --region us-east-1 \
+mlflow-dynamodbstore --name mlflow --region us-east-1 ttl set \
     --soft-deleted-retention-days 180
 ```
 
@@ -58,7 +56,7 @@ When an experiment is soft-deleted:
 - The experiment META item gets a TTL.
 - All runs under that experiment retain their individual TTLs (if any).
 - After the META item expires, child items (runs, tags, params, metrics) become
-  **orphaned** -- use [`cleanup-expired`](cli-reference.md#cleanup-expired) to
+  **orphaned** -- use [`ttl cleanup`](cli-reference.md#ttl) to
   expire them.
 
 ### Runs
@@ -78,14 +76,13 @@ intermediate "deleted" state.
 
 ```bash
 # Set trace retention to 60 days
-mlflow-dynamodbstore ttl-policy set \
-    --table mlflow --region us-east-1 \
+mlflow-dynamodbstore --name mlflow --region us-east-1 ttl set \
     --trace-retention-days 60
 ```
 
 !!! tip
     AWS X-Ray retains trace data for 30 days. If you set `trace_retention_days`
-    longer than 30, use [`cache-spans`](cli-reference.md#cache-spans) to
+    longer than 30, use [`trace cache`](cli-reference.md#trace) to
     pre-cache span data before X-Ray expires it.
 
 ## Metric History TTL
@@ -127,17 +124,14 @@ When an item is restored:
 DynamoDB TTL only deletes the item that carries the `ttl` attribute. When a
 parent item (e.g., experiment META) is TTL-deleted, its children become orphans.
 
-Run `cleanup-expired` periodically to handle orphans:
+Run `ttl cleanup` periodically to handle orphans:
 
 ```bash
 # Preview orphaned items
-mlflow-dynamodbstore cleanup-expired \
-    --table mlflow --region us-east-1 \
-    --dry-run
+mlflow-dynamodbstore --name mlflow --region us-east-1 ttl cleanup --dry-run
 
 # Set TTL on orphans for automatic cleanup
-mlflow-dynamodbstore cleanup-expired \
-    --table mlflow --region us-east-1
+mlflow-dynamodbstore --name mlflow --region us-east-1 ttl cleanup
 ```
 
 ### Recommended Schedule
@@ -149,7 +143,7 @@ mlflow-dynamodbstore cleanup-expired \
 | Development | As needed   | Manual runs are usually sufficient|
 
 !!! tip "Automation"
-    In production, schedule `cleanup-expired` via cron, AWS EventBridge, or a
+    In production, schedule `ttl cleanup` via cron, AWS EventBridge, or a
     Lambda function. See the [Upgrading](upgrading.md) guide for the v2
     EventBridge-scheduled cleanup approach.
 
