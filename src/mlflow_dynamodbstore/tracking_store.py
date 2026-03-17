@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,7 @@ from mlflow.entities import (
     Assessment,
     Dataset,
     DatasetInput,
+    EvaluationDataset,
     Experiment,
     ExperimentTag,
     InputTag,
@@ -37,6 +39,8 @@ from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
+from mlflow.protos.service_pb2 import DatasetSummary
+from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
 from mlflow.utils.mlflow_tags import MLFLOW_ARTIFACT_LOCATION
@@ -55,14 +59,17 @@ from mlflow_dynamodbstore.dynamodb.keys import pad_step
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_CLIENT_PREFIX,
+    GSI1_DS_EXP_PREFIX,
     GSI1_PK,
     GSI1_RUN_PREFIX,
     GSI1_SK,
     GSI1_TRACE_PREFIX,
+    GSI2_DS_LIST_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
     GSI2_PK,
     GSI2_SK,
+    GSI3_DS_NAME_PREFIX,
     GSI3_EXP_NAME_PREFIX,
     GSI3_PK,
     GSI3_SK,
@@ -74,8 +81,13 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI3_SK,
     LSI4_SK,
     LSI5_SK,
+    PK_DATASET_PREFIX,
     PK_EXPERIMENT_PREFIX,
+    SK_DATASET_EXP_PREFIX,
+    SK_DATASET_META,
     SK_DATASET_PREFIX,
+    SK_DATASET_RECORD_PREFIX,
+    SK_DATASET_TAG_PREFIX,
     SK_DLINK_PREFIX,
     SK_EXPERIMENT_META,
     SK_EXPERIMENT_NAME_REV,
@@ -1532,6 +1544,79 @@ class DynamoDBTrackingStore(AbstractStore):
 
         self._table.batch_write(items)
 
+    def _search_datasets(self, experiment_ids: list[str]) -> list[DatasetSummary]:
+        """Search for legacy V2 datasets (D# and DLINK# items) under experiment partitions.
+
+        This method queries existing D# (dataset) and DLINK# (dataset-run link) items
+        that are stored under experiment partitions when log_inputs is called.
+
+        Args:
+            experiment_ids: List of experiment IDs to search within.
+
+        Returns:
+            List of DatasetSummary protobuf objects.
+        """
+        dataset_map: dict[tuple[str, str], dict[str, Any]] = {}
+
+        for experiment_id in experiment_ids:
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+            # Query D# items (dataset items)
+            d_items = self._table.query(
+                pk=pk,
+                sk_prefix=SK_DATASET_PREFIX,
+            )
+            for item in d_items:
+                # SK format: D#<name>#<digest>
+                sk = item.get("SK", "")
+                if sk.startswith(SK_DATASET_PREFIX):
+                    parts = sk[len(SK_DATASET_PREFIX) :].split("#", 1)
+                    if len(parts) == 2:
+                        name, digest = parts
+                        key = (name, digest)
+                        if key not in dataset_map:
+                            dataset_map[key] = {
+                                "experiment_id": experiment_id,
+                                "name": item.get("name", name),
+                                "digest": item.get("digest", digest),
+                                "context": None,
+                            }
+
+            # Query DLINK# items (dataset-run link items) for context
+            dlink_items = self._table.query(
+                pk=pk,
+                sk_prefix=SK_DLINK_PREFIX,
+            )
+            for item in dlink_items:
+                # Extract context if present (mlflow.data.context tag from log_inputs)
+                if "context" in item:
+                    # SK format: DLINK#<name>#<digest>#R#<run_id>
+                    sk = item.get("SK", "")
+                    if sk.startswith(SK_DLINK_PREFIX):
+                        parts = sk[len(SK_DLINK_PREFIX) :].split("#", 2)
+                        if len(parts) >= 2:
+                            name, digest = parts[0], parts[1]
+                            key = (name, digest)
+                            if key in dataset_map:
+                                dataset_map[key]["context"] = item["context"]
+
+        # Build DatasetSummary protobuf objects
+        results: list[DatasetSummary] = []
+        for (name, digest), data in dataset_map.items():
+            summary = DatasetSummary()
+            exp_id: str = data["experiment_id"]
+            ds_name: str = data["name"]
+            ds_digest: str = data["digest"]
+            summary.experiment_id = exp_id
+            summary.name = ds_name
+            summary.digest = ds_digest
+            context = data["context"]
+            if context:
+                summary.context = context
+            results.append(summary)
+
+        return results
+
     # ------------------------------------------------------------------
     # Trace CRUD
     # ------------------------------------------------------------------
@@ -2529,3 +2614,581 @@ class DynamoDBTrackingStore(AbstractStore):
             deleted += 1
 
         return deleted
+
+    # ------------------------------------------------------------------
+    # Evaluation Dataset CRUD
+    # ------------------------------------------------------------------
+
+    def _compute_dataset_digest(self, name: str, last_update_time: int) -> str:
+        """Compute a short digest for a dataset from its name and last_update_time."""
+        return hashlib.sha256(f"{name}:{last_update_time}".encode()).hexdigest()[:8]
+
+    def create_dataset(
+        self,
+        name: str,
+        tags: dict[str, str] | None = None,
+        experiment_ids: list[str] | None = None,
+    ) -> EvaluationDataset:
+        """Create a new evaluation dataset and return it."""
+        # Check name uniqueness via GSI3
+        existing = self._table.query(
+            pk=f"{GSI3_DS_NAME_PREFIX}{self._workspace}#{name.lower()}",
+            index_name="gsi3",
+            limit=1,
+        )
+        if existing:
+            raise MlflowException(
+                f"Dataset with name '{name}' already exists.",
+                error_code=RESOURCE_ALREADY_EXISTS,
+            )
+
+        now_ms = int(time.time() * 1000)
+        dataset_id = f"eval_{generate_ulid()}"
+        digest = self._compute_dataset_digest(name, now_ms)
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+
+        # Write META item
+        meta_item: dict[str, Any] = {
+            "PK": pk,
+            "SK": SK_DATASET_META,
+            "name": name,
+            "digest": digest,
+            "created_time": now_ms,
+            "last_update_time": now_ms,
+            "workspace": self._workspace,
+            "tags": tags or {},
+            # LSI projections
+            LSI1_SK: now_ms,
+            LSI2_SK: now_ms,
+            LSI3_SK: name.lower(),
+            # GSI2: list all datasets in workspace
+            GSI2_PK: f"{GSI2_DS_LIST_PREFIX}{self._workspace}",
+            GSI2_SK: dataset_id,
+            # GSI3: name uniqueness
+            GSI3_PK: f"{GSI3_DS_NAME_PREFIX}{self._workspace}#{name.lower()}",
+            GSI3_SK: dataset_id,
+        }
+        self._table.put_item(meta_item)
+
+        # Write tag items
+        if tags:
+            for key, value in tags.items():
+                tag_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_TAG_PREFIX}{key}",
+                    "key": key,
+                    "value": value,
+                }
+                self._table.put_item(tag_item)
+
+        # Write experiment link items
+        if experiment_ids:
+            for exp_id in experiment_ids:
+                exp_link_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_EXP_PREFIX}{exp_id}",
+                    # GSI1 reverse lookup: from experiment -> datasets
+                    GSI1_PK: f"{GSI1_DS_EXP_PREFIX}{exp_id}",
+                    GSI1_SK: dataset_id,
+                }
+                self._table.put_item(exp_link_item)
+
+        return EvaluationDataset(
+            dataset_id=dataset_id,
+            name=name,
+            digest=digest,
+            created_time=now_ms,
+            last_update_time=now_ms,
+            tags=tags or {},
+        )
+
+    def get_dataset(self, dataset_id: str) -> EvaluationDataset:
+        """Fetch an evaluation dataset by ID."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is None:
+            raise MlflowException(
+                f"Dataset '{dataset_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Load tags from tag items
+        tag_items = self._table.query(pk=pk, sk_prefix=SK_DATASET_TAG_PREFIX)
+        tags = {item["key"]: item["value"] for item in tag_items}
+
+        # Load experiment IDs
+        experiment_ids = self.get_dataset_experiment_ids(dataset_id)
+
+        ds = EvaluationDataset(
+            dataset_id=dataset_id,
+            name=meta["name"],
+            digest=meta["digest"],
+            created_time=int(meta["created_time"]),
+            last_update_time=int(meta["last_update_time"]),
+            tags=tags,
+            profile=meta.get("profile"),
+        )
+        ds.experiment_ids = experiment_ids
+        return ds
+
+    def delete_dataset(self, dataset_id: str) -> None:
+        """Delete an evaluation dataset and all its sub-items."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        all_items = self._table.query(pk=pk)
+        if not all_items:
+            # Idempotent: nothing to delete
+            return
+        keys = [{"PK": item["PK"], "SK": item["SK"]} for item in all_items]
+        self._table.batch_delete(keys)
+
+    def get_dataset_experiment_ids(self, dataset_id: str) -> list[str]:
+        """Return experiment IDs associated with a dataset."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        items = self._table.query(pk=pk, sk_prefix=SK_DATASET_EXP_PREFIX)
+        return [item["SK"][len(SK_DATASET_EXP_PREFIX) :] for item in items]
+
+    def search_datasets(
+        self,
+        experiment_ids: list[str] | None = None,
+        filter_string: str | None = None,
+        max_results: int = 1000,
+        order_by: list[str] | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[EvaluationDataset]:
+        """Search evaluation datasets with optional filtering, ordering, and pagination.
+
+        Args:
+            experiment_ids: Limit results to datasets linked to these experiments.
+            filter_string: Filter expression, supports ``name LIKE 'pattern'``.
+            max_results: Maximum number of results per page.
+            order_by: Ordering criteria, e.g. ``["name ASC"]``.
+            page_token: Opaque token for fetching the next page.
+
+        Returns:
+            A PagedList of EvaluationDataset objects.
+        """
+        import re
+
+        from mlflow_dynamodbstore.dynamodb.pagination import (
+            decode_page_token,
+            encode_page_token,
+        )
+
+        # Decode pagination state
+        token_state = decode_page_token(page_token)
+        offset = token_state["offset"] if token_state else 0
+
+        # --- Collect all matching dataset META items ---
+        if experiment_ids:
+            # AP5 + AP13: query GSI1 for each experiment, then get META items
+            dataset_ids: list[str] = []
+            seen: set[str] = set()
+            for exp_id in experiment_ids:
+                gsi1_pk = f"{GSI1_DS_EXP_PREFIX}{exp_id}"
+                link_items = self._table.query(pk=gsi1_pk, index_name="gsi1")
+                for item in link_items:
+                    did = item[GSI1_SK]
+                    if did not in seen:
+                        seen.add(did)
+                        dataset_ids.append(did)
+
+            all_datasets: list[EvaluationDataset] = []
+            for did in dataset_ids:
+                pk = f"{PK_DATASET_PREFIX}{did}"
+                meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+                if meta is None:
+                    continue
+                all_datasets.append(
+                    EvaluationDataset(
+                        dataset_id=did,
+                        name=meta["name"],
+                        digest=meta["digest"],
+                        created_time=int(meta["created_time"]),
+                        last_update_time=int(meta["last_update_time"]),
+                        tags=meta.get("tags") or {},
+                    )
+                )
+        else:
+            # AP4: query GSI2 for all datasets in workspace
+            gsi2_pk = f"{GSI2_DS_LIST_PREFIX}{self._workspace}"
+            meta_items = self._table.query(pk=gsi2_pk, index_name="gsi2")
+            all_datasets = []
+            for item in meta_items:
+                did = item[GSI2_SK]
+                pk = f"{PK_DATASET_PREFIX}{did}"
+                meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+                if meta is None:
+                    continue
+                all_datasets.append(
+                    EvaluationDataset(
+                        dataset_id=did,
+                        name=meta["name"],
+                        digest=meta["digest"],
+                        created_time=int(meta["created_time"]),
+                        last_update_time=int(meta["last_update_time"]),
+                        tags=meta.get("tags") or {},
+                    )
+                )
+
+        # --- Apply filter_string in-memory ---
+        if filter_string:
+            # Support: name LIKE 'pattern%' or name LIKE '%pattern%'
+            like_match = re.match(
+                r"""name\s+LIKE\s+['"](.+)['"]\s*$""", filter_string.strip(), re.IGNORECASE
+            )
+            if like_match:
+                pattern = like_match.group(1)
+                if pattern.startswith("%") and pattern.endswith("%"):
+                    substring = pattern.strip("%")
+                    all_datasets = [d for d in all_datasets if substring in d.name]
+                elif pattern.endswith("%"):
+                    prefix = pattern.rstrip("%")
+                    all_datasets = [d for d in all_datasets if d.name.startswith(prefix)]
+                elif pattern.startswith("%"):
+                    suffix = pattern.lstrip("%")
+                    all_datasets = [d for d in all_datasets if d.name.endswith(suffix)]
+                else:
+                    all_datasets = [d for d in all_datasets if d.name == pattern]
+
+        # --- Apply order_by in-memory ---
+        if order_by:
+            for criterion in reversed(order_by):
+                parts = criterion.strip().split()
+                field = parts[0].lower()
+                direction = parts[1].upper() if len(parts) > 1 else "ASC"
+                reverse = direction == "DESC"
+                if field == "name":
+                    all_datasets.sort(key=lambda d: d.name, reverse=reverse)
+                elif field == "created_time":
+                    all_datasets.sort(key=lambda d: d.created_time, reverse=reverse)
+                elif field == "last_update_time":
+                    all_datasets.sort(key=lambda d: d.last_update_time, reverse=reverse)
+
+        # --- Apply pagination ---
+        total = len(all_datasets)
+        page = all_datasets[offset : offset + max_results]
+        next_offset = offset + len(page)
+        next_token = encode_page_token({"offset": next_offset}) if next_offset < total else None
+
+        return PagedList(page, next_token)
+
+    def set_dataset_tags(self, dataset_id: str, tags: dict[str, str]) -> None:
+        """Set (upsert) one or more tags on an evaluation dataset."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        for key, value in tags.items():
+            # Write individual tag item (overwrite = upsert)
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_TAG_PREFIX}{key}",
+                    "key": key,
+                    "value": value,
+                }
+            )
+            # Update denormalized tags map on META item
+            self._denormalize_tag(pk=pk, sk=SK_DATASET_META, tag_key=key, tag_value=value)
+
+        # Update last_update_time and digest
+        now_ms = int(time.time() * 1000)
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is not None:
+            digest = self._compute_dataset_digest(meta["name"], now_ms)
+            self._table.update_item(
+                pk=pk,
+                sk=SK_DATASET_META,
+                updates={"last_update_time": now_ms, "digest": digest},
+            )
+
+    def delete_dataset_tag(self, dataset_id: str, key: str) -> None:
+        """Delete a single tag from an evaluation dataset."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        # Delete the individual tag item
+        self._table.delete_item(pk=pk, sk=f"{SK_DATASET_TAG_PREFIX}{key}")
+        # Remove from denormalized tags map on META
+        self._remove_denormalized_tag(pk=pk, sk=SK_DATASET_META, tag_key=key)
+        # Update last_update_time and digest
+        now_ms = int(time.time() * 1000)
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is not None:
+            digest = self._compute_dataset_digest(meta["name"], now_ms)
+            self._table.update_item(
+                pk=pk,
+                sk=SK_DATASET_META,
+                updates={"last_update_time": now_ms, "digest": digest},
+            )
+
+    def add_dataset_to_experiments(
+        self, dataset_id: str, experiment_ids: list[str]
+    ) -> EvaluationDataset:
+        """Associate an evaluation dataset with one or more experiments."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        for exp_id in experiment_ids:
+            # put_item overwrites = idempotent
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_EXP_PREFIX}{exp_id}",
+                    GSI1_PK: f"{GSI1_DS_EXP_PREFIX}{exp_id}",
+                    GSI1_SK: dataset_id,
+                }
+            )
+        # Update last_update_time and digest
+        now_ms = int(time.time() * 1000)
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is not None:
+            digest = self._compute_dataset_digest(meta["name"], now_ms)
+            self._table.update_item(
+                pk=pk,
+                sk=SK_DATASET_META,
+                updates={"last_update_time": now_ms, "digest": digest},
+            )
+        return self.get_dataset(dataset_id)
+
+    def remove_dataset_from_experiments(
+        self, dataset_id: str, experiment_ids: list[str]
+    ) -> EvaluationDataset:
+        """Remove an evaluation dataset's association from one or more experiments."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        for exp_id in experiment_ids:
+            self._table.delete_item(pk=pk, sk=f"{SK_DATASET_EXP_PREFIX}{exp_id}")
+        # Update last_update_time and digest
+        now_ms = int(time.time() * 1000)
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is not None:
+            digest = self._compute_dataset_digest(meta["name"], now_ms)
+            self._table.update_item(
+                pk=pk,
+                sk=SK_DATASET_META,
+                updates={"last_update_time": now_ms, "digest": digest},
+            )
+        return self.get_dataset(dataset_id)
+
+    # ------------------------------------------------------------------
+    # Dataset Record CRUD
+    # ------------------------------------------------------------------
+
+    def upsert_dataset_records(
+        self,
+        dataset_id: str,
+        records: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        """Upsert records into an evaluation dataset.
+
+        Each record is keyed by its input_hash (SHA-256 of sorted JSON inputs).
+        Existing records with the same input_hash are updated; new ones are
+        inserted with a fresh ``edrec_<ulid>`` ID.
+
+        Args:
+            dataset_id: The ID of the dataset to update.
+            records: List of record dicts with keys: inputs, outputs,
+                expectations, tags, source.
+
+        Returns:
+            Dictionary with ``inserted`` and ``updated`` counts.
+        """
+        import json as _json
+
+        from boto3.dynamodb.conditions import Attr
+
+        # Verify dataset exists
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is None:
+            raise MlflowException(
+                f"Dataset '{dataset_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        inserted = 0
+        updated = 0
+
+        for record in records:
+            inputs = record.get("inputs", {})
+            outputs = record.get("outputs")
+            expectations = record.get("expectations")
+            record_tags = record.get("tags")
+            source = record.get("source")
+
+            # Compute input_hash
+            input_hash = hashlib.sha256(
+                _json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:8]
+
+            # Dedup: query LSI3 for existing record with same input_hash
+            existing_items, _ = self._table.query_page(
+                pk=pk,
+                sk_prefix=input_hash,
+                index_name="lsi3",
+                filter_expression=Attr("SK").begins_with(SK_DATASET_RECORD_PREFIX),
+            )
+
+            now_ms = int(time.time() * 1000)
+
+            if existing_items:
+                # Update the first matching record
+                existing = existing_items[0]
+                updates: dict[str, Any] = {
+                    "last_update_time": now_ms,
+                    LSI2_SK: str(now_ms),
+                }
+                if outputs is not None:
+                    updates["outputs"] = outputs
+                if expectations is not None:
+                    updates["expectations"] = expectations
+                if record_tags is not None:
+                    updates["tags"] = record_tags
+                if source is not None:
+                    updates["source"] = source
+                self._table.update_item(
+                    pk=existing["PK"],
+                    sk=existing["SK"],
+                    updates=updates,
+                )
+                updated += 1
+            else:
+                # Insert new record
+                record_id = f"edrec_{generate_ulid()}"
+                record_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_RECORD_PREFIX}{record_id}",
+                    "dataset_id": dataset_id,
+                    "dataset_record_id": record_id,
+                    "inputs": inputs,
+                    "input_hash": input_hash,
+                    "created_time": now_ms,
+                    "last_update_time": now_ms,
+                    # LSI projections
+                    LSI1_SK: str(now_ms),
+                    LSI2_SK: str(now_ms),
+                    LSI3_SK: input_hash,
+                }
+                if outputs is not None:
+                    record_item["outputs"] = outputs
+                if expectations is not None:
+                    record_item["expectations"] = expectations
+                if record_tags is not None:
+                    record_item["tags"] = record_tags
+                if source is not None:
+                    record_item["source"] = source
+                self._table.put_item(record_item)
+                inserted += 1
+
+        # Recount records to update META profile
+        all_records, _ = self._table.query_page(
+            pk=pk,
+            sk_prefix=SK_DATASET_RECORD_PREFIX,
+            limit=10000,
+        )
+        num_records = len(all_records)
+
+        now_ms = int(time.time() * 1000)
+        digest = self._compute_dataset_digest(meta["name"], now_ms)
+        self._table.update_item(
+            pk=pk,
+            sk=SK_DATASET_META,
+            updates={
+                "profile": _json.dumps({"num_records": num_records}),
+                "last_update_time": now_ms,
+                "digest": digest,
+                LSI2_SK: str(now_ms),
+            },
+        )
+
+        return {"inserted": inserted, "updated": updated}
+
+    def _load_dataset_records(
+        self,
+        dataset_id: str,
+        max_results: int = 1000,
+        page_token: str | None = None,
+    ) -> tuple[list[Any], str | None]:
+        """Load records for a dataset with pagination.
+
+        Args:
+            dataset_id: The dataset to load records for.
+            max_results: Maximum records per page.
+            page_token: Opaque cursor from a previous call.
+
+        Returns:
+            Tuple of (records, next_page_token). next_page_token is None on
+            the last page.
+        """
+        from mlflow.entities.dataset_record import DatasetRecord
+
+        from mlflow_dynamodbstore.dynamodb.pagination import (
+            decode_page_token,
+            encode_page_token,
+        )
+
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+
+        token_state = decode_page_token(page_token)
+        exclusive_start_key = token_state.get("lek") if token_state else None
+
+        items, lek = self._table.query_page(
+            pk=pk,
+            sk_prefix=SK_DATASET_RECORD_PREFIX,
+            limit=max_results,
+            exclusive_start_key=exclusive_start_key,
+        )
+
+        record_list = [
+            DatasetRecord(
+                dataset_id=dataset_id,
+                dataset_record_id=item["dataset_record_id"],
+                inputs=item.get("inputs", {}),
+                created_time=int(item["created_time"]),
+                last_update_time=int(item["last_update_time"]),
+                outputs=item.get("outputs"),
+                expectations=item.get("expectations"),
+                tags=item.get("tags"),
+            )
+            for item in items
+        ]
+
+        next_token = encode_page_token({"lek": lek}) if lek else None
+        return record_list, next_token
+
+    def delete_dataset_records(
+        self,
+        dataset_id: str,
+        record_ids: list[str],
+    ) -> int:
+        """Delete specific records from a dataset.
+
+        Args:
+            dataset_id: The dataset to delete records from.
+            record_ids: List of record IDs (``edrec_...``) to delete.
+
+        Returns:
+            Count of records deleted.
+        """
+        import json as _json
+
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        keys = [{"PK": pk, "SK": f"{SK_DATASET_RECORD_PREFIX}{rec_id}"} for rec_id in record_ids]
+        self._table.batch_delete(keys)
+
+        # Recount and update META profile
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is not None:
+            all_records, _ = self._table.query_page(
+                pk=pk,
+                sk_prefix=SK_DATASET_RECORD_PREFIX,
+                limit=10000,
+            )
+            num_records = len(all_records)
+            now_ms = int(time.time() * 1000)
+            digest = self._compute_dataset_digest(meta["name"], now_ms)
+            self._table.update_item(
+                pk=pk,
+                sk=SK_DATASET_META,
+                updates={
+                    "profile": _json.dumps({"num_records": num_records}),
+                    "last_update_time": now_ms,
+                    "digest": digest,
+                    LSI2_SK: str(now_ms),
+                },
+            )
+
+        return len(record_ids)

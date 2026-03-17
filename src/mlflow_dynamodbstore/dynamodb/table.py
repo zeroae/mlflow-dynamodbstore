@@ -188,3 +188,57 @@ class DynamoDBTable:
         with self._table.batch_writer() as batch:
             for item in items:
                 batch.put_item(Item=item)
+
+    def batch_delete(self, keys: list[dict[str, Any]]) -> None:
+        """Batch delete items by PK+SK key dicts."""
+        with self._table.batch_writer() as batch:
+            for key in keys:
+                batch.delete_item(Key=key)
+
+    # ------------------------------------------------------------------
+    # Paged query
+    # ------------------------------------------------------------------
+
+    def query_page(
+        self,
+        pk: str,
+        sk_prefix: str | None = None,
+        index_name: str | None = None,
+        limit: int | None = None,
+        scan_forward: bool = True,
+        consistent: bool = False,
+        exclusive_start_key: dict[str, Any] | None = None,
+        filter_expression: ConditionBase | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        """Query a single page, returning (items, last_evaluated_key).
+
+        Unlike query(), this does NOT auto-exhaust pagination.
+        Returns the raw LastEvaluatedKey for caller-managed cursors.
+        """
+        if index_name:
+            pk_attr, sk_attr = _INDEX_KEY_ATTRS[index_name]
+        else:
+            pk_attr, sk_attr = "PK", "SK"
+
+        key_cond: ConditionBase = Key(pk_attr).eq(pk)
+        if sk_prefix:
+            key_cond = key_cond & Key(sk_attr).begins_with(sk_prefix)
+
+        kwargs: dict[str, Any] = {
+            "KeyConditionExpression": key_cond,
+            "ScanIndexForward": scan_forward,
+            "ConsistentRead": consistent,
+        }
+        if index_name:
+            kwargs["IndexName"] = index_name
+        if limit is not None:
+            kwargs["Limit"] = limit
+        if exclusive_start_key is not None:
+            kwargs["ExclusiveStartKey"] = exclusive_start_key
+        if filter_expression is not None:
+            kwargs["FilterExpression"] = filter_expression
+
+        response = self._table.query(**kwargs)
+        items: list[dict[str, Any]] = response.get("Items", [])
+        lek: dict[str, Any] | None = response.get("LastEvaluatedKey")
+        return items, lek

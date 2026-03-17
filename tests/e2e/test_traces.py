@@ -178,7 +178,6 @@ class TestDemoGeneration:
         )
         assert resp.status_code == 200, f"Demo traces failed: {resp.text}"
 
-    @pytest.mark.xfail(reason="create_dataset not yet implemented in DynamoDBTrackingStore")
     def test_generate_demo_evaluation(self, mlflow_server):
         """Demo evaluation requires dataset support."""
         import requests
@@ -186,6 +185,6 @@ class TestDemoGeneration:
         resp = requests.post(
             f"{mlflow_server}/ajax-api/3.0/mlflow/demo/generate",
             json={"features": ["evaluation"]},
-            timeout=120,
+            timeout=300,
         )
         assert resp.status_code == 200, f"Demo evaluation failed: {resp.text}"

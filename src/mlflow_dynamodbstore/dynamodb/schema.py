@@ -98,3 +98,19 @@ GSI5_MODEL_NAMES_PREFIX = "MODEL_NAMES#"
 CONFIG_DENORMALIZE_TAGS = "DENORMALIZE_TAGS"
 CONFIG_TTL_POLICY = "TTL_POLICY"
 CONFIG_FTS_TRIGRAM_FIELDS = "FTS_TRIGRAM_FIELDS"
+
+# ---------------------------------------------------------------------------
+# Evaluation Dataset partition (DS#<dataset_id>)
+# ---------------------------------------------------------------------------
+PK_DATASET_PREFIX = "DS#"
+SK_DATASET_META = "DS#META"
+SK_DATASET_TAG_PREFIX = "DS#TAG#"
+SK_DATASET_RECORD_PREFIX = "DS#REC#"
+SK_DATASET_EXP_PREFIX = "DS#EXP#"
+
+# GSI prefixes for evaluation datasets
+# Note: GSI1_DS_PREFIX = "DS#" already exists for legacy V2 dataset items.
+# The new DS_EXP# prefix is for experiment-dataset associations (distinct purpose).
+GSI1_DS_EXP_PREFIX = "DS_EXP#"
+GSI2_DS_LIST_PREFIX = "DS_LIST#"
+GSI3_DS_NAME_PREFIX = "DS_NAME#"
