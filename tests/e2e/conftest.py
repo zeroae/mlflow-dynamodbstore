@@ -174,10 +174,9 @@ def _delete_stack(table_name: str, region: str) -> None:
     """Delete the CloudFormation stack and wait for completion."""
     import boto3
 
-    from mlflow_dynamodbstore.dynamodb.provisioner import get_stack_name
-
     cfn = boto3.client("cloudformation", region_name=region)
-    stack_name = get_stack_name(table_name)
+    # The provisioner uses table_name as the stack name
+    stack_name = table_name
     print(f"\nDeleting CloudFormation stack: {stack_name}")
     try:
         cfn.delete_stack(StackName=stack_name)
