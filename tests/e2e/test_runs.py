@@ -109,15 +109,15 @@ class TestRuns:
         )
         assert any(r.info.run_id == run.info.run_id for r in runs)
 
-    @pytest.mark.xfail(reason="Shared experiment fixture — other runs pollute ORDER BY results")
-    def test_search_runs_order_by_metric(self, client: MlflowClient, experiment_id):
+    def test_search_runs_order_by_metric(self, client: MlflowClient):
         """ORDER BY metrics.score DESC — uses RANK items."""
+        exp_id = client.create_experiment(f"e2e-orderby-{_uid()}")
         for val in [0.1, 0.9, 0.5]:
-            run = client.create_run(experiment_id)
+            run = client.create_run(exp_id)
             client.log_metric(run.info.run_id, "score", val)
             client.set_terminated(run.info.run_id, "FINISHED")
         runs = client.search_runs(
-            experiment_ids=[experiment_id],
+            experiment_ids=[exp_id],
             order_by=["metrics.score DESC"],
         )
         scores = [r.data.metrics["score"] for r in runs if "score" in r.data.metrics]

@@ -183,7 +183,7 @@ def plan_run_query(
     if order_by:
         for token in order_by:
             field_type, key, scan_forward = _parse_order_by_token(token)
-            if field_type in ("metric", "param"):
+            if field_type in ("metric", "metrics", "param", "params"):
                 return QueryPlan(
                     strategy="rank",
                     index=None,
