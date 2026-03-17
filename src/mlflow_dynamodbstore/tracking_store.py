@@ -122,6 +122,29 @@ def _rev(s: str) -> str:
     return s[::-1]
 
 
+class _ScorerVersionCompat(ScorerVersion):
+    """ScorerVersion that handles non-integer experiment_id in to_proto().
+
+    MLflow's ScorerVersion.to_proto() calls int(experiment_id) which fails
+    for ULID string IDs. This subclass skips the experiment_id proto field
+    since the handler's response already includes it as a string.
+    """
+
+    def to_proto(self) -> Any:
+        from mlflow.protos.service_pb2 import Scorer as ProtoScorer
+
+        proto = ProtoScorer()
+        # Skip experiment_id — proto field is int32, our IDs are ULID strings.
+        # The REST handler's response includes experiment_id separately.
+        proto.scorer_name = self.scorer_name
+        proto.scorer_version = self.scorer_version
+        proto.serialized_scorer = self._serialized_scorer
+        proto.creation_time = self.creation_time
+        if self.scorer_id is not None:
+            proto.scorer_id = self.scorer_id
+        return proto
+
+
 def _int_or_none(value: Any) -> int | None:
     """Convert a value to int, or return None if the value is None."""
     return int(value) if value is not None else None
@@ -2638,7 +2661,7 @@ class DynamoDBTrackingStore(AbstractStore):
                     "creation_time": now_ms,
                 }
                 self._table.put_item(ver_item)
-                return ScorerVersion(
+                return _ScorerVersionCompat(
                     experiment_id=experiment_id,
                     scorer_name=name,
                     scorer_version=version,
@@ -2661,7 +2684,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "creation_time": now_ms,
         }
         self._table.put_item(ver_item)
-        return ScorerVersion(
+        return _ScorerVersionCompat(
             experiment_id=experiment_id,
             scorer_name=name,
             scorer_version=version,
@@ -2702,7 +2725,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
         # Read META for scorer_name (in case name casing differs)
         meta = self._table.get_item(pk=pk, sk=meta_sk)
-        return ScorerVersion(
+        return _ScorerVersionCompat(
             experiment_id=experiment_id,
             scorer_name=meta["scorer_name"] if meta else name,
             scorer_version=int(item["scorer_version"]),
@@ -2731,7 +2754,7 @@ class DynamoDBTrackingStore(AbstractStore):
             if versions:
                 ver = versions[0]
                 result.append(
-                    ScorerVersion(
+                    _ScorerVersionCompat(
                         experiment_id=experiment_id,
                         scorer_name=meta["scorer_name"],
                         scorer_version=int(ver["scorer_version"]),
@@ -2760,7 +2783,7 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=f"{SK_SCORER_PREFIX}{scorer_id}")
         scorer_name = meta["scorer_name"] if meta else name
         return [
-            ScorerVersion(
+            _ScorerVersionCompat(
                 experiment_id=experiment_id,
                 scorer_name=scorer_name,
                 scorer_version=int(item["scorer_version"]),
