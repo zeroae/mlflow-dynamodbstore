@@ -28,3 +28,23 @@ class TestParseDynamoDBUri:
     def test_invalid_scheme(self):
         with pytest.raises(ValueError, match="scheme"):
             parse_dynamodb_uri("postgresql://localhost/db")
+
+
+class TestDeployQueryParam:
+    def test_deploy_default_true(self):
+        result = parse_dynamodb_uri("dynamodb://us-east-1/my-table")
+        assert result.deploy is True
+
+    def test_deploy_explicit_true(self):
+        result = parse_dynamodb_uri("dynamodb://us-east-1/my-table?deploy=true")
+        assert result.deploy is True
+
+    def test_deploy_false(self):
+        result = parse_dynamodb_uri("dynamodb://us-east-1/my-table?deploy=false")
+        assert result.deploy is False
+
+    def test_deploy_false_with_localhost(self):
+        result = parse_dynamodb_uri("dynamodb://localhost:5000/test-table?deploy=false")
+        assert result.deploy is False
+        assert result.endpoint_url == "http://localhost:5000"
+        assert result.table_name == "test-table"
