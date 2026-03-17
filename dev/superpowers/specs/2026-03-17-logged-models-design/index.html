@@ -1632,10 +1632,34 @@
 </tbody>
 </table>
 <h3 id="filter-string-strategy">Filter String Strategy<a class="headerlink" href="#filter-string-strategy" title="Permanent link">&para;</a></h3>
+<p>Follows the same <code>parse → plan → execute</code> pattern as run search (<code>parse_run_filter</code> → <code>plan_run_query</code> → <code>execute_query</code>) and trace search (<code>parse_trace_filter</code> → <code>plan_trace_query</code> → <code>execute_trace_query</code>) in <code>dynamodb/search.py</code>.</p>
+<p><strong>Three new functions in <code>dynamodb/search.py</code>:</strong></p>
+<p><strong><code>parse_logged_model_filter(filter_string)</code></strong>
+- Delegates to MLflow's <code>SearchLoggedModelsUtils.parse_search_filter(filter_string)</code>.
+- Returns <code>list[FilterPredicate]</code> with field_type in <code>{attribute, metric, param, tag}</code>.
+- Valid attribute keys: <code>name</code>, <code>model_id</code>, <code>model_type</code>, <code>status</code>, <code>source_run_id</code>, <code>creation_timestamp</code>, <code>last_updated_timestamp</code>.</p>
+<p><strong><code>plan_logged_model_query(predicates, order_by, datasets)</code></strong>
+- Returns a <code>QueryPlan</code> with the optimal DynamoDB execution strategy.
+- Strategy selection priority:
+  1. <strong>RANK</strong> — metric in <code>order_by</code> (global or dataset-scoped)
+  2. <strong>LSI3</strong> — <code>status=</code> filter predicate
+  3. <strong>LSI4</strong> — <code>order_by name</code>
+  4. <strong>LSI2</strong> — <code>order_by creation_timestamp</code> or default
+  5. <strong>Default</strong> — LSI1 lifecycle filter (<code>active#</code>)
+- Metric filter predicates (e.g., <code>metrics.accuracy &gt; 0.5</code>) are classified as <code>rank_filters</code> on the QueryPlan, executed as RANK range queries and intersected with the primary result set.
+- Remaining predicates become <code>post_filters</code> (attribute checks on META, param/tag sub-item lookups).</p>
+<p><strong><code>execute_logged_model_query(table, plan, pk, max_results, page_token, predicates)</code></strong>
+- Dispatches to <code>_execute_lm_rank</code>, <code>_execute_lm_index</code>, etc. based on <code>plan.strategy</code>.
+- For RANK strategy: queries <code>RANK#lm#&lt;metric&gt;#</code> or <code>RANK#lmd#&lt;metric&gt;#&lt;ds&gt;#&lt;digest&gt;#</code>, extracts model_ids, batch-gets META items.
+- For index strategy: queries the chosen LSI with <code>SK begins_with LM#</code> filter to exclude non-model items.
+- Applies <code>plan.rank_filters</code>: queries RANK items with range conditions, intersects with candidate model_ids.
+- Applies <code>plan.post_filters</code>: attribute filters against META fields, param/tag sub-item lookups per candidate.
+- Pagination: offset-based with <code>encode_page_token</code>/<code>decode_page_token</code>.
+- Returns <code>(list[dict], next_page_token)</code>.</p>
+<p><strong>QueryPlan extensions:</strong>
+- Add <code>rank_filters: list[FilterPredicate]</code> field — metric predicates that use RANK range queries.
+- Add <code>datasets: list[dict] | None</code> field — dataset context for scoping RANK queries.</p>
 <p><code>search_logged_models</code> supports filter expressions like <code>name = 'foo'</code>, <code>metrics.accuracy &gt; 0.9</code>, <code>params.lr = '0.01'</code>, <code>tags.env = 'prod'</code>.</p>
-<p><strong>Attribute filters</strong> (name, status, model_type, source_run_id): applied in-memory against denormalized META fields. For status, can use LSI3 to pre-filter.</p>
-<p><strong>Metrics filters</strong>: use RANK items for DynamoDB-native range queries. When <code>filter_string</code> contains <code>metrics.accuracy &gt; 0.5</code>, query <code>RANK#lm#accuracy#</code> with SK range condition (AP14). With dataset scope via the <code>datasets</code> parameter, query <code>RANK#lmd#accuracy#&lt;dataset_name&gt;#&lt;dataset_digest&gt;#</code> (AP15). The RANK query returns model_ids directly — no need to load metric sub-items per model.</p>
-<p><strong>Params/Tags filters</strong>: require loading sub-items per candidate model, applied in-memory. This matches the existing <code>search_traces</code> approach for span-level filters.</p>
 <h3 id="rank-items-for-logged-model-metrics">RANK Items for Logged Model Metrics<a class="headerlink" href="#rank-items-for-logged-model-metrics" title="Permanent link">&para;</a></h3>
 <p>RANK items are materialized sort/filter indexes for metric values, following the same pattern as run metric RANK items in the original design spec.</p>
 <p><strong>Two RANK item types:</strong></p>
@@ -1738,21 +1762,14 @@
 <p>This matches the existing <code>delete_run</code> pattern exactly.</p>
 <h3 id="search">Search<a class="headerlink" href="#search" title="Permanent link">&para;</a></h3>
 <p><strong><code>search_logged_models(experiment_ids, filter_string, datasets, max_results, order_by, page_token)</code></strong>
-1. Parse filter_string into attribute/metric/param/tag predicates. Parse order_by.
-2. <strong>If order_by is a metric</strong> (e.g., <code>metrics.accuracy</code>):
-   a. For each experiment_id: query RANK items (<code>SK begins_with RANK#lm#&lt;metric&gt;#</code> or <code>RANK#lmd#&lt;metric&gt;#&lt;ds_name&gt;#&lt;ds_digest&gt;#</code>). This returns model_ids pre-sorted by metric value.
-   b. Batch-get META items for the returned model_ids.
-   c. Exclude soft-deleted models (lifecycle_stage=deleted).
-3. <strong>Otherwise</strong> (order_by is an attribute like creation_time, name):
-   a. For each experiment_id: query META items using appropriate LSI (LSI2 for creation_time, LSI4 for name), filtering <code>SK begins_with LM#</code> to exclude non-model items.
-   b. Exclude soft-deleted models.
-4. <strong>If filter includes metric predicates</strong> (e.g., <code>metrics.accuracy &gt; 0.5</code>):
-   a. Query RANK items with range condition (AP14/AP15) to get matching model_ids.
-   b. Intersect with candidate set from step 2 or 3.
-5. For attribute predicates: apply in-memory against META fields.
-6. For param/tag predicates: lazy-load sub-items per candidate model, apply in-memory.
-7. Apply pagination: cursor-based token encoding model_id of last result.
-8. Return <code>PagedList[LoggedModel]</code>.</p>
+1. <code>predicates = parse_logged_model_filter(filter_string)</code>
+2. <code>plan = plan_logged_model_query(predicates, order_by, datasets)</code>
+3. For each experiment_id:
+   a. <code>pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"</code>
+   b. <code>items, token = execute_logged_model_query(table, plan, pk, max_results, page_token, predicates)</code>
+4. Merge results across experiments (for multi-experiment queries).
+5. Convert items to <code>LoggedModel</code> entities (query tags, params, metrics sub-items per model).
+6. Return <code>PagedList[LoggedModel]</code>.</p>
 <h3 id="tags">Tags<a class="headerlink" href="#tags" title="Permanent link">&para;</a></h3>
 <p><strong><code>set_logged_model_tags(model_id, tags)</code></strong>
 1. Resolve experiment_id via GSI1.
@@ -1816,9 +1833,16 @@
 </ul>
 <h3 id="e2e-tests-full-server">E2E Tests (full server)<a class="headerlink" href="#e2e-tests-full-server" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Logged model CRUD via HTTP endpoints</li>
-<li>Search logged models returns (currently 500s → should return empty list)</li>
-<li>Verify experiment overview page loads without 500s</li>
+<li>Logged model CRUD via HTTP endpoints: create → get → finalize → delete</li>
+<li><strong>Search validation</strong> (the primary goal — these are the queries the UI sends):</li>
+<li><code>search_logged_models(experiment_ids=[exp_id])</code> returns empty list (no 500)</li>
+<li>Create multiple models → search returns them all</li>
+<li>Search with <code>filter_string="name = 'model-a'"</code> returns only matching model</li>
+<li>Search with <code>filter_string="status = 'READY'"</code> returns only finalized models</li>
+<li>Search with <code>order_by=[{"field_name": "creation_timestamp", "ascending": False}]</code> returns models in correct order</li>
+<li>Search across multiple experiment_ids returns models from both</li>
+<li>Tag operations via HTTP endpoints</li>
+<li>Verify experiment overview page loads without 500s (the original bug)</li>
 </ul>
 <h3 id="coverage">Coverage<a class="headerlink" href="#coverage" title="Permanent link">&para;</a></h3>
 <p>100% patch coverage on new code.</p>
