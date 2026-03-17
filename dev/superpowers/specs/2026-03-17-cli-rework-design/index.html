@@ -12,31 +12,27 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/mlflow-dynamodbstore/dev/operator-guide/cli-reference/">
+        <link rel="canonical" href="https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-17-cli-rework-design/">
       
       
-        <link rel="prev" href="../../user-guide/xray-integration/">
-      
-      
-        <link rel="next" href="../ttl-lifecycle/">
       
       
         
       
       
-      <link rel="icon" href="../../assets/images/favicon.png">
+      <link rel="icon" href="../../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
     
     
       
-        <title>CLI Reference - mlflow-dynamodbstore</title>
+        <title>CLI Rework Design - mlflow-dynamodbstore</title>
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -55,11 +51,11 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
     
-      <link rel="stylesheet" href="../../stylesheets/extra.css">
+      <link rel="stylesheet" href="../../../stylesheets/extra.css">
     
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -84,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#cli-reference" class="md-skip">
+        <a href="#cli-rework-design" class="md-skip">
           Skip to content
         </a>
       
@@ -104,7 +100,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="mlflow-dynamodbstore" class="md-header__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
+    <a href="../../.." title="mlflow-dynamodbstore" class="md-header__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -124,7 +120,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              CLI Reference
+              CLI Rework Design
             
           </span>
         </div>
@@ -242,7 +238,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="mlflow-dynamodbstore" class="md-nav__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
+    <a href="../../.." title="mlflow-dynamodbstore" class="md-nav__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -272,7 +268,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../.." class="md-nav__link">
+      <a href="../../.." class="md-nav__link">
         
   
   
@@ -346,7 +342,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/quickstart/" class="md-nav__link">
+      <a href="../../../user-guide/quickstart/" class="md-nav__link">
         
   
   
@@ -374,7 +370,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/configuration/" class="md-nav__link">
+      <a href="../../../user-guide/configuration/" class="md-nav__link">
         
   
   
@@ -402,7 +398,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/workspaces/" class="md-nav__link">
+      <a href="../../../user-guide/workspaces/" class="md-nav__link">
         
   
   
@@ -430,7 +426,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/xray-integration/" class="md-nav__link">
+      <a href="../../../user-guide/xray-integration/" class="md-nav__link">
         
   
   
@@ -462,20 +458,18 @@
       
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
         
           
           <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
@@ -496,7 +490,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -511,37 +505,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CLI Reference
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/cli-reference/" class="md-nav__link">
         
   
   
@@ -557,393 +524,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#global-options" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Global Options
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#commands" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Commands
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Commands">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        mlflow-dynamodbstore
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="mlflow-dynamodbstore">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-deploy" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        deploy
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-destroy" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        destroy
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-fts" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        fts
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="fts">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-fts-add" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        add
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-fts-list" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        list
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-tag" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        tag
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="tag">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-tag-add" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        add
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-tag-backfill" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        backfill
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-tag-list" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        list
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-tag-remove" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        remove
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-trace" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        trace
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="trace">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-trace-cache" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cache
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-ttl" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        ttl
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="ttl">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-ttl-cleanup" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cleanup
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-ttl-set" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        set
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-ttl-show" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        show
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-workspace" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        workspace
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="workspace">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore-workspace-delete" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        delete
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#examples" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Examples
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Examples">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#deploy-a-new-stack" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Deploy a new stack
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#destroy-a-stack-retain-table" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Destroy a stack (retain table)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#manage-ttl-policies" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Manage TTL policies
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#manage-tag-denormalization" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Manage tag denormalization
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#full-text-search-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full-text search configuration
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#cache-trace-spans" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cache trace spans
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#delete-a-workspace" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Delete a workspace
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -956,7 +536,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../ttl-lifecycle/" class="md-nav__link">
+      <a href="../../../operator-guide/ttl-lifecycle/" class="md-nav__link">
         
   
   
@@ -984,7 +564,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../monitoring/" class="md-nav__link">
+      <a href="../../../operator-guide/monitoring/" class="md-nav__link">
         
   
   
@@ -1012,7 +592,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../upgrading/" class="md-nav__link">
+      <a href="../../../operator-guide/upgrading/" class="md-nav__link">
         
   
   
@@ -1094,7 +674,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api/" class="md-nav__link">
+      <a href="../../../reference/api/" class="md-nav__link">
         
   
   
@@ -1122,7 +702,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/schema/" class="md-nav__link">
+      <a href="../../../reference/schema/" class="md-nav__link">
         
   
   
@@ -1150,7 +730,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/access-patterns/" class="md-nav__link">
+      <a href="../../../reference/access-patterns/" class="md-nav__link">
         
   
   
@@ -1232,7 +812,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../contributing/development/" class="md-nav__link">
+      <a href="../../../contributing/development/" class="md-nav__link">
         
   
   
@@ -1314,7 +894,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/001-single-table-design/" class="md-nav__link">
+      <a href="../../../adr/001-single-table-design/" class="md-nav__link">
         
   
   
@@ -1369,6 +949,40 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goals
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cli-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Structure
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CLI Structure">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
   <a href="#global-options" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1378,29 +992,210 @@
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#commands" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#command-tree" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Commands
+        Command Tree
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Commands">
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#command-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Command Details
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Command Details">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#mlflow-dynamodbstore" class="md-nav__link">
+  <a href="#deploy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        mlflow-dynamodbstore
+        deploy
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="mlflow-dynamodbstore">
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#destroy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        destroy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workspace-delete" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        workspace delete
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tag-listaddremovebackfill" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        tag list/add/remove/backfill
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ttl-showsetcleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ttl show/set/cleanup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fts-listadd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fts list/add
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trace-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        trace cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stack-naming-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stack Naming Change
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Stack Naming Change">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#uri-parser-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        URI Parser Defaults
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auto-deploy-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-Deploy Behavior
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#region-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Region Resolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Changes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependencies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Documentation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Documentation">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1635,103 +1430,15 @@
     </nav>
   
 </li>
-        
-      </ul>
-    </nav>
-  
-</li>
       
         <li class="md-nav__item">
-  <a href="#examples" class="md-nav__link">
+  <a href="#out-of-scope" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Examples
+        Out of Scope
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Examples">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#deploy-a-new-stack" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Deploy a new stack
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#destroy-a-stack-retain-table" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Destroy a stack (retain table)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#manage-ttl-policies" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Manage TTL policies
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#manage-tag-denormalization" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Manage tag denormalization
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#full-text-search-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full-text search configuration
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#cache-trace-spans" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cache trace spans
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#delete-a-workspace" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Delete a workspace
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1752,7 +1459,7 @@
 
 
   
-    <a href="https://github.com/zeroae/mlflow-dynamodbstore/edit/main/docs/operator-guide/cli-reference.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/mlflow-dynamodbstore/edit/main/docs/superpowers/specs/2026-03-17-cli-rework-design.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1760,45 +1467,336 @@
   
 
 
-<h1 id="cli-reference">CLI Reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h1>
-<p>The <code>mlflow-dynamodbstore</code> CLI provides admin commands for managing your
-DynamoDB-backed MLflow deployment.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mlflow-dynamodbstore<span class="w"> </span>--help
-</span></code></pre></div>
-<h2 id="global-options">Global Options<a class="headerlink" href="#global-options" title="Permanent link">&para;</a></h2>
-<p>Every subcommand inherits:</p>
+<h1 id="cli-rework-design">CLI Rework Design<a class="headerlink" href="#cli-rework-design" title="Permanent link">&para;</a></h1>
+<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
+<p>The <code>mlflow-dynamodbstore</code> CLI has grown organically with flat command names
+(<code>delete-workspace</code>, <code>cache-spans</code>, <code>cleanup-expired</code>, <code>denormalize-tags</code>,
+<code>fts-trigrams</code>, <code>ttl-policy</code>). The CloudFormation stack is auto-created on first
+use with a <code>mlflow-dynamodbstore-</code> prefix on the stack name, offering no direct
+lifecycle control (no way to delete a stack via CLI) and an opaque naming
+convention.</p>
+<h2 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Noun-verb CLI structure</strong> — group related commands under nouns for
+   discoverability and consistency with robust CLIs. Commands organized into
+   labeled sections using <code>cloup</code>.</li>
+<li><strong>Explicit stack lifecycle</strong> — <code>deploy</code> and <code>destroy</code> commands for
+   CloudFormation management.</li>
+<li><strong>Simplified stack naming</strong> — stack name = table name (drop the
+   <code>mlflow-dynamodbstore-</code> prefix). Default table name: <code>mlflow</code>.</li>
+<li><strong>Auto-deploy by default</strong> — consistent with MLflow SQLAlchemy stores that
+   auto-create schema on first connect. Opt-out via <code>?deploy=false</code> URI param.</li>
+<li><strong>Auto-generated CLI docs</strong> — use <code>mkdocs-click</code> (same pattern as
+   zae-limiter) for a single-directive reference page.</li>
+<li><strong>Sensible defaults</strong> — <code>--name</code> defaults to <code>mlflow</code>, <code>--region</code> defers to
+   boto3's resolution chain (<code>AWS_REGION</code> → <code>AWS_DEFAULT_REGION</code> →
+   <code>~/.aws/config</code>). URI <code>dynamodb://</code> works with no arguments.</li>
+</ol>
+<h2 id="cli-structure">CLI Structure<a class="headerlink" href="#cli-structure" title="Permanent link">&para;</a></h2>
+<h3 id="global-options">Global Options<a class="headerlink" href="#global-options" title="Permanent link">&para;</a></h3>
+<p>All commands inherit these from the top-level <code>cloup</code> group:</p>
 <table>
 <thead>
 <tr>
 <th>Option</th>
 <th>Description</th>
-<th>Required</th>
+<th>Default</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>--name</code></td>
 <td>Stack/table name</td>
-<td>Yes</td>
+<td><code>mlflow</code></td>
 </tr>
 <tr>
 <td><code>--region</code></td>
-<td>AWS region (e.g. <code>us-east-1</code>)</td>
-<td>Yes</td>
+<td>AWS region (omit to use boto3 default chain)</td>
+<td>from boto3</td>
 </tr>
 <tr>
 <td><code>--endpoint-url</code></td>
 <td>Custom endpoint (LocalStack/testing)</td>
-<td>No</td>
+<td>None</td>
 </tr>
 </tbody>
 </table>
-<hr />
-<h2 id="commands">Commands<a class="headerlink" href="#commands" title="Permanent link">&para;</a></h2>
-<h3 id="mlflow-dynamodbstore">mlflow-dynamodbstore<a class="headerlink" href="#mlflow-dynamodbstore" title="Permanent link">&para;</a></h3>
-<p>mlflow-dynamodbstore admin commands.</p>
-<p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>mlflow-dynamodbstore [OPTIONS] COMMAND [ARGS]...
+<h3 id="command-tree">Command Tree<a class="headerlink" href="#command-tree" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mlflow-dynamodbstore [--name NAME] [--region REGION] [--endpoint-url URL]
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>Stack Lifecycle:
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  deploy                              # Create CFn stack + seed data
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  destroy [--yes] [--retain]          # Delete CFn stack
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>Configuration:
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  tag list/add/remove/backfill        # Tag denormalization patterns
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  ttl show/set/cleanup                # TTL policies + orphan cleanup
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  fts list/add                        # Full-text search trigram fields
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  trace cache                         # Cache X-Ray spans for traces
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  workspace delete                    # Soft or cascade delete workspace
+</span></code></pre></div>
+<h3 id="command-details">Command Details<a class="headerlink" href="#command-details" title="Permanent link">&para;</a></h3>
+<h4 id="deploy"><code>deploy</code><a class="headerlink" href="#deploy" title="Permanent link">&para;</a></h4>
+<p>Creates the CloudFormation stack (stack name = <code>--name</code>) and seeds initial data
+(default workspace, default experiment, config items). Idempotent — skips if the
+stack already exists in a good state.</p>
+<h4 id="destroy"><code>destroy</code><a class="headerlink" href="#destroy" title="Permanent link">&para;</a></h4>
+<p>Deletes the CloudFormation stack.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--yes</code></td>
+<td>Skip confirmation prompt</td>
+</tr>
+<tr>
+<td><code>--retain</code></td>
+<td>Delete stack but keep the DynamoDB table (via CFn DeletionPolicy Retain)</td>
+</tr>
+</tbody>
+</table>
+<p>Operator responsibility to stop the MLflow server before destroying — auto-deploy
+will re-create the stack if the server is still running.</p>
+<h4 id="workspace-delete"><code>workspace delete</code><a class="headerlink" href="#workspace-delete" title="Permanent link">&para;</a></h4>
+<p>Replaces <code>delete-workspace</code>. Same functionality: soft or cascade mode, <code>--yes</code>
+to skip confirmation.</p>
+<h4 id="tag-listaddremovebackfill"><code>tag list/add/remove/backfill</code><a class="headerlink" href="#tag-listaddremovebackfill" title="Permanent link">&para;</a></h4>
+<p>Replaces <code>denormalize-tags</code>. Subcommand names simplified from <code>list_patterns</code> →
+<code>list</code>, <code>add_pattern</code> → <code>add</code>, <code>remove_pattern</code> → <code>remove</code>, <code>backfill</code> stays.</p>
+<h4 id="ttl-showsetcleanup"><code>ttl show/set/cleanup</code><a class="headerlink" href="#ttl-showsetcleanup" title="Permanent link">&para;</a></h4>
+<p>Replaces <code>ttl-policy</code> and absorbs <code>cleanup-expired</code>. Subcommand names simplified
+from <code>show_policy</code> → <code>show</code>, <code>set_policy</code> → <code>set</code>, plus new <code>cleanup</code>.</p>
+<h4 id="fts-listadd"><code>fts list/add</code><a class="headerlink" href="#fts-listadd" title="Permanent link">&para;</a></h4>
+<p>Replaces <code>fts-trigrams</code>. Subcommand names simplified from <code>list_fields</code> → <code>list</code>,
+<code>add_field</code> → <code>add</code>.</p>
+<h4 id="trace-cache"><code>trace cache</code><a class="headerlink" href="#trace-cache" title="Permanent link">&para;</a></h4>
+<p>Replaces <code>cache-spans</code>. Caches X-Ray spans for traces in DynamoDB.</p>
+<h2 id="stack-naming-change">Stack Naming Change<a class="headerlink" href="#stack-naming-change" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Remove <code>_STACK_PREFIX = "mlflow-dynamodbstore-"</code> from <code>provisioner.py</code></li>
+<li>Stack name = table name directly</li>
+<li><code>get_stack_name()</code> removed</li>
+<li>Default table name: <code>mlflow</code> (matching CLI <code>--name</code> default and URI parser
+  <code>DEFAULT_TABLE_NAME</code>)</li>
+</ul>
+<h3 id="migration">Migration<a class="headerlink" href="#migration" title="Permanent link">&para;</a></h3>
+<p>Existing deployments have stacks named <code>mlflow-dynamodbstore-&lt;table&gt;</code>. After
+upgrading, the new code looks for stacks named <code>&lt;table&gt;</code>. Existing users must
+either:</p>
+<ol>
+<li>Delete the old stack (<code>aws cloudformation delete-stack --stack-name mlflow-dynamodbstore-&lt;table&gt;</code>)
+   and let auto-deploy create the new one, or</li>
+<li>Manually rename by creating a new stack and migrating (the DynamoDB table
+   itself is unchanged — only the CloudFormation wrapper changes).</li>
+</ol>
+<p>The DynamoDB table name does not change, so data is preserved in both paths.
+The <code>deploy</code> command will fail if the table already exists without a matching
+stack — in that case, use CloudFormation resource import (<code>aws cloudformation
+create-change-set --change-set-type IMPORT</code>) to adopt the existing table into
+a new stack, or simply delete the old stack first (path 1).</p>
+<h2 id="uri-parser-defaults">URI Parser Defaults<a class="headerlink" href="#uri-parser-defaults" title="Permanent link">&para;</a></h2>
+<p>The URI parser now supports minimal URIs with sensible defaults:</p>
+<table>
+<thead>
+<tr>
+<th>URI</th>
+<th>Table</th>
+<th>Region</th>
+<th>Endpoint</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dynamodb://</code></td>
+<td><code>mlflow</code></td>
+<td>from boto3</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>dynamodb://us-east-1</code></td>
+<td><code>mlflow</code></td>
+<td><code>us-east-1</code></td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>dynamodb://us-east-1/my-table</code></td>
+<td><code>my-table</code></td>
+<td><code>us-east-1</code></td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>dynamodb://localhost:5000</code></td>
+<td><code>mlflow</code></td>
+<td>from boto3</td>
+<td><code>http://localhost:5000</code></td>
+</tr>
+<tr>
+<td><code>dynamodb://localhost:5000/my-table</code></td>
+<td><code>my-table</code></td>
+<td>from boto3</td>
+<td><code>http://localhost:5000</code></td>
+</tr>
+</tbody>
+</table>
+<p>Query params: <code>?deploy=true|false</code> controls auto-deploy (default: <code>true</code>).</p>
+<h2 id="auto-deploy-behavior">Auto-Deploy Behavior<a class="headerlink" href="#auto-deploy-behavior" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Default (no query param or <code>?deploy=true</code>)</strong>: stores call
+  <code>ensure_stack_exists()</code> during <code>__init__()</code> — same as today, consistent with
+  MLflow SQLAlchemy auto-schema-creation.</li>
+<li><strong>Opt-out (<code>?deploy=false</code>)</strong>: stores skip auto-deploy. If the table doesn't
+  exist, the store will fail on first operation.</li>
+<li>URI parsing in <code>dynamodb/uri.py</code> handles <code>?deploy=true|false</code> query parameter.
+  <code>deploy: bool = True</code> field on <code>DynamoDBUriComponents</code>.</li>
+</ul>
+<h2 id="region-resolution">Region Resolution<a class="headerlink" href="#region-resolution" title="Permanent link">&para;</a></h2>
+<p>Region is resolved by boto3's standard chain — the CLI and provisioner do NOT
+manually check environment variables. When <code>--region</code> is omitted (or URI has no
+region), <code>region=None</code> flows through to boto3 which resolves:</p>
+<ol>
+<li><code>AWS_REGION</code> env var</li>
+<li><code>AWS_DEFAULT_REGION</code> env var</li>
+<li><code>~/.aws/config</code> profile <code>region</code></li>
+</ol>
+<p>This matches the behavior of AWS CLI, CDK, SAM, and Terraform.</p>
+<h2 id="file-changes">File Changes<a class="headerlink" href="#file-changes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>File</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rewrite</td>
+<td><code>cli/__init__.py</code></td>
+<td><code>cloup.group</code> with sections, global options with defaults</td>
+</tr>
+<tr>
+<td>New</td>
+<td><code>cli/_context.py</code></td>
+<td><code>CliContext</code> and <code>pass_context</code> (avoids circular imports)</td>
+</tr>
+<tr>
+<td>New</td>
+<td><code>cli/deploy.py</code></td>
+<td><code>deploy</code> command (extracted from provisioner)</td>
+</tr>
+<tr>
+<td>New</td>
+<td><code>cli/destroy.py</code></td>
+<td><code>destroy</code> command</td>
+</tr>
+<tr>
+<td>Rename</td>
+<td><code>cli/denormalize_tags.py</code> → <code>cli/tag.py</code></td>
+<td>Group name <code>tag</code></td>
+</tr>
+<tr>
+<td>Rename</td>
+<td><code>cli/ttl_policy.py</code> → <code>cli/ttl.py</code></td>
+<td>Group name <code>ttl</code>, absorbs cleanup-expired</td>
+</tr>
+<tr>
+<td>Delete</td>
+<td><code>cli/cleanup_expired.py</code></td>
+<td>Merged into <code>cli/ttl.py</code> as <code>cleanup</code></td>
+</tr>
+<tr>
+<td>Rename</td>
+<td><code>cli/fts_trigrams.py</code> → <code>cli/fts.py</code></td>
+<td>Group name <code>fts</code></td>
+</tr>
+<tr>
+<td>Rename</td>
+<td><code>cli/cache_spans.py</code> → <code>cli/trace.py</code></td>
+<td>Group name <code>trace</code>, subcommand <code>cache</code></td>
+</tr>
+<tr>
+<td>Rename</td>
+<td><code>cli/delete_workspace.py</code> → <code>cli/workspace.py</code></td>
+<td>Group name <code>workspace</code></td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>dynamodb/provisioner.py</code></td>
+<td>Remove prefix, add <code>destroy_stack()</code>, <code>region=None</code> support</td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>dynamodb/uri.py</code></td>
+<td>Default table <code>mlflow</code>, <code>region=None</code>, <code>?deploy</code> param</td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>dynamodb/table.py</code></td>
+<td><code>region=None</code> support (defer to boto3)</td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>xray/client.py</code></td>
+<td><code>region=None</code> support (defer to boto3)</td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>tracking_store.py</code></td>
+<td>Conditional deploy based on URI param</td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>registry_store.py</code></td>
+<td>Conditional deploy based on URI param</td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>workspace_store.py</code></td>
+<td>Conditional deploy based on URI param</td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>auth/store.py</code></td>
+<td>Conditional deploy based on URI param</td>
+</tr>
+<tr>
+<td>Rewrite</td>
+<td><code>docs/operator-guide/cli-reference.md</code></td>
+<td>Single mkdocs-click directive + examples</td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>pyproject.toml</code></td>
+<td>Replace <code>click&gt;=8.0.0</code> with <code>cloup&gt;=3.0.0</code></td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>tests/unit/cli/</code></td>
+<td>Rename test files, update command invocations</td>
+</tr>
+</tbody>
+</table>
+<h2 id="dependencies">Dependencies<a class="headerlink" href="#dependencies" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Replaced <code>click&gt;=8.0.0</code> with <code>cloup&gt;=3.0.0</code> (cloup re-exports click and adds
+  command sections, option groups). Available on conda-forge.</li>
+</ul>
+<h2 id="documentation">Documentation<a class="headerlink" href="#documentation" title="Permanent link">&para;</a></h2>
+<p>Replace per-command <code>mkdocs-click</code> directives with a single top-level directive
+(matching zae-limiter pattern):</p>
+<div class="language-markdown highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gu">### mlflow-dynamodbstore { #mlflow-dynamodbstore data-toc-label=&#39;mlflow-dynamodbstore&#39; }</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>mlflow-dynamodbstore admin commands.
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="gs">**Usage:**</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>```text
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>mlflow-dynamodbstore [OPTIONS] COMMAND [ARGS]...
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -2400,58 +2398,15 @@ DynamoDB will garbage-collect them.</p>
 </tr>
 </tbody>
 </table>
-<hr />
-<h2 id="examples">Examples<a class="headerlink" href="#examples" title="Permanent link">&para;</a></h2>
-<h3 id="deploy-a-new-stack">Deploy a new stack<a class="headerlink" href="#deploy-a-new-stack" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>deploy
-</span></code></pre></div>
-<h3 id="destroy-a-stack-retain-table">Destroy a stack (retain table)<a class="headerlink" href="#destroy-a-stack-retain-table" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>destroy<span class="w"> </span>--yes<span class="w"> </span>--retain
-</span></code></pre></div>
-<h3 id="manage-ttl-policies">Manage TTL policies<a class="headerlink" href="#manage-ttl-policies" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="c1"># Show current policy</span>
-</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>ttl<span class="w"> </span>show
-</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a>
-</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="c1"># Set retention</span>
-</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>ttl<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a><span class="w">    </span>--soft-deleted-retention-days<span class="w"> </span><span class="m">90</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-22-7"><a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a><span class="w">    </span>--trace-retention-days<span class="w"> </span><span class="m">30</span>
-</span><span id="__span-22-8"><a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a>
-</span><span id="__span-22-9"><a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a><span class="c1"># Cleanup orphaned items</span>
-</span><span id="__span-22-10"><a id="__codelineno-22-10" name="__codelineno-22-10" href="#__codelineno-22-10"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>ttl<span class="w"> </span>cleanup<span class="w"> </span>--dry-run
-</span></code></pre></div>
-<h3 id="manage-tag-denormalization">Manage tag denormalization<a class="headerlink" href="#manage-tag-denormalization" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>tag<span class="w"> </span>list
-</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>tag<span class="w"> </span>add<span class="w"> </span><span class="s2">&quot;mlflow.user&quot;</span>
-</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>tag<span class="w"> </span>backfill
-</span></code></pre></div>
-<h3 id="full-text-search-configuration">Full-text search configuration<a class="headerlink" href="#full-text-search-configuration" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>fts<span class="w"> </span>list
-</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>fts<span class="w"> </span>add<span class="w"> </span><span class="s2">&quot;description&quot;</span>
-</span></code></pre></div>
-<h3 id="cache-trace-spans">Cache trace spans<a class="headerlink" href="#cache-trace-spans" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>trace<span class="w"> </span>cache<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a><span class="w">    </span>--experiment-id<span class="w"> </span><span class="m">1</span><span class="w"> </span>--days<span class="w"> </span><span class="m">7</span>
-</span></code></pre></div>
-<h3 id="delete-a-workspace">Delete a workspace<a class="headerlink" href="#delete-a-workspace" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="c1"># Soft delete</span>
-</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>workspace<span class="w"> </span>delete<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-26-3"><a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="w">    </span>--workspace<span class="w"> </span>staging<span class="w"> </span>--mode<span class="w"> </span>soft
-</span><span id="__span-26-4"><a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a>
-</span><span id="__span-26-5"><a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a><span class="c1"># Cascade (with confirmation)</span>
-</span><span id="__span-26-6"><a id="__codelineno-26-6" name="__codelineno-26-6" href="#__codelineno-26-6"></a>mlflow-dynamodbstore<span class="w"> </span>--name<span class="w"> </span>mlflow<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>workspace<span class="w"> </span>delete<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-26-7"><a id="__codelineno-26-7" name="__codelineno-26-7" href="#__codelineno-26-7"></a><span class="w">    </span>--workspace<span class="w"> </span>staging<span class="w"> </span>--mode<span class="w"> </span>cascade<span class="w"> </span>--yes
-</span></code></pre></div>
-<div class="admonition danger">
-<p class="admonition-title">Danger</p>
-<p><code>destroy</code> permanently deletes the CloudFormation stack. <code>workspace delete --mode cascade</code>
-permanently removes all data. These actions cannot be undone.</p>
-</div>
-<div class="admonition tip">
-<p class="admonition-title">Tip</p>
-<p>Use <code>--retain</code> with <code>destroy</code> to remove the CloudFormation stack while keeping the
-DynamoDB table and its data intact.</p>
-</div>
+<p>```</p>
+<p>Supplement with manual examples and admonitions for destructive operations
+(<code>destroy</code>, <code>workspace delete cascade</code>, <code>ttl cleanup</code>).</p>
+<h2 id="out-of-scope">Out of Scope<a class="headerlink" href="#out-of-scope" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Renaming the PyPI package or entry point (<code>mlflow-dynamodbstore</code> stays)</li>
+<li>Changes to the DynamoDB table schema itself</li>
+<li>Changes to the auth CLI (if any)</li>
+</ul>
 
 
 
@@ -2482,44 +2437,6 @@ DynamoDB table and its data intact.</p>
       
         <footer class="md-footer">
   
-    
-      
-      <nav class="md-footer__inner md-grid" aria-label="Footer" >
-        
-          
-          <a href="../../user-guide/xray-integration/" class="md-footer__link md-footer__link--prev" aria-label="Previous: X-Ray Integration">
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-            </div>
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Previous
-              </span>
-              <div class="md-ellipsis">
-                X-Ray Integration
-              </div>
-            </div>
-          </a>
-        
-        
-          
-          <a href="../ttl-lifecycle/" class="md-footer__link md-footer__link--next" aria-label="Next: TTL Lifecycle">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                TTL Lifecycle
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
-        
-      </nav>
     
   
   <div class="md-footer-meta md-typeset">
@@ -2574,10 +2491,10 @@ DynamoDB table and its data intact.</p>
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
         <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
       
