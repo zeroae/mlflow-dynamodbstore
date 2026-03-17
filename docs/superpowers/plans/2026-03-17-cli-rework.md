@@ -4,9 +4,11 @@
 
 **Goal:** Restructure the mlflow-dynamodbstore CLI to use noun-verb groups, add deploy/destroy lifecycle commands, simplify stack naming, and auto-generate docs with mkdocs-click.
 
-**Architecture:** Global `--name`/`--region`/`--endpoint-url` options on the top-level Click group, passed via `click.Context.obj`. Existing commands renamed and reorganized into noun groups (`tag`, `ttl`, `fts`, `trace`, `workspace`). New `deploy`/`destroy` commands wrap provisioner functions. URI parser extended with `deploy` flag.
+**Architecture:** Global `--name`/`--region`/`--endpoint-url` options on the top-level cloup group, passed via `click.Context.obj`. Commands organized into "Stack Lifecycle" and "Configuration" sections. Existing commands renamed and reorganized into noun groups (`tag`, `ttl`, `fts`, `trace`, `workspace`). New `deploy`/`destroy` commands wrap provisioner functions. URI parser extended with `deploy` flag and sensible defaults.
 
-**Tech Stack:** Click 8+, boto3, moto (testing), mkdocs-click
+**Tech Stack:** cloup 3+, boto3, moto (testing), mkdocs-click
+
+**Status:** COMPLETED — all 14 tasks implemented plus post-plan refinements.
 
 **Spec:** `docs/superpowers/specs/2026-03-17-cli-rework-design.md`
 
@@ -1000,3 +1002,36 @@ The nav should already reference `cli-reference.md` under Operator Guide. No cha
 
 Run: `uv run mkdocs build --strict`
 Expected: Clean build, no warnings about missing references
+
+---
+
+## Post-Plan Refinements
+
+The following changes were made after the 14 planned tasks were completed,
+based on review feedback and alignment with AWS ecosystem conventions:
+
+### Task 15: Default `--name` and delegate `--region` to boto3
+
+- `--name` defaults to `mlflow` (not required)
+- `--region` is optional — when omitted, boto3 resolves from its standard chain:
+  `AWS_REGION` → `AWS_DEFAULT_REGION` → `~/.aws/config` profile
+- Updated `DynamoDBTable`, `XRayClient`, provisioner, and URI parser to accept
+  `region=None` and only pass `region_name` to boto3 when explicitly set
+- Matches behavior of AWS CLI, CDK, SAM, and Terraform
+
+### Task 16: Use cloup for CLI command sections
+
+- Replaced `click>=8.0.0` dependency with `cloup>=3.0.0` (conda-forge available)
+- Commands organized into labeled sections in help output:
+  - "Stack Lifecycle": `deploy`, `destroy`
+  - "Configuration": `tag`, `ttl`, `fts`, `trace`, `workspace`
+- Extracted `CliContext`/`pass_context` to `cli/_context.py` to avoid circular
+  imports between `__init__.py` and subcommand modules
+- Added mypy overrides for cloup (no type stubs available)
+
+### Task 17: URI parser defaults
+
+- `dynamodb://` now works with no arguments → table `mlflow`, region from boto3
+- `dynamodb://us-east-1` → table `mlflow`, explicit region
+- `dynamodb://localhost:5000` → table `mlflow`, local endpoint
+- Added `DEFAULT_TABLE_NAME = "mlflow"` constant to `dynamodb/uri.py`

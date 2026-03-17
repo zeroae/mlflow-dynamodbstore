@@ -12,41 +12,47 @@ convention.
 ## Goals
 
 1. **Noun-verb CLI structure** — group related commands under nouns for
-   discoverability and consistency with robust CLIs.
+   discoverability and consistency with robust CLIs. Commands organized into
+   labeled sections using `cloup`.
 2. **Explicit stack lifecycle** — `deploy` and `destroy` commands for
    CloudFormation management.
 3. **Simplified stack naming** — stack name = table name (drop the
-   `mlflow-dynamodbstore-` prefix).
+   `mlflow-dynamodbstore-` prefix). Default table name: `mlflow`.
 4. **Auto-deploy by default** — consistent with MLflow SQLAlchemy stores that
    auto-create schema on first connect. Opt-out via `?deploy=false` URI param.
 5. **Auto-generated CLI docs** — use `mkdocs-click` (same pattern as
    zae-limiter) for a single-directive reference page.
+6. **Sensible defaults** — `--name` defaults to `mlflow`, `--region` defers to
+   boto3's resolution chain (`AWS_REGION` → `AWS_DEFAULT_REGION` →
+   `~/.aws/config`). URI `dynamodb://` works with no arguments.
 
 ## CLI Structure
 
 ### Global Options
 
-All commands inherit these from the top-level group:
+All commands inherit these from the top-level `cloup` group:
 
-| Option           | Description                          | Required |
-|------------------|--------------------------------------|----------|
-| `--name`         | Stack/table name                     | Yes      |
-| `--region`       | AWS region (e.g. `us-east-1`)        | Yes      |
-| `--endpoint-url` | Custom endpoint (LocalStack/testing) | No       |
+| Option           | Description                                    | Default     |
+|------------------|------------------------------------------------|-------------|
+| `--name`         | Stack/table name                               | `mlflow`    |
+| `--region`       | AWS region (omit to use boto3 default chain)   | from boto3  |
+| `--endpoint-url` | Custom endpoint (LocalStack/testing)           | None        |
 
 ### Command Tree
 
 ```
 mlflow-dynamodbstore [--name NAME] [--region REGION] [--endpoint-url URL]
 
+Stack Lifecycle:
   deploy                              # Create CFn stack + seed data
   destroy [--yes] [--retain]          # Delete CFn stack
 
-  workspace delete                    # Soft or cascade delete workspace
+Configuration:
   tag list/add/remove/backfill        # Tag denormalization patterns
   ttl show/set/cleanup                # TTL policies + orphan cleanup
   fts list/add                        # Full-text search trigram fields
   trace cache                         # Cache X-Ray spans for traces
+  workspace delete                    # Soft or cascade delete workspace
 ```
 
 ### Command Details
@@ -64,7 +70,7 @@ Deletes the CloudFormation stack.
 | Flag       | Description                                            |
 |------------|--------------------------------------------------------|
 | `--yes`    | Skip confirmation prompt                               |
-| `--retain` | Delete stack but keep the DynamoDB table via `cfn.delete_stack(StackName=..., RetainResources=['MlflowTable'])` |
+| `--retain` | Delete stack but keep the DynamoDB table (via CFn DeletionPolicy Retain) |
 
 Operator responsibility to stop the MLflow server before destroying — auto-deploy
 will re-create the stack if the server is still running.
@@ -97,7 +103,9 @@ Replaces `cache-spans`. Caches X-Ray spans for traces in DynamoDB.
 
 - Remove `_STACK_PREFIX = "mlflow-dynamodbstore-"` from `provisioner.py`
 - Stack name = table name directly
-- `get_stack_name()` becomes identity function (or is removed)
+- `get_stack_name()` removed
+- Default table name: `mlflow` (matching CLI `--name` default and URI parser
+  `DEFAULT_TABLE_NAME`)
 
 ### Migration
 
@@ -116,22 +124,48 @@ stack — in that case, use CloudFormation resource import (`aws cloudformation
 create-change-set --change-set-type IMPORT`) to adopt the existing table into
 a new stack, or simply delete the old stack first (path 1).
 
+## URI Parser Defaults
+
+The URI parser now supports minimal URIs with sensible defaults:
+
+| URI                                  | Table    | Region      | Endpoint             |
+|--------------------------------------|----------|-------------|----------------------|
+| `dynamodb://`                        | `mlflow` | from boto3  | None                 |
+| `dynamodb://us-east-1`               | `mlflow` | `us-east-1` | None                 |
+| `dynamodb://us-east-1/my-table`      | `my-table` | `us-east-1` | None               |
+| `dynamodb://localhost:5000`          | `mlflow` | from boto3  | `http://localhost:5000` |
+| `dynamodb://localhost:5000/my-table` | `my-table` | from boto3 | `http://localhost:5000` |
+
+Query params: `?deploy=true|false` controls auto-deploy (default: `true`).
+
 ## Auto-Deploy Behavior
 
 - **Default (no query param or `?deploy=true`)**: stores call
   `ensure_stack_exists()` during `__init__()` — same as today, consistent with
   MLflow SQLAlchemy auto-schema-creation.
 - **Opt-out (`?deploy=false`)**: stores skip auto-deploy. If the table doesn't
-  exist, fail with a clear error:
-  `Table 'X' not found. Run 'mlflow-dynamodbstore --name X --region R deploy' first.`
-- URI parsing in `dynamodb/uri.py` extended to handle `?deploy=true|false` query
-  parameter. Add `deploy: bool = True` field to `DynamoDBUriComponents`.
+  exist, the store will fail on first operation.
+- URI parsing in `dynamodb/uri.py` handles `?deploy=true|false` query parameter.
+  `deploy: bool = True` field on `DynamoDBUriComponents`.
+
+## Region Resolution
+
+Region is resolved by boto3's standard chain — the CLI and provisioner do NOT
+manually check environment variables. When `--region` is omitted (or URI has no
+region), `region=None` flows through to boto3 which resolves:
+
+1. `AWS_REGION` env var
+2. `AWS_DEFAULT_REGION` env var
+3. `~/.aws/config` profile `region`
+
+This matches the behavior of AWS CLI, CDK, SAM, and Terraform.
 
 ## File Changes
 
 | Action    | File                                | Notes                                                  |
 |-----------|-------------------------------------|--------------------------------------------------------|
-| Rewrite   | `cli/__init__.py`                   | Global `--name`/`--region`/`--endpoint-url`, new registration |
+| Rewrite   | `cli/__init__.py`                   | `cloup.group` with sections, global options with defaults |
+| New       | `cli/_context.py`                   | `CliContext` and `pass_context` (avoids circular imports) |
 | New       | `cli/deploy.py`                     | `deploy` command (extracted from provisioner)           |
 | New       | `cli/destroy.py`                    | `destroy` command                                      |
 | Rename    | `cli/denormalize_tags.py` → `cli/tag.py` | Group name `tag`                                  |
@@ -140,14 +174,22 @@ a new stack, or simply delete the old stack first (path 1).
 | Rename    | `cli/fts_trigrams.py` → `cli/fts.py` | Group name `fts`                                     |
 | Rename    | `cli/cache_spans.py` → `cli/trace.py` | Group name `trace`, subcommand `cache`              |
 | Rename    | `cli/delete_workspace.py` → `cli/workspace.py` | Group name `workspace`                      |
-| Update    | `dynamodb/provisioner.py`           | Remove `_STACK_PREFIX`, add `destroy_stack()`          |
-| Update    | `dynamodb/uri.py`                   | Parse `?deploy=true\|false` query param                |
+| Update    | `dynamodb/provisioner.py`           | Remove prefix, add `destroy_stack()`, `region=None` support |
+| Update    | `dynamodb/uri.py`                   | Default table `mlflow`, `region=None`, `?deploy` param |
+| Update    | `dynamodb/table.py`                 | `region=None` support (defer to boto3)                 |
+| Update    | `xray/client.py`                    | `region=None` support (defer to boto3)                 |
 | Update    | `tracking_store.py`                 | Conditional deploy based on URI param                  |
 | Update    | `registry_store.py`                 | Conditional deploy based on URI param                  |
 | Update    | `workspace_store.py`                | Conditional deploy based on URI param                  |
 | Update    | `auth/store.py`                     | Conditional deploy based on URI param                  |
 | Rewrite   | `docs/operator-guide/cli-reference.md` | Single mkdocs-click directive + examples            |
+| Update    | `pyproject.toml`                    | Replace `click>=8.0.0` with `cloup>=3.0.0`            |
 | Update    | `tests/unit/cli/`                   | Rename test files, update command invocations          |
+
+## Dependencies
+
+- Replaced `click>=8.0.0` with `cloup>=3.0.0` (cloup re-exports click and adds
+  command sections, option groups). Available on conda-forge.
 
 ## Documentation
 
