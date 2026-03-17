@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import pytest
 from mlflow.entities import EvaluationDataset
@@ -99,6 +100,22 @@ class TestSearchDatasets:
         assert len(results) == 1
         assert results[0].name == "my-prod-dataset"
 
+    def test_search_by_name_suffix_filter(self, tracking_store):
+        """Test suffix LIKE filter (lines 2847-2849)."""
+        tracking_store.create_dataset(name="prefix-test")
+        tracking_store.create_dataset(name="prefix-other")
+        results = tracking_store.search_datasets(filter_string="name LIKE '%test'")
+        assert len(results) == 1
+        assert results[0].name == "prefix-test"
+
+    def test_search_by_name_exact_match(self, tracking_store):
+        """Test exact match filter without wildcards (lines 2850-2851)."""
+        tracking_store.create_dataset(name="exact-name")
+        tracking_store.create_dataset(name="exact-name-2")
+        results = tracking_store.search_datasets(filter_string="name LIKE 'exact-name'")
+        assert len(results) == 1
+        assert results[0].name == "exact-name"
+
     def test_search_order_by_name(self, tracking_store):
         tracking_store.create_dataset(name="charlie")
         tracking_store.create_dataset(name="alpha")
@@ -106,6 +123,28 @@ class TestSearchDatasets:
         results = tracking_store.search_datasets(order_by=["name ASC"])
         names = [r.name for r in results]
         assert names == ["alpha", "bravo", "charlie"]
+
+    def test_search_order_by_created_time(self, tracking_store):
+        """Test order_by created_time (lines 2862-2863)."""
+        tracking_store.create_dataset(name="ds-first")
+        tracking_store.create_dataset(name="ds-second")
+        tracking_store.create_dataset(name="ds-third")
+
+        results = tracking_store.search_datasets(order_by=["created_time ASC"])
+        names = [r.name for r in results]
+        assert names == ["ds-first", "ds-second", "ds-third"]
+
+    def test_search_order_by_last_update_time(self, tracking_store):
+        """Test order_by last_update_time (lines 2864-2865)."""
+        ds1 = tracking_store.create_dataset(name="ds-early")
+        tracking_store.create_dataset(name="ds-late")
+
+        # Manually update ds1 to have a newer last_update_time
+        tracking_store.set_dataset_tags(ds1.dataset_id, {"tag": "updated"})
+
+        results = tracking_store.search_datasets(order_by=["last_update_time ASC"])
+        names = [r.name for r in results]
+        assert names == ["ds-late", "ds-early"]
 
     def test_search_pagination(self, tracking_store):
         for i in range(5):
@@ -122,6 +161,27 @@ class TestSearchDatasets:
         assert isinstance(results, PagedList)
 
     def test_search_empty(self, tracking_store):
+        results = tracking_store.search_datasets()
+        assert len(results) == 0
+
+    def test_search_with_orphaned_gsi_entry(self, tracking_store):
+        """Test that orphaned GSI entries (no META) are skipped (lines 2800, 2821).
+
+        This simulates a dataset where the META item was deleted but GSI entries remain.
+        """
+        # Create a dataset
+        ds = tracking_store.create_dataset(name="orphaned-test")
+
+        # Manually delete the META item to simulate orphaned GSI entry
+        from mlflow_dynamodbstore.dynamodb.schema import (
+            PK_DATASET_PREFIX,
+            SK_DATASET_META,
+        )
+
+        pk = f"{PK_DATASET_PREFIX}{ds.dataset_id}"
+        tracking_store._table.delete_item(pk=pk, sk=SK_DATASET_META)
+
+        # Search should return empty (META was missing, so dataset is skipped)
         results = tracking_store.search_datasets()
         assert len(results) == 0
 
@@ -215,6 +275,71 @@ class TestDatasetRecords:
         fetched = tracking_store.get_dataset(ds.dataset_id)
         profile = json.loads(fetched.profile) if fetched.profile else {}
         assert profile.get("num_records") == 2
+
+    def test_upsert_nonexistent_dataset_raises(self, tracking_store):
+        """Test upsert on non-existent dataset raises MlflowException (line 2997)."""
+        with pytest.raises(MlflowException, match="does not exist"):
+            tracking_store.upsert_dataset_records(
+                "eval_nope",
+                [{"inputs": {"q": "test"}}],
+            )
+
+    def test_upsert_with_all_optional_fields(self, tracking_store):
+        """Test record upsert with optional fields (lines 3037-3041, 3068-3072).
+
+        Verify that optional fields are saved in the record item.
+        """
+        ds = tracking_store.create_dataset(name="optional-fields")
+        result = tracking_store.upsert_dataset_records(
+            ds.dataset_id,
+            [
+                {
+                    "inputs": {"q": "test"},
+                    "outputs": {"a": "answer"},
+                    "expectations": {"score": Decimal("0.9")},
+                    "tags": {"validation": "passed"},
+                    "source": "manual",
+                }
+            ],
+        )
+        assert result["inserted"] == 1
+        assert result["updated"] == 0
+
+        # Load and verify fields (source not passed to DatasetRecord)
+        records, _ = tracking_store._load_dataset_records(ds.dataset_id)
+        assert len(records) == 1
+        rec = records[0]
+        assert rec.inputs == {"q": "test"}
+        assert rec.outputs == {"a": "answer"}
+        assert rec.expectations == {"score": Decimal("0.9")}
+        assert rec.tags == {"validation": "passed"}
+
+    def test_upsert_update_with_optional_fields(self, tracking_store):
+        """Test that updating a record can add/modify optional fields (lines 3037-3041)."""
+        ds = tracking_store.create_dataset(name="update-optional")
+        tracking_store.upsert_dataset_records(
+            ds.dataset_id,
+            [{"inputs": {"q": "hello"}, "outputs": {"a": "old"}}],
+        )
+        result = tracking_store.upsert_dataset_records(
+            ds.dataset_id,
+            [
+                {
+                    "inputs": {"q": "hello"},
+                    "outputs": {"a": "new"},
+                    "expectations": {"accuracy": Decimal("0.95")},
+                    "tags": {"status": "validated"},
+                    "source": "system",
+                }
+            ],
+        )
+        assert result["updated"] == 1
+
+        records, _ = tracking_store._load_dataset_records(ds.dataset_id)
+        rec = records[0]
+        assert rec.outputs == {"a": "new"}
+        assert rec.expectations == {"accuracy": Decimal("0.95")}
+        assert rec.tags == {"status": "validated"}
 
     def test_load_records_paginated(self, tracking_store):
         ds = tracking_store.create_dataset(name="paginate-test")
