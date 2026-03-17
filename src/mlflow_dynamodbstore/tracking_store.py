@@ -50,6 +50,7 @@ from mlflow.protos.databricks_pb2 import (
 from mlflow.protos.service_pb2 import DatasetSummary
 from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.tracking.abstract_store import AbstractStore
+from mlflow.tracing.analysis import TraceFilterCorrelationResult
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
 from mlflow.utils.mlflow_tags import MLFLOW_ARTIFACT_LOCATION
 from mlflow.utils.proto_json_utils import milliseconds_to_proto_timestamp
@@ -2673,6 +2674,98 @@ class DynamoDBTrackingStore(AbstractStore):
                 break
 
         return traces, next_page_token
+
+    def calculate_trace_filter_correlation(
+        self,
+        experiment_ids: list[str],
+        filter_string1: str,
+        filter_string2: str,
+        base_filter: str | None = None,
+    ) -> TraceFilterCorrelationResult:
+        """Calculate NPMI correlation between two trace filters."""
+        import math
+
+        from mlflow_dynamodbstore.dynamodb.search import (
+            _apply_trace_post_filter,
+            execute_trace_query,
+            parse_trace_filter,
+            plan_trace_query,
+        )
+
+        preds1 = parse_trace_filter(filter_string1)
+        preds2 = parse_trace_filter(filter_string2)
+        base_preds = parse_trace_filter(base_filter)
+
+        # Plan query using base_filter predicates (for efficient index usage)
+        plan = plan_trace_query(base_preds, None)
+
+        total_count = 0
+        filter1_count = 0
+        filter2_count = 0
+        joint_count = 0
+
+        for exp_id in experiment_ids:
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            page_token: str | None = None
+
+            while True:
+                items, page_token = execute_trace_query(
+                    table=self._table,
+                    plan=plan,
+                    pk=pk,
+                    max_results=1000,
+                    page_token=page_token,
+                    predicates=base_preds,
+                )
+
+                for item in items:
+                    trace_id = item["trace_id"]
+                    total_count += 1
+
+                    match1 = all(
+                        _apply_trace_post_filter(self._table, pk, trace_id, item, p) for p in preds1
+                    )
+                    match2 = all(
+                        _apply_trace_post_filter(self._table, pk, trace_id, item, p) for p in preds2
+                    )
+
+                    if match1:
+                        filter1_count += 1
+                    if match2:
+                        filter2_count += 1
+                    if match1 and match2:
+                        joint_count += 1
+
+                if not page_token:
+                    break
+
+        # Compute NPMI
+        if total_count == 0:
+            npmi = 0.0
+        elif filter1_count == 0 or filter2_count == 0:
+            npmi = 0.0
+        elif joint_count == 0:
+            npmi = -1.0
+        elif (
+            joint_count == total_count
+            and filter1_count == total_count
+            and filter2_count == total_count
+        ):
+            npmi = 1.0
+        else:
+            p1 = filter1_count / total_count
+            p2 = filter2_count / total_count
+            p_joint = joint_count / total_count
+            pmi = math.log(p_joint / (p1 * p2))
+            npmi = pmi / -math.log(p_joint)
+
+        return TraceFilterCorrelationResult(
+            npmi=npmi,
+            filter1_count=filter1_count,
+            filter2_count=filter2_count,
+            joint_count=joint_count,
+            total_count=total_count,
+        )
 
     @staticmethod
     def _match_span_predicates_cached(
