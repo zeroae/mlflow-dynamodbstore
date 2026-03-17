@@ -114,6 +114,10 @@ class QueryPlan:
     post_filters: list[FilterPredicate] = field(default_factory=list)
     rank_key: str | None = None  # For strategy="rank"
     fts_query: str | None = None  # For strategy="fts"
+    # Metric predicates applied after RANK/index fetch (logged model search)
+    rank_filters: list[FilterPredicate] = field(default_factory=list)
+    # Dataset scope for logged model metric search
+    datasets: list[dict[str, Any]] | None = None
 
 
 # LSI mapping for order_by attributes
@@ -1049,3 +1053,286 @@ def parse_experiment_filter(filter_string: str | None) -> list[FilterPredicate]:
         return []
     parsed = SearchExperimentsUtils.parse_search_filter(filter_string)  # type: ignore[no-untyped-call]
     return _to_predicates(parsed)
+
+
+def parse_logged_model_filter(filter_string: str | None) -> list[FilterPredicate]:
+    """Parse an MLflow logged model search filter string into a list of FilterPredicates.
+
+    Delegates actual parsing to :class:`mlflow.utils.search_utils.SearchLoggedModelsUtils`
+    and normalises the result into our :class:`FilterPredicate` dataclass.
+
+    Args:
+        filter_string: An MLflow filter expression such as
+            ``"metrics.accuracy > 0.9 AND tags.env = 'prod'"``
+            or ``None`` / empty string for no filter.
+
+    Returns:
+        A (possibly empty) list of :class:`FilterPredicate` objects, one per AND clause.
+    """
+    if not filter_string:
+        return []
+    from mlflow.utils.search_utils import SearchLoggedModelsUtils
+
+    parsed = SearchLoggedModelsUtils.parse_search_filter(filter_string)  # type: ignore[no-untyped-call]
+    return _to_predicates(parsed)
+
+
+# LSI mapping for logged model order_by attributes
+_LM_ORDER_BY_LSI: dict[str, str] = {
+    "creation_timestamp": "lsi2",
+    "creation_time": "lsi2",
+    "last_updated_timestamp": "lsi2",
+    "name": "lsi4",
+}
+
+
+def plan_logged_model_query(
+    predicates: list[FilterPredicate],
+    order_by: list[dict[str, Any]] | None,
+    datasets: list[dict[str, Any]] | None,
+) -> QueryPlan:
+    """Analyze predicates and order_by to produce an optimal DynamoDB QueryPlan for logged models.
+
+    Strategy selection priority:
+    1. RANK  -- metric field_name in order_by
+    2. LSI3  -- status= filter (composite key: status#model_id)
+    3. LSI4  -- name order_by
+    4. LSI2  -- creation_timestamp/last_updated_timestamp order_by
+    5. Default -- lifecycle filter via LSI1 (active#)
+
+    Metric predicates are always separated into ``rank_filters`` and applied
+    post-fetch via RANK item range queries, regardless of the chosen strategy.
+
+    Args:
+        predicates: Parsed filter predicates from :func:`parse_logged_model_filter`.
+        order_by: List of order-by dicts with ``field_name`` and ``ascending`` keys,
+            as produced by ``SearchLoggedModelsUtils``.
+        datasets: Optional list of dataset dicts for dataset-scoped metric RANK queries.
+
+    Returns:
+        A :class:`QueryPlan` describing the chosen execution strategy.
+    """
+    # ------------------------------------------------------------------ #
+    # 1. Check for RANK strategy (metric field_name in order_by)          #
+    # ------------------------------------------------------------------ #
+    if order_by:
+        for ob in order_by:
+            field_name = ob.get("field_name", "")
+            if "." in field_name:
+                entity, key = field_name.split(".", 1)
+                if entity == "metrics":
+                    ascending = ob.get("ascending", True)
+                    return QueryPlan(
+                        strategy="rank",
+                        index=None,
+                        sk_prefix=None,
+                        # RANK items use inverted values, so ascending query needs DESC scan
+                        scan_forward=ascending,
+                        rank_key=key,
+                        rank_filters=[p for p in predicates if p.field_type == "metric"],
+                        post_filters=[p for p in predicates if p.field_type != "metric"],
+                        datasets=datasets,
+                    )
+
+    # Separate metric predicates as rank_filters for all non-RANK strategies
+    rank_filters = [p for p in predicates if p.field_type == "metric"]
+    non_metric_preds = [p for p in predicates if p.field_type != "metric"]
+
+    # ------------------------------------------------------------------ #
+    # 2. Check for status= filter -> LSI3                                 #
+    # ------------------------------------------------------------------ #
+    for pred in non_metric_preds:
+        if pred.field_type == "attribute" and pred.key == "status" and pred.op == "=":
+            remaining = [p for p in non_metric_preds if p is not pred]
+            return QueryPlan(
+                strategy="index",
+                index="lsi3",
+                sk_prefix=f"{pred.value}#",
+                scan_forward=False,
+                post_filters=remaining,
+                rank_filters=rank_filters,
+                datasets=datasets,
+            )
+
+    # ------------------------------------------------------------------ #
+    # 3. Determine index from order_by attribute                          #
+    # ------------------------------------------------------------------ #
+    chosen_index = "lsi1"
+    scan_forward = False
+    sk_prefix: str | None = "active#"
+
+    if order_by:
+        for ob in order_by:
+            field_name = ob.get("field_name", "")
+            if field_name in _LM_ORDER_BY_LSI:
+                chosen_index = _LM_ORDER_BY_LSI[field_name]
+                scan_forward = ob.get("ascending", True)
+                sk_prefix = None
+                break
+
+    return QueryPlan(
+        strategy="index",
+        index=chosen_index,
+        sk_prefix=sk_prefix,
+        scan_forward=scan_forward,
+        post_filters=non_metric_preds,
+        rank_filters=rank_filters,
+        datasets=datasets,
+    )
+
+
+def _is_logged_model_meta(item: dict[str, Any]) -> bool:
+    """Check if a DynamoDB item is a logged model META item (not a sub-item)."""
+    return "model_id" in item and "lifecycle_stage" in item
+
+
+def _execute_lm_rank(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+) -> list[dict[str, Any]]:
+    """Execute rank-based strategy for logged models."""
+    from mlflow_dynamodbstore.dynamodb.schema import (
+        SK_LM_PREFIX,
+        SK_RANK_LM_PREFIX,
+        SK_RANK_LMD_PREFIX,
+    )
+
+    sk_prefix = f"{SK_RANK_LM_PREFIX}{plan.rank_key}#"
+    # If datasets specified, use dataset-scoped RANK
+    if plan.datasets:
+        ds = plan.datasets[0]
+        ds_name = ds.get("name", "")
+        ds_digest = ds.get("digest", "")
+        if ds_name:
+            sk_prefix = f"{SK_RANK_LMD_PREFIX}{plan.rank_key}#{ds_name}#"
+            if ds_digest:
+                sk_prefix = f"{SK_RANK_LMD_PREFIX}{plan.rank_key}#{ds_name}#{ds_digest}#"
+
+    rank_items = table.query(
+        pk=pk,
+        sk_prefix=sk_prefix,
+        # RANK items use inverted values; ascending needs forward scan
+        scan_forward=not plan.scan_forward,
+    )
+
+    model_ids = [item["model_id"] for item in rank_items if "model_id" in item]
+    # Batch get META items, preserving rank order and excluding deleted models
+    items: list[dict[str, Any]] = []
+    for mid in model_ids:
+        meta = table.get_item(pk, f"{SK_LM_PREFIX}{mid}")
+        if meta and _is_logged_model_meta(meta) and meta.get("lifecycle_stage") != "deleted":
+            items.append(meta)
+    return items
+
+
+def _execute_lm_index(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+) -> list[dict[str, Any]]:
+    """Execute index-based strategy for logged models."""
+    items = table.query(
+        pk=pk,
+        sk_prefix=plan.sk_prefix,
+        index_name=plan.index,
+        scan_forward=plan.scan_forward,
+    )
+    # Filter to logged model META items only (excludes tag/param/metric sub-items)
+    return [item for item in items if _is_logged_model_meta(item)]
+
+
+def _apply_lm_post_filter(
+    table: DynamoDBTable,
+    pk: str,
+    model_id: str,
+    item: dict[str, Any],
+    pred: FilterPredicate,
+) -> bool:
+    """Apply a single post-filter predicate for logged model search.
+
+    For logged models, tags and params are denormalized onto the META item,
+    so no sub-item lookups are required for those field types.
+    """
+    if pred.field_type == "attribute":
+        # Map alternate attribute key names to actual item field names
+        key_map = {
+            "creation_timestamp": "creation_timestamp_ms",
+            "creation_time": "creation_timestamp_ms",
+            "last_updated_timestamp": "last_updated_timestamp_ms",
+        }
+        item_key = key_map.get(pred.key, pred.key)
+        actual = item.get(item_key)
+        # Coerce timestamp comparisons to int
+        if pred.key in ("creation_timestamp", "creation_time", "last_updated_timestamp"):
+            if actual is not None:
+                actual = int(actual)
+            expected = int(pred.value) if pred.value is not None else pred.value
+            return _compare(actual, pred.op, expected)
+        return _compare(actual, pred.op, pred.value)
+
+    if pred.field_type == "tag":
+        tags = item.get("tags", {})
+        return _compare(tags.get(pred.key), pred.op, pred.value)
+
+    if pred.field_type == "param":
+        params = item.get("params", {})
+        return _compare(params.get(pred.key), pred.op, pred.value)
+
+    return True  # Unknown type, don't filter
+
+
+def execute_logged_model_query(
+    table: DynamoDBTable,
+    plan: QueryPlan,
+    pk: str,
+    predicates: list[FilterPredicate] | None = None,
+) -> list[dict[str, Any]]:
+    """Execute a DynamoDB query for logged models based on a QueryPlan.
+
+    Unlike :func:`execute_query` and :func:`execute_trace_query`, this function
+    returns a flat list without pagination. The caller (``search_logged_models``)
+    is responsible for merging results across multiple experiments and applying
+    offset-based pagination.
+
+    Args:
+        table: DynamoDBTable instance.
+        plan: The QueryPlan describing the execution strategy.
+        pk: The partition key (e.g. ``"EXP#01JQ"``).
+        predicates: Full list of filter predicates (unused here; kept for API
+            symmetry with other execute functions).
+
+    Returns:
+        A list of logged model META item dicts matching the query.
+    """
+    from mlflow_dynamodbstore.dynamodb.schema import SK_RANK_LM_PREFIX
+
+    predicates = predicates or []
+
+    if plan.strategy == "rank":
+        items = _execute_lm_rank(table, plan, pk)
+    else:
+        items = _execute_lm_index(table, plan, pk)
+
+    # Apply rank_filters (metric predicates) via RANK item range queries
+    if plan.rank_filters and plan.strategy != "rank":
+        for rf in plan.rank_filters:
+            sk_prefix = f"{SK_RANK_LM_PREFIX}{rf.key}#"
+            rank_items = table.query(pk=pk, sk_prefix=sk_prefix)
+            matching_ids: set[str] = set()
+            for ri in rank_items:
+                val = float(ri.get("metric_value", 0))
+                if _compare(val, rf.op, rf.value):
+                    matching_ids.add(ri["model_id"])
+            items = [i for i in items if i.get("model_id") in matching_ids]
+
+    # Apply post-filters
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        model_id = item.get("model_id", "")
+        if all(
+            _apply_lm_post_filter(table, pk, model_id, item, pred) for pred in plan.post_filters
+        ):
+            filtered.append(item)
+
+    return filtered
