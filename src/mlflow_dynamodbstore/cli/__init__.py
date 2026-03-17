@@ -2,13 +2,6 @@
 
 import click
 
-from mlflow_dynamodbstore.cli.cache_spans import cache_spans
-from mlflow_dynamodbstore.cli.cleanup_expired import cleanup_expired
-from mlflow_dynamodbstore.cli.delete_workspace import delete_workspace
-from mlflow_dynamodbstore.cli.denormalize_tags import denormalize_tags
-from mlflow_dynamodbstore.cli.fts_trigrams import fts_trigrams
-from mlflow_dynamodbstore.cli.ttl_policy import ttl_policy
-
 
 class CliContext:
     """Shared context for all CLI commands."""
@@ -21,6 +14,12 @@ class CliContext:
 
 pass_context = click.make_pass_decorator(CliContext)
 
+from mlflow_dynamodbstore.cli.cache_spans import cache_spans  # noqa: E402
+from mlflow_dynamodbstore.cli.cleanup_expired import cleanup_expired  # noqa: E402
+from mlflow_dynamodbstore.cli.delete_workspace import delete_workspace  # noqa: E402
+from mlflow_dynamodbstore.cli.fts_trigrams import fts_trigrams  # noqa: E402
+from mlflow_dynamodbstore.cli.ttl_policy import ttl_policy  # noqa: E402
+
 
 @click.group()
 def cli() -> None:
@@ -31,6 +30,15 @@ def cli() -> None:
 cli.add_command(cache_spans)
 cli.add_command(cleanup_expired)
 cli.add_command(delete_workspace)
-cli.add_command(denormalize_tags)
 cli.add_command(fts_trigrams)
 cli.add_command(ttl_policy)
+
+
+def _register_tag_command() -> None:
+    """Register tag command. Imported lazily to avoid circular imports."""
+    from mlflow_dynamodbstore.cli.tag import tag
+
+    cli.add_command(tag)
+
+
+_register_tag_command()
