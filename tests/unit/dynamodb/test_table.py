@@ -18,6 +18,7 @@ def _create_test_table(region: str = "us-east-1", table_name: str = "test"):
             {"AttributeName": "PK", "AttributeType": "S"},
             {"AttributeName": "SK", "AttributeType": "S"},
             {"AttributeName": "lsi1sk", "AttributeType": "S"},
+            {"AttributeName": "lsi3sk", "AttributeType": "S"},
             {"AttributeName": "gsi1pk", "AttributeType": "S"},
             {"AttributeName": "gsi1sk", "AttributeType": "S"},
         ],
@@ -27,6 +28,14 @@ def _create_test_table(region: str = "us-east-1", table_name: str = "test"):
                 "KeySchema": [
                     {"AttributeName": "PK", "KeyType": "HASH"},
                     {"AttributeName": "lsi1sk", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "lsi3",
+                "KeySchema": [
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "lsi3sk", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -151,3 +160,64 @@ class TestDynamoDBTable:
         table.put_item({"PK": "EXP#1", "SK": "E#META"}, condition="attribute_not_exists(PK)")
         with pytest.raises(Exception):  # ConditionalCheckFailedException
             table.put_item({"PK": "EXP#1", "SK": "E#META"}, condition="attribute_not_exists(PK)")
+
+
+class TestBatchDelete:
+    @mock_aws
+    def test_batch_delete_removes_items(self):
+        _create_test_table()
+        table = DynamoDBTable(table_name="test", region="us-east-1")
+        table.put_item({"PK": "A", "SK": "1", "val": "a"})
+        table.put_item({"PK": "A", "SK": "2", "val": "b"})
+        table.put_item({"PK": "A", "SK": "3", "val": "c"})
+        table.batch_delete([{"PK": "A", "SK": "1"}, {"PK": "A", "SK": "2"}])
+        assert table.get_item("A", "1") is None
+        assert table.get_item("A", "2") is None
+        assert table.get_item("A", "3") is not None
+
+    @mock_aws
+    def test_batch_delete_empty_list(self):
+        _create_test_table()
+        table = DynamoDBTable(table_name="test", region="us-east-1")
+        table.batch_delete([])
+
+
+class TestQueryPage:
+    @mock_aws
+    def test_query_page_returns_items_and_token(self):
+        _create_test_table()
+        table = DynamoDBTable(table_name="test", region="us-east-1")
+        for i in range(5):
+            table.put_item({"PK": "B", "SK": f"R#{i:03d}", "val": str(i)})
+        items, lek = table.query_page(pk="B", sk_prefix="R#", limit=2)
+        assert len(items) == 2
+        assert lek is not None
+        items2, lek2 = table.query_page(pk="B", sk_prefix="R#", limit=2, exclusive_start_key=lek)
+        assert len(items2) == 2
+
+    @mock_aws
+    def test_query_page_no_more_results(self):
+        _create_test_table()
+        table = DynamoDBTable(table_name="test", region="us-east-1")
+        table.put_item({"PK": "C", "SK": "X#1"})
+        items, lek = table.query_page(pk="C", sk_prefix="X#", limit=10)
+        assert len(items) == 1
+        assert lek is None
+
+    @mock_aws
+    def test_query_page_with_lsi3(self):
+        _create_test_table()
+        table = DynamoDBTable(table_name="test", region="us-east-1")
+        table.put_item({"PK": "DS#1", "SK": "DS#REC#a", "lsi3sk": "abc123"})
+        table.put_item({"PK": "DS#1", "SK": "DS#REC#b", "lsi3sk": "def456"})
+        table.put_item({"PK": "DS#1", "SK": "DS#META", "lsi3sk": "myname"})
+        from boto3.dynamodb.conditions import Attr
+
+        items, lek = table.query_page(
+            pk="DS#1",
+            sk_prefix="abc123",
+            index_name="lsi3",
+            filter_expression=Attr("SK").begins_with("DS#REC#"),
+        )
+        assert len(items) == 1
+        assert items[0]["SK"] == "DS#REC#a"
