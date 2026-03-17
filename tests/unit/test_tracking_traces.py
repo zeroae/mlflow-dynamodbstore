@@ -1565,6 +1565,27 @@ class TestStartTraceSessionTracker:
         # GSI2 SK is zero-padded string for correct lexicographic ordering
         assert item[GSI2_SK] == f"{5000:020d}"
 
+    def test_multiple_traces_updates_gsi2_sk_to_last_timestamp(self, tracking_store):
+        """GSI2 SK reflects last_trace_timestamp_ms after multiple traces."""
+        from mlflow_dynamodbstore.dynamodb.schema import GSI2_SK
+
+        exp_id = _create_experiment(tracking_store)
+        for tid, ts in [("tr-g1", 1000), ("tr-g2", 2000), ("tr-g3", 3000)]:
+            trace_info = _make_trace_info(
+                exp_id,
+                trace_id=tid,
+                request_time=ts,
+                trace_metadata={
+                    TraceTagKey.TRACE_NAME: "my-trace",
+                    "mlflow.traceSession": "session-gsi2-multi",
+                },
+            )
+            tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-gsi2-multi")
+        assert item[GSI2_SK] == f"{3000:020d}"
+
     def test_session_tracker_has_ttl(self, tracking_store):
         """Session tracker item inherits trace TTL."""
         exp_id = _create_experiment(tracking_store)
