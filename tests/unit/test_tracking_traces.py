@@ -1978,3 +1978,190 @@ class TestFindCompletedSessions:
         assert session.session_id == "sess-check"
         assert session.first_trace_timestamp_ms == 1000
         assert session.last_trace_timestamp_ms == 3000
+
+
+class TestLogSpans:
+    """Tests for log_spans."""
+
+    @staticmethod
+    def _make_mock_span(trace_id, span_id="span-1", name="root"):
+        """Helper: build a mock Span with to_dict() support."""
+        span = MagicMock()
+        span.trace_id = trace_id
+        span.name = name
+        span.to_dict.return_value = {
+            "name": name,
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "parent_span_id": None,
+            "start_time_unix_nano": 0,
+            "end_time_unix_nano": 1000000000,
+            "status": {"code": "OK", "message": ""},
+            "attributes": {"mlflow.traceRequestId": trace_id},
+            "events": [],
+        }
+        return span
+
+    def test_log_spans_creates_spans_item(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-logspan-1")
+        tracking_store.start_trace(trace_info)
+
+        span = self._make_mock_span("tr-logspan-1")
+        result = tracking_store.log_spans(exp_id, [span])
+        assert len(result) == 1
+
+        # Verify SPANS item was written
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        cached = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-logspan-1#SPANS")
+        assert cached is not None
+        assert "data" in cached
+
+    def test_log_spans_overwrites_existing(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-logspan-2")
+        tracking_store.start_trace(trace_info)
+
+        span1 = self._make_mock_span("tr-logspan-2", name="first")
+        tracking_store.log_spans(exp_id, [span1])
+
+        span2 = self._make_mock_span("tr-logspan-2", name="second")
+        tracking_store.log_spans(exp_id, [span2])
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        cached = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-logspan-2#SPANS")
+        data = json.loads(cached["data"])
+        assert any(s["name"] == "second" for s in data)
+
+    def test_log_spans_multiple_traces(self, tracking_store):
+        """Spans for different traces in one call create separate SPANS items."""
+        exp_id = _create_experiment(tracking_store)
+        for tid in ["tr-multi-a", "tr-multi-b"]:
+            tracking_store.start_trace(_make_trace_info(exp_id, trace_id=tid))
+
+        span_a = self._make_mock_span("tr-multi-a")
+        span_b = self._make_mock_span("tr-multi-b", span_id="span-2")
+        result = tracking_store.log_spans(exp_id, [span_a, span_b])
+        assert len(result) == 2
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        for tid in ["tr-multi-a", "tr-multi-b"]:
+            cached = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{tid}#SPANS")
+            assert cached is not None
+
+
+class TestCalculateTraceFilterCorrelation:
+    """Tests for calculate_trace_filter_correlation."""
+
+    def _create_traces_with_tags(self, tracking_store, exp_id, traces_spec):
+        """Helper: create traces with specified tags.
+
+        traces_spec: list of dicts with keys 'trace_id', 'tags'.
+        """
+        for i, spec in enumerate(traces_spec):
+            trace_info = _make_trace_info(
+                exp_id,
+                trace_id=spec["trace_id"],
+                request_time=1000 + i * 100,
+                tags=spec.get("tags", {}),
+            )
+            tracking_store.start_trace(trace_info)
+
+    def test_known_distribution(self, tracking_store):
+        """10 traces, 5 match f1, 4 match f2, 4 match both."""
+        exp_id = _create_experiment(tracking_store)
+        specs = []
+        for i in range(10):
+            tags = {}
+            if i < 5:
+                tags["color"] = "red"
+            if i < 4:
+                tags["size"] = "large"
+            if i >= 5:
+                tags["color"] = "blue"
+            if i >= 4:
+                tags["size"] = "small"
+            specs.append({"trace_id": f"tr-corr-{i}", "tags": tags})
+        self._create_traces_with_tags(tracking_store, exp_id, specs)
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.color = 'red'",
+            filter_string2="tag.size = 'large'",
+        )
+        assert result.total_count == 10
+        assert result.filter1_count == 5
+        assert result.filter2_count == 4
+        assert result.joint_count == 4  # first 4 have both red+large
+
+    def test_no_traces_returns_zero_npmi(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.x = 'a'",
+            filter_string2="tag.y = 'b'",
+        )
+        assert result.total_count == 0
+        assert result.npmi == 0.0
+
+    def test_joint_count_zero_returns_negative_one(self, tracking_store):
+        """Filters never co-occur -> NPMI = -1.0."""
+        exp_id = _create_experiment(tracking_store)
+        specs = [
+            {"trace_id": "tr-nc-0", "tags": {"group": "a"}},
+            {"trace_id": "tr-nc-1", "tags": {"group": "b"}},
+        ]
+        self._create_traces_with_tags(tracking_store, exp_id, specs)
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.group = 'a'",
+            filter_string2="tag.group = 'b'",
+        )
+        assert result.joint_count == 0
+        assert result.npmi == -1.0
+
+    def test_filter_count_zero_returns_zero_npmi(self, tracking_store):
+        """One filter matches nothing -> NPMI = 0.0."""
+        exp_id = _create_experiment(tracking_store)
+        specs = [{"trace_id": "tr-fz-0", "tags": {"x": "1"}}]
+        self._create_traces_with_tags(tracking_store, exp_id, specs)
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.x = '1'",
+            filter_string2="tag.x = '2'",
+        )
+        assert result.filter2_count == 0
+        assert result.npmi == 0.0
+
+    def test_perfect_correlation(self, tracking_store):
+        """All traces match both filters -> NPMI = 1.0."""
+        exp_id = _create_experiment(tracking_store)
+        specs = [{"trace_id": f"tr-pc-{i}", "tags": {"a": "1", "b": "2"}} for i in range(5)]
+        self._create_traces_with_tags(tracking_store, exp_id, specs)
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.a = '1'",
+            filter_string2="tag.b = '2'",
+        )
+        assert result.npmi == 1.0
+
+    def test_base_filter_restricts_universe(self, tracking_store):
+        """base_filter limits which traces are counted."""
+        exp_id = _create_experiment(tracking_store)
+        specs = [
+            {"trace_id": "tr-bf-0", "tags": {"env": "prod", "status": "ok"}},
+            {"trace_id": "tr-bf-1", "tags": {"env": "prod", "status": "fail"}},
+            {"trace_id": "tr-bf-2", "tags": {"env": "dev", "status": "ok"}},
+        ]
+        self._create_traces_with_tags(tracking_store, exp_id, specs)
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.status = 'ok'",
+            filter_string2="tag.status = 'fail'",
+            base_filter="tag.env = 'prod'",
+        )
+        assert result.total_count == 2  # only prod traces

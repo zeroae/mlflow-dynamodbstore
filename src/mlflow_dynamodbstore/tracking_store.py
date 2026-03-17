@@ -2496,6 +2496,45 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return Trace(info=trace_info, data=TraceData(spans=spans))
 
+    def log_spans(
+        self, location: str, spans: list[Any], tracking_uri: str | None = None
+    ) -> list[Any]:
+        """Log spans to the tracking store by writing SPANS cache items."""
+        import json as _json
+        from collections import defaultdict
+
+        if not spans:
+            return []
+
+        # Group spans by trace_id
+        spans_by_trace: dict[str, list[Any]] = defaultdict(list)
+        for span in spans:
+            spans_by_trace[span.trace_id].append(span)
+
+        for trace_id, trace_spans in spans_by_trace.items():
+            try:
+                experiment_id = location or self._resolve_trace_experiment(trace_id)
+            except MlflowException:
+                experiment_id = location
+
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+            # Read TTL from trace META
+            meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+            ttl = int(meta["ttl"]) if meta and "ttl" in meta else self._get_trace_ttl()
+
+            span_dicts = [s.to_dict() for s in trace_spans]
+            spans_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": f"{SK_TRACE_PREFIX}{trace_id}#SPANS",
+                "data": _json.dumps(span_dicts),
+            }
+            if ttl is not None:
+                spans_item["ttl"] = ttl
+            self._table.put_item(spans_item)
+
+        return spans
+
     def search_traces(
         self,
         experiment_ids: list[str] | None = None,
