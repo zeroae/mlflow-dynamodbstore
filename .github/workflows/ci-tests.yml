@@ -51,7 +51,6 @@ jobs:
           fail_ci_if_error: false
 
   integration:
-    needs: unit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -80,7 +79,6 @@ jobs:
           fail_ci_if_error: false
 
   e2e:
-    needs: unit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
