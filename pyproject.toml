@@ -54,6 +54,7 @@ dev = [
     "requests",
     "pre-commit",
     "diff-cover",
+    "chardet<6",  # requests hardcodes chardet<6 in its compatibility check
     "flask-wtf>=1.2.2",
 ]
 docs = [
