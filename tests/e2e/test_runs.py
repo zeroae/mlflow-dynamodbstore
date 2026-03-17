@@ -154,9 +154,6 @@ class TestRuns:
         )
         assert any(r.info.run_id == run.info.run_id for r in runs)
 
-    @pytest.mark.xfail(
-        reason="log_inputs REST API returns 400 — Dataset entity construction needs investigation"
-    )
     def test_log_inputs(self, client: MlflowClient, experiment_id):
         """Log dataset inputs to a run."""
         from mlflow.entities import Dataset, DatasetInput, InputTag

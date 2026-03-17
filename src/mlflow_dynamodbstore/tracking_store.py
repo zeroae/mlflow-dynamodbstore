@@ -1664,6 +1664,9 @@ class DynamoDBTrackingStore(AbstractStore):
             artifact_loc = exp.artifact_location or self._artifact_uri
             if artifact_loc:
                 self._write_trace_tag(experiment_id, trace_id, artifact_loc_tag, artifact_loc, ttl)
+                if trace_info.tags is None:
+                    trace_info.tags = {}
+                trace_info.tags[artifact_loc_tag] = artifact_loc
 
         return trace_info
 
@@ -1860,7 +1863,7 @@ class DynamoDBTrackingStore(AbstractStore):
         )
 
         if not experiment_ids:
-            experiment_ids = []
+            experiment_ids = locations or []
 
         # 1. Parse filter and split into span vs non-span predicates
         predicates = parse_trace_filter(filter_string)
