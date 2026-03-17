@@ -114,6 +114,8 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_METRIC_HISTORY_PREFIX,
     SK_METRIC_PREFIX,
     SK_PARAM_PREFIX,
+    SK_RANK_LM_PREFIX,
+    SK_RANK_LMD_PREFIX,
     SK_RANK_PREFIX,
     SK_RUN_PREFIX,
     SK_SCORER_OSCFG_SUFFIX,
@@ -1126,6 +1128,117 @@ class DynamoDBTrackingStore(AbstractStore):
         )
 
         return _item_to_logged_model(meta, tag_items, param_items, metric_items)
+
+    def finalize_logged_model(self, model_id: str, status: LoggedModelStatus) -> LoggedModel:
+        """Update a logged model's status (e.g. READY or FAILED)."""
+        experiment_id = self._resolve_logged_model_experiment(model_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_LM_PREFIX}{model_id}"
+        now_ms = int(time.time() * 1000)
+
+        self._table.update_item(
+            pk=pk,
+            sk=sk,
+            updates={
+                "status": str(status),
+                "last_updated_timestamp_ms": now_ms,
+                LSI3_SK: f"{status}#{model_id}",
+            },
+        )
+        return self.get_logged_model(model_id)
+
+    def delete_logged_model(self, model_id: str) -> None:
+        """Soft-delete a logged model and set TTL on all related items."""
+        experiment_id = self._resolve_logged_model_experiment(model_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_LM_PREFIX}{model_id}"
+        now_ms = int(time.time() * 1000)
+
+        ttl_seconds = self._config.get_soft_deleted_ttl_seconds()
+        ttl_value = int(time.time()) + ttl_seconds if ttl_seconds is not None else None
+
+        updates: dict[str, Any] = {
+            "lifecycle_stage": "deleted",
+            "last_updated_timestamp_ms": now_ms,
+            LSI1_SK: f"deleted#{model_id}",
+        }
+        if ttl_value is not None:
+            updates["ttl"] = ttl_value
+        self._table.update_item(pk=pk, sk=sk, updates=updates)
+
+        # Set TTL on child items (tags, params, metrics)
+        children = self._table.query(pk=pk, sk_prefix=f"{SK_LM_PREFIX}{model_id}#")
+        for child in children:
+            if ttl_value is not None:
+                self._table.update_item(pk=pk, sk=child["SK"], updates={"ttl": ttl_value})
+
+        # Set TTL on RANK items built from metric sub-items
+        metric_children = [c for c in children if SK_LM_METRIC_PREFIX in c["SK"]]
+        for mc in metric_children:
+            inv_value = self._invert_metric_value(float(mc["metric_value"]))
+            rank_sk = f"{SK_RANK_LM_PREFIX}{mc['metric_name']}#{inv_value}#{model_id}"
+            if ttl_value is not None:
+                self._table.update_item(pk=pk, sk=rank_sk, updates={"ttl": ttl_value})
+            if mc.get("dataset_name") and mc.get("dataset_digest"):
+                rank_sk_ds = (
+                    f"{SK_RANK_LMD_PREFIX}{mc['metric_name']}#"
+                    f"{mc['dataset_name']}#{mc['dataset_digest']}#{inv_value}#{model_id}"
+                )
+                if ttl_value is not None:
+                    self._table.update_item(pk=pk, sk=rank_sk_ds, updates={"ttl": ttl_value})
+
+    def set_logged_model_tags(self, model_id: str, tags: list[LoggedModelTag]) -> None:
+        """Set (or overwrite) tags on a logged model."""
+        experiment_id = self._resolve_logged_model_experiment(model_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        now_ms = int(time.time() * 1000)
+
+        tag_dict: dict[str, str] = {}
+        for tag in tags:
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}{tag.key}",
+                    "key": tag.key,
+                    "value": tag.value,
+                }
+            )
+            tag_dict[tag.key] = tag.value
+
+        # Update denormalized tags on META item
+        meta = self._table.get_item(pk=pk, sk=f"{SK_LM_PREFIX}{model_id}") or {}
+        existing_tags: dict[str, str] = meta.get("tags", {})
+        existing_tags.update(tag_dict)
+        self._table.update_item(
+            pk=pk,
+            sk=f"{SK_LM_PREFIX}{model_id}",
+            updates={"tags": existing_tags, "last_updated_timestamp_ms": now_ms},
+        )
+
+    def delete_logged_model_tag(self, model_id: str, key: str) -> None:
+        """Delete a tag from a logged model."""
+        experiment_id = self._resolve_logged_model_experiment(model_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        now_ms = int(time.time() * 1000)
+
+        self._table.delete_item(pk=pk, sk=f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}{key}")
+
+        # Update denormalized tags on META item
+        meta = self._table.get_item(pk=pk, sk=f"{SK_LM_PREFIX}{model_id}") or {}
+        existing_tags: dict[str, str] = meta.get("tags", {})
+        existing_tags.pop(key, None)
+        self._table.update_item(
+            pk=pk,
+            sk=f"{SK_LM_PREFIX}{model_id}",
+            updates={"tags": existing_tags, "last_updated_timestamp_ms": now_ms},
+        )
+
+    @staticmethod
+    def _invert_metric_value(value: float) -> str:
+        """Invert a metric value for descending sort in DynamoDB RANK items."""
+        max_val = 9999999999.9999
+        inv = max_val - value
+        return f"{inv:020.4f}"
 
     def update_run_info(
         self, run_id: str, run_status: str | int, end_time: int, run_name: str

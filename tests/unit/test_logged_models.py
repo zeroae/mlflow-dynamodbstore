@@ -98,3 +98,109 @@ class TestGetLoggedModel:
         _create_experiment(tracking_store)
         with pytest.raises(MlflowException, match="does not exist"):
             tracking_store.get_logged_model("m-nonexistent")
+
+
+class TestFinalizeLoggedModel:
+    def test_finalize_ready(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="fin-test")
+
+        result = tracking_store.finalize_logged_model(model.model_id, LoggedModelStatus.READY)
+        assert result.status == LoggedModelStatus.READY
+
+        fetched = tracking_store.get_logged_model(model.model_id)
+        assert fetched.status == LoggedModelStatus.READY
+
+    def test_finalize_failed(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="fail-test")
+
+        result = tracking_store.finalize_logged_model(model.model_id, LoggedModelStatus.FAILED)
+        assert result.status == LoggedModelStatus.FAILED
+
+    def test_finalize_updates_lsi3(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="lsi3-test")
+        tracking_store.finalize_logged_model(model.model_id, LoggedModelStatus.READY)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_LM_PREFIX}{model.model_id}")
+        assert meta[LSI3_SK].startswith("READY#")
+
+
+class TestGetDeletedLoggedModel:
+    def test_get_deleted_raises_by_default(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="del-test")
+        tracking_store.delete_logged_model(model.model_id)
+
+        with pytest.raises(MlflowException):
+            tracking_store.get_logged_model(model.model_id)
+
+    def test_get_deleted_with_allow_deleted(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="del-test")
+        tracking_store.delete_logged_model(model.model_id)
+
+        fetched = tracking_store.get_logged_model(model.model_id, allow_deleted=True)
+        assert fetched.model_id == model.model_id
+
+
+class TestDeleteLoggedModel:
+    def test_soft_delete(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="del-test")
+        tracking_store.delete_logged_model(model.model_id)
+
+        with pytest.raises(MlflowException):
+            tracking_store.get_logged_model(model.model_id)
+
+    def test_soft_delete_sets_ttl_on_children(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(
+            experiment_id=exp_id,
+            name="ttl-test",
+            tags=[LoggedModelTag("k", "v")],
+            params=[LoggedModelParameter("p", "1")],
+        )
+        tracking_store.delete_logged_model(model.model_id)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_LM_PREFIX}{model.model_id}")
+        assert meta.get("lifecycle_stage") == "deleted"
+        assert meta[LSI1_SK].startswith("deleted#")
+
+
+class TestLoggedModelTags:
+    def test_set_tags(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="tag-test")
+
+        tracking_store.set_logged_model_tags(model.model_id, [LoggedModelTag("env", "prod")])
+
+        fetched = tracking_store.get_logged_model(model.model_id)
+        assert fetched.tags["env"] == "prod"
+
+    def test_set_tags_overwrite(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(
+            experiment_id=exp_id,
+            name="overwrite-test",
+            tags=[LoggedModelTag("env", "dev")],
+        )
+        tracking_store.set_logged_model_tags(model.model_id, [LoggedModelTag("env", "prod")])
+
+        fetched = tracking_store.get_logged_model(model.model_id)
+        assert fetched.tags["env"] == "prod"
+
+    def test_delete_tag(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(
+            experiment_id=exp_id,
+            name="deltag-test",
+            tags=[LoggedModelTag("env", "prod")],
+        )
+        tracking_store.delete_logged_model_tag(model.model_id, "env")
+
+        fetched = tracking_store.get_logged_model(model.model_id)
+        assert "env" not in fetched.tags
