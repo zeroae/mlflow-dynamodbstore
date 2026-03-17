@@ -128,6 +128,21 @@ _ORDER_BY_LSI: dict[str, str] = {
 _FTS_LIKE_RE = re.compile(r"^%[^%]+%$")
 
 
+# Normalize alternate field type identifiers to internal canonical form.
+# MLflow clients may send plural forms (e.g. "metrics.score DESC").
+# See mlflow.utils.search_utils._METRIC_IDENTIFIER and alternates.
+_FIELD_TYPE_ALIASES: dict[str, str] = {
+    "metrics": "metric",
+    "parameter": "param",
+    "parameters": "param",
+    "params": "param",
+    "tags": "tag",
+    "attributes": "attribute",
+    "attr": "attribute",
+    "run": "attribute",
+}
+
+
 def _parse_order_by_token(token: str) -> tuple[str | None, str | None, bool]:
     """Parse a single order_by token into (field_type_or_none, key, scan_forward)."""
     token = token.strip()
@@ -144,7 +159,9 @@ def _parse_order_by_token(token: str) -> tuple[str | None, str | None, bool]:
 
     if "." in token_body:
         field_type, key = token_body.split(".", 1)
-        return field_type.lower(), key, scan_forward
+        field_type = field_type.lower()
+        field_type = _FIELD_TYPE_ALIASES.get(field_type, field_type)
+        return field_type, key, scan_forward
     else:
         return None, token_body.lower(), scan_forward
 
@@ -183,7 +200,7 @@ def plan_run_query(
     if order_by:
         for token in order_by:
             field_type, key, scan_forward = _parse_order_by_token(token)
-            if field_type in ("metric", "metrics", "param", "params"):
+            if field_type in ("metric", "param"):
                 return QueryPlan(
                     strategy="rank",
                     index=None,
