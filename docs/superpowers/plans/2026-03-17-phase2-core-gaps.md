@@ -96,28 +96,23 @@ git commit -m "feat: implement delete_experiment_tag"
 - Modify: `src/mlflow_dynamodbstore/tracking_store.py:199-216` (constructor / class definition area)
 - Test: `tests/unit/test_tracking_store.py`
 
-- [ ] **Step 1: Write the failing unit tests**
+**Design note:** The DynamoDB store's schema has workspace scoping built into every entity (GSI2/GSI3 prefixes include workspace, META items carry workspace attribute). The store always supports workspaces — the user controls whether to enable them at server startup via `--enable-workspaces` / `MLFLOW_ENABLE_WORKSPACES=1`. The SQLAlchemy store returns `False` because it lacks workspace schema; we return `True` because we have it.
+
+- [ ] **Step 1: Write the failing unit test**
 
 Add to `tests/unit/test_tracking_store.py`:
 
 ```python
-def test_supports_workspaces_default_false(self, tracking_store):
-    """Without MLFLOW_ENABLE_WORKSPACES env var, returns False."""
-    assert tracking_store.supports_workspaces is False
-
-def test_supports_workspaces_enabled(self, monkeypatch, tracking_store):
-    """With MLFLOW_ENABLE_WORKSPACES=1, returns True."""
-    monkeypatch.setenv("MLFLOW_ENABLE_WORKSPACES", "1")
+def test_supports_workspaces(self, tracking_store):
+    """DynamoDB store always supports workspaces."""
     assert tracking_store.supports_workspaces is True
 ```
 
-The property reads `os.environ` on each call, so `monkeypatch.setenv` works with the existing `tracking_store` fixture — no factory needed.
-
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/unit/test_tracking_store.py -k "supports_workspaces" -v`
 
-Expected: FAIL — property not overridden, returns `False` always.
+Expected: FAIL — inherited `AbstractStore` returns `False`.
 
 - [ ] **Step 3: Implement `supports_workspaces` property**
 
@@ -126,13 +121,16 @@ Add to `src/mlflow_dynamodbstore/tracking_store.py` in the `DynamoDBTrackingStor
 ```python
 @property
 def supports_workspaces(self) -> bool:
-    """Return True when workspaces are enabled via MLFLOW_ENABLE_WORKSPACES=1."""
-    return os.environ.get("MLFLOW_ENABLE_WORKSPACES") == "1"
+    """DynamoDB store always supports workspaces.
+
+    Workspace scoping is built into the schema (GSI2/GSI3 prefixes,
+    META workspace attribute). The --enable-workspaces server flag
+    controls whether workspace features are active at runtime.
+    """
+    return True
 ```
 
-Also add `import os` at the top of the file if not already present.
-
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/unit/test_tracking_store.py -k "supports_workspaces" -v`
 
@@ -148,7 +146,7 @@ Expected: All pass.
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_store.py
-git commit -m "feat: implement supports_workspaces property"
+git commit -m "feat: implement supports_workspaces property (always True)"
 ```
 
 ---
