@@ -1233,6 +1233,36 @@ class DynamoDBTrackingStore(AbstractStore):
             updates={"tags": existing_tags, "last_updated_timestamp_ms": now_ms},
         )
 
+    def record_logged_model(self, run_id: str, mlflow_model: dict[str, Any]) -> None:
+        """Append a model info dict to the run's mlflow.loggedModels tag."""
+        import json as _json
+
+        run = self.get_run(run_id)
+        experiment_id = run.info.experiment_id
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        tag_sk = f"{SK_RUN_PREFIX}{run_id}{SK_TAG_PREFIX}mlflow.loggedModels"
+        existing = self._table.get_item(pk=pk, sk=tag_sk)
+        models = _json.loads(existing["value"]) if existing else []
+        models.append(mlflow_model)
+        serialized = _json.dumps(models)
+
+        self._table.put_item(
+            {
+                "PK": pk,
+                "SK": tag_sk,
+                "key": "mlflow.loggedModels",
+                "value": serialized,
+            }
+        )
+
+        # Update denormalized tags on run META
+        run_sk = f"{SK_RUN_PREFIX}{run_id}"
+        meta = self._table.get_item(pk=pk, sk=run_sk)
+        run_tags = meta.get("tags", {}) if meta else {}
+        run_tags["mlflow.loggedModels"] = serialized
+        self._table.update_item(pk=pk, sk=run_sk, updates={"tags": run_tags})
+
     @staticmethod
     def _invert_metric_value(value: float) -> str:
         """Invert a metric value for descending sort in DynamoDB RANK items."""

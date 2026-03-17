@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from mlflow.entities import LoggedModelParameter, LoggedModelTag
 from mlflow.entities.logged_model_status import LoggedModelStatus
@@ -204,3 +206,22 @@ class TestLoggedModelTags:
 
         fetched = tracking_store.get_logged_model(model.model_id)
         assert "env" not in fetched.tags
+
+
+class TestRecordLoggedModel:
+    def test_record_logged_model(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        run = tracking_store.create_run(
+            experiment_id=exp_id, user_id="user", start_time=1000, run_name="test-run", tags=[]
+        )
+
+        tracking_store.record_logged_model(
+            run.info.run_id, {"model_id": "m-test", "name": "my-model"}
+        )
+
+        fetched_run = tracking_store.get_run(run.info.run_id)
+        logged_models_tag = fetched_run.data.tags.get("mlflow.loggedModels")
+        assert logged_models_tag is not None
+        models = json.loads(logged_models_tag)
+        assert len(models) == 1
+        assert models[0]["model_id"] == "m-test"
