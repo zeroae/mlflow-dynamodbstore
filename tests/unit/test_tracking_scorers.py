@@ -285,3 +285,31 @@ class TestGetActiveOnlineScorers:
         tracking_store.register_scorer(exp_id, "accuracy", "{}")
         active = tracking_store.get_active_online_scorers()
         assert active == []
+
+
+class TestScorerVersionCompatToProto:
+    def test_to_proto_skips_experiment_id(self, tracking_store):
+        """to_proto works with ULID experiment_id (no int conversion)."""
+        exp_id = _create_experiment(tracking_store)
+        sv = tracking_store.register_scorer(exp_id, "accuracy", '{"name": "acc"}')
+        proto = sv.to_proto()
+        # experiment_id is int32 in proto, should be 0 (unset) since we skip it
+        assert proto.experiment_id == 0
+        assert proto.scorer_name == "accuracy"
+        assert proto.scorer_version == 1
+        assert proto.scorer_id == sv.scorer_id
+
+    def test_to_proto_without_scorer_id(self, tracking_store):
+        """to_proto handles None scorer_id."""
+        from mlflow_dynamodbstore.tracking_store import _ScorerVersionCompat
+
+        sv = _ScorerVersionCompat(
+            experiment_id="test",
+            scorer_name="acc",
+            scorer_version=1,
+            serialized_scorer="{}",
+            creation_time=123,
+            scorer_id=None,
+        )
+        proto = sv.to_proto()
+        assert not proto.HasField("scorer_id")
