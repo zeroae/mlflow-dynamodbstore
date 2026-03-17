@@ -188,7 +188,8 @@ def plan_run_query(
                     strategy="rank",
                     index=None,
                     sk_prefix=None,
-                    scan_forward=scan_forward,
+                    # RANK items use inverted values, so flip scan direction
+                    scan_forward=not scan_forward,
                     rank_key=key,
                 )
 

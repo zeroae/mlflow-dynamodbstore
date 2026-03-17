@@ -1582,6 +1582,14 @@ class DynamoDBTrackingStore(AbstractStore):
             for tag_key, tag_value in trace_info.tags.items():
                 self._write_trace_tag(experiment_id, trace_id, tag_key, tag_value, ttl)
 
+        # Ensure artifact location tag is set (required by MLflow trace export)
+        artifact_loc_tag = "mlflow.artifactLocation"
+        if artifact_loc_tag not in (trace_info.tags or {}):
+            exp = self.get_experiment(experiment_id)
+            artifact_loc = exp.artifact_location or self._artifact_uri
+            if artifact_loc:
+                self._write_trace_tag(experiment_id, trace_id, artifact_loc_tag, artifact_loc, ttl)
+
         return trace_info
 
     def get_trace_info(self, trace_id: str) -> TraceInfo:

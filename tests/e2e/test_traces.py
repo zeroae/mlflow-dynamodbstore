@@ -21,9 +21,7 @@ class TestTraces:
         assert isinstance(traces, list)
         assert len(traces) == 0
 
-    @pytest.mark.xfail(
-        reason="MLflow 3.x trace export: 'Unable to determine trace artifact location'"
-    )
+    @pytest.mark.xfail(reason="Trace artifact location tag not propagated through REST layer")
     def test_trace_via_decorator(self, mlflow_server):
         """Create a trace using the @mlflow.trace decorator."""
         mlflow.set_tracking_uri(mlflow_server)
