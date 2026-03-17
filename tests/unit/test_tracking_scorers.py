@@ -95,3 +95,41 @@ class TestGetScorer:
         tracking_store.register_scorer(exp_id, "accuracy", "{}")
         with pytest.raises(MlflowException, match="not found"):
             tracking_store.get_scorer(exp_id, "accuracy", version=99)
+
+
+class TestListScorers:
+    def test_list_empty(self, tracking_store):
+        """list_scorers returns empty list for experiment with no scorers."""
+        exp_id = _create_experiment(tracking_store)
+        result = tracking_store.list_scorers(exp_id)
+        assert result == []
+
+    def test_list_returns_latest_versions(self, tracking_store):
+        """list_scorers returns latest version per scorer name."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 1}')
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 2}')
+        tracking_store.register_scorer(exp_id, "relevance", '{"v": 1}')
+        result = tracking_store.list_scorers(exp_id)
+        assert len(result) == 2
+        by_name = {s.scorer_name: s for s in result}
+        assert by_name["accuracy"].scorer_version == 2
+        assert by_name["relevance"].scorer_version == 1
+
+
+class TestListScorerVersions:
+    def test_list_versions(self, tracking_store):
+        """list_scorer_versions returns all versions ascending."""
+        exp_id = _create_experiment(tracking_store)
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 1}')
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 2}')
+        tracking_store.register_scorer(exp_id, "accuracy", '{"v": 3}')
+        result = tracking_store.list_scorer_versions(exp_id, "accuracy")
+        assert len(result) == 3
+        assert [s.scorer_version for s in result] == [1, 2, 3]
+
+    def test_list_versions_nonexistent_raises(self, tracking_store):
+        """list_scorer_versions for missing scorer raises."""
+        exp_id = _create_experiment(tracking_store)
+        with pytest.raises(MlflowException, match="not found"):
+            tracking_store.list_scorer_versions(exp_id, "no-such")

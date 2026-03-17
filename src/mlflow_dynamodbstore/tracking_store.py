@@ -2707,6 +2707,66 @@ class DynamoDBTrackingStore(AbstractStore):
             scorer_id=scorer_id,
         )
 
+    def list_scorers(self, experiment_id: str) -> list[ScorerVersion]:
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        # Query all SCOR# items and filter to META items in Python.
+        # META items have SK = "SCOR#<ulid>" (no #V# or #OSCFG suffix).
+        items = self._table.query(pk=pk, sk_prefix=SK_SCORER_PREFIX)
+        meta_items = [item for item in items if "#" not in item["SK"][len(SK_SCORER_PREFIX) :]]
+
+        result: list[ScorerVersion] = []
+        for meta in meta_items:
+            scorer_id = meta["SK"][len(SK_SCORER_PREFIX) :]
+            # AP3: get latest version
+            versions = self._table.query(
+                pk=pk,
+                sk_prefix=f"{SK_SCORER_PREFIX}{scorer_id}#V#",
+                scan_forward=False,
+                limit=1,
+            )
+            if versions:
+                ver = versions[0]
+                result.append(
+                    ScorerVersion(
+                        experiment_id=experiment_id,
+                        scorer_name=meta["scorer_name"],
+                        scorer_version=int(ver["scorer_version"]),
+                        serialized_scorer=ver["serialized_scorer"],
+                        creation_time=int(ver["creation_time"]),
+                        scorer_id=scorer_id,
+                    )
+                )
+        return result
+
+    def list_scorer_versions(self, experiment_id: str, name: str) -> list[ScorerVersion]:
+        scorer_id = self._resolve_scorer_id(experiment_id, name)
+        if scorer_id is None:
+            raise MlflowException(
+                f"Scorer '{name}' not found in experiment '{experiment_id}'.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        # AP5: all versions ascending
+        items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_SCORER_PREFIX}{scorer_id}#V#",
+            scan_forward=True,
+        )
+        # Read META for canonical scorer_name
+        meta = self._table.get_item(pk=pk, sk=f"{SK_SCORER_PREFIX}{scorer_id}")
+        scorer_name = meta["scorer_name"] if meta else name
+        return [
+            ScorerVersion(
+                experiment_id=experiment_id,
+                scorer_name=scorer_name,
+                scorer_version=int(item["scorer_version"]),
+                serialized_scorer=item["serialized_scorer"],
+                creation_time=int(item["creation_time"]),
+                scorer_id=scorer_id,
+            )
+            for item in items
+        ]
+
     def delete_traces(
         self,
         experiment_id: str,
