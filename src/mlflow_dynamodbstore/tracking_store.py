@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from mlflow.entities.trace import Trace
+    from mlflow.genai.scorers.online.entities import OnlineScorer, OnlineScoringConfig
 
     from mlflow_dynamodbstore.xray.client import XRayClient
 
@@ -36,7 +37,6 @@ from mlflow.entities import (
 )
 from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
-from mlflow.genai.scorers.online.entities import OnlineScorer, OnlineScoringConfig
 from mlflow.protos.databricks_pb2 import (
     INVALID_PARAMETER_VALUE,
     RESOURCE_ALREADY_EXISTS,
@@ -2827,6 +2827,8 @@ class DynamoDBTrackingStore(AbstractStore):
         sample_rate: float,
         filter_string: str | None = None,
     ) -> OnlineScoringConfig:
+        from mlflow.genai.scorers.online.entities import OnlineScoringConfig
+
         if not (0.0 <= sample_rate <= 1.0):
             raise MlflowException(
                 f"sample_rate must be in [0.0, 1.0], got {sample_rate}.",
@@ -2869,6 +2871,8 @@ class DynamoDBTrackingStore(AbstractStore):
         )
 
     def get_online_scoring_configs(self, scorer_ids: list[str]) -> list[OnlineScoringConfig]:
+        from mlflow.genai.scorers.online.entities import OnlineScoringConfig
+
         configs: list[OnlineScoringConfig] = []
         for scorer_id in scorer_ids:
             # AP11: resolve scorer_id → experiment_id via GSI1
@@ -2897,6 +2901,11 @@ class DynamoDBTrackingStore(AbstractStore):
         return configs
 
     def get_active_online_scorers(self) -> list[OnlineScorer]:
+        from mlflow.genai.scorers.online.entities import (
+            OnlineScorer,
+            OnlineScoringConfig,
+        )
+
         # AP9: query GSI2 for active configs
         items = self._table.query(
             pk=f"{GSI2_ACTIVE_SCORERS_PREFIX}{self._workspace}",
