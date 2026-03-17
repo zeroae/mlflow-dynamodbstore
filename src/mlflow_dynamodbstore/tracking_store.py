@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,7 @@ from mlflow.entities import (
     Assessment,
     Dataset,
     DatasetInput,
+    EvaluationDataset,
     Experiment,
     ExperimentTag,
     InputTag,
@@ -55,14 +57,17 @@ from mlflow_dynamodbstore.dynamodb.keys import pad_step
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_CLIENT_PREFIX,
+    GSI1_DS_EXP_PREFIX,
     GSI1_PK,
     GSI1_RUN_PREFIX,
     GSI1_SK,
     GSI1_TRACE_PREFIX,
+    GSI2_DS_LIST_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
     GSI2_PK,
     GSI2_SK,
+    GSI3_DS_NAME_PREFIX,
     GSI3_EXP_NAME_PREFIX,
     GSI3_PK,
     GSI3_SK,
@@ -74,8 +79,12 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI3_SK,
     LSI4_SK,
     LSI5_SK,
+    PK_DATASET_PREFIX,
     PK_EXPERIMENT_PREFIX,
+    SK_DATASET_EXP_PREFIX,
+    SK_DATASET_META,
     SK_DATASET_PREFIX,
+    SK_DATASET_TAG_PREFIX,
     SK_DLINK_PREFIX,
     SK_EXPERIMENT_META,
     SK_EXPERIMENT_NAME_REV,
@@ -2529,3 +2538,134 @@ class DynamoDBTrackingStore(AbstractStore):
             deleted += 1
 
         return deleted
+
+    # ------------------------------------------------------------------
+    # Evaluation Dataset CRUD
+    # ------------------------------------------------------------------
+
+    def _compute_dataset_digest(self, name: str, last_update_time: int) -> str:
+        """Compute a short digest for a dataset from its name and last_update_time."""
+        return hashlib.sha256(f"{name}:{last_update_time}".encode()).hexdigest()[:8]
+
+    def create_dataset(
+        self,
+        name: str,
+        tags: dict[str, str] | None = None,
+        experiment_ids: list[str] | None = None,
+    ) -> EvaluationDataset:
+        """Create a new evaluation dataset and return it."""
+        # Check name uniqueness via GSI3
+        existing = self._table.query(
+            pk=f"{GSI3_DS_NAME_PREFIX}{self._workspace}#{name.lower()}",
+            index_name="gsi3",
+            limit=1,
+        )
+        if existing:
+            raise MlflowException(
+                f"Dataset with name '{name}' already exists.",
+                error_code=RESOURCE_ALREADY_EXISTS,
+            )
+
+        now_ms = int(time.time() * 1000)
+        dataset_id = f"eval_{generate_ulid()}"
+        digest = self._compute_dataset_digest(name, now_ms)
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+
+        # Write META item
+        meta_item: dict[str, Any] = {
+            "PK": pk,
+            "SK": SK_DATASET_META,
+            "name": name,
+            "digest": digest,
+            "created_time": now_ms,
+            "last_update_time": now_ms,
+            "workspace": self._workspace,
+            "tags": tags or {},
+            # LSI projections
+            LSI1_SK: now_ms,
+            LSI2_SK: now_ms,
+            LSI3_SK: name.lower(),
+            # GSI2: list all datasets in workspace
+            GSI2_PK: f"{GSI2_DS_LIST_PREFIX}{self._workspace}",
+            GSI2_SK: dataset_id,
+            # GSI3: name uniqueness
+            GSI3_PK: f"{GSI3_DS_NAME_PREFIX}{self._workspace}#{name.lower()}",
+            GSI3_SK: dataset_id,
+        }
+        self._table.put_item(meta_item)
+
+        # Write tag items
+        if tags:
+            for key, value in tags.items():
+                tag_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_TAG_PREFIX}{key}",
+                    "key": key,
+                    "value": value,
+                }
+                self._table.put_item(tag_item)
+
+        # Write experiment link items
+        if experiment_ids:
+            for exp_id in experiment_ids:
+                exp_link_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_EXP_PREFIX}{exp_id}",
+                    # GSI1 reverse lookup: from experiment -> datasets
+                    GSI1_PK: f"{GSI1_DS_EXP_PREFIX}{exp_id}",
+                    GSI1_SK: dataset_id,
+                }
+                self._table.put_item(exp_link_item)
+
+        return EvaluationDataset(
+            dataset_id=dataset_id,
+            name=name,
+            digest=digest,
+            created_time=now_ms,
+            last_update_time=now_ms,
+            tags=tags or {},
+        )
+
+    def get_dataset(self, dataset_id: str) -> EvaluationDataset:
+        """Fetch an evaluation dataset by ID."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is None:
+            raise MlflowException(
+                f"Dataset '{dataset_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Load tags from tag items
+        tag_items = self._table.query(pk=pk, sk_prefix=SK_DATASET_TAG_PREFIX)
+        tags = {item["key"]: item["value"] for item in tag_items}
+
+        # Load experiment IDs
+        experiment_ids = self.get_dataset_experiment_ids(dataset_id)
+
+        ds = EvaluationDataset(
+            dataset_id=dataset_id,
+            name=meta["name"],
+            digest=meta["digest"],
+            created_time=int(meta["created_time"]),
+            last_update_time=int(meta["last_update_time"]),
+            tags=tags,
+        )
+        ds.experiment_ids = experiment_ids
+        return ds
+
+    def delete_dataset(self, dataset_id: str) -> None:
+        """Delete an evaluation dataset and all its sub-items."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        all_items = self._table.query(pk=pk)
+        if not all_items:
+            # Idempotent: nothing to delete
+            return
+        keys = [{"PK": item["PK"], "SK": item["SK"]} for item in all_items]
+        self._table.batch_delete(keys)
+
+    def get_dataset_experiment_ids(self, dataset_id: str) -> list[str]:
+        """Return experiment IDs associated with a dataset."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        items = self._table.query(pk=pk, sk_prefix=SK_DATASET_EXP_PREFIX)
+        return [item["SK"][len(SK_DATASET_EXP_PREFIX) :] for item in items]
