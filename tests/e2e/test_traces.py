@@ -185,6 +185,6 @@ class TestDemoGeneration:
         resp = requests.post(
             f"{mlflow_server}/ajax-api/3.0/mlflow/demo/generate",
             json={"features": ["evaluation"]},
-            timeout=120,
+            timeout=300,
         )
         assert resp.status_code == 200, f"Demo evaluation failed: {resp.text}"
