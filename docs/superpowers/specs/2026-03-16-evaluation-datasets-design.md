@@ -54,6 +54,37 @@ GSI1 is shared across entity types. Existing PK prefixes: `RUN#`, `TRACE#`, `CLI
 | GSI2 | `DS_LIST#<workspace>` | `<dataset_id>` | List all datasets in a workspace. Written on META items. |
 | GSI3 | `DS_NAME#<workspace>#<name>` | `<dataset_id>` | Unique name lookup within workspace. Written on META items. |
 
+## Access Patterns
+
+Every store method must map to Query or GetItem — never Scan. The table below lists each access pattern, the DynamoDB operation used, and which key structure serves it.
+
+| # | Access Pattern | Caller | Operation | Table/Index | Key Condition | Filter | Notes |
+|---|---------------|--------|-----------|-------------|---------------|--------|-------|
+| AP1 | Get dataset by ID | `get_dataset` | GetItem | Table | `PK=DS#<id>, SK=DS#META` | — | O(1) |
+| AP2 | Get tags for dataset | `get_dataset` | Query | Table | `PK=DS#<id>, SK begins_with DS#TAG#` | — | Bounded by tag count |
+| AP3 | Check name uniqueness | `create_dataset` | Query | GSI3 | `PK=DS_NAME#<ws>#<name>` | — | Expect 0 or 1 result |
+| AP4 | List all datasets in workspace | `search_datasets` (no experiment filter) | Query | GSI2 | `PK=DS_LIST#<ws>` | — | Returns dataset_ids; paginated |
+| AP5 | Find datasets for an experiment | `search_datasets` (with experiment_ids) | Query | GSI1 | `PK=DS_EXP#<exp_id>` | — | One query per experiment_id; merge results |
+| AP6 | Get experiment_ids for a dataset | `get_dataset_experiment_ids` | Query | Table | `PK=DS#<id>, SK begins_with DS#EXP#` | — | Bounded by experiment count |
+| AP7 | Load records (paginated) | `_load_dataset_records` | Query | Table | `PK=DS#<id>, SK begins_with DS#REC#` | — | DynamoDB-native `Limit` + `LastEvaluatedKey` |
+| AP8 | Find record by input hash (dedup) | `upsert_dataset_records` | Query | Table | `PK=DS#<id>, SK begins_with DS#REC#` | `FilterExpression: input_hash = :h` | **Partition scan with filter** — reads all records but filters server-side. See scaling note below. |
+| AP9 | Get all items for deletion | `delete_dataset` | Query | Table | `PK=DS#<id>` (no SK condition) | — | Full partition read; bounded by total items in dataset |
+| AP10 | Delete specific records | `delete_dataset_records` | BatchDeleteItem | Table | `PK=DS#<id>, SK=DS#REC#<rec_id>` per item | — | O(N) where N = record_ids count |
+| AP11 | Legacy: datasets linked to runs | `_search_datasets` | Query | Table | `PK=EXP#<exp_id>, SK begins_with D#` | — | Existing V2 pattern |
+| AP12 | Legacy: run-dataset associations | `_search_datasets` | Query | Table | `PK=EXP#<exp_id>, SK begins_with DLINK#` | — | Existing V2 pattern |
+| AP13 | Batch get META items | `search_datasets` (after AP5) | BatchGetItem | Table | `PK=DS#<id>, SK=DS#META` per item | — | After collecting IDs from GSI1 |
+
+### Scan Risk Assessment
+
+- **AP8 (record dedup)** is the only pattern that reads more data than needed. It queries the full `DS#REC#` SK range within a single partition and applies a `FilterExpression` server-side on `input_hash`. DynamoDB still reads all record items (consuming read capacity) but returns only matches. This is acceptable for datasets with up to ~10,000 records. Mitigation options for larger datasets:
+  - **(a)** Add a denormalized `input_hash_index` map on the META item (`{hash: record_id}`) — limited by DynamoDB's 400KB item size (~5,000 entries).
+  - **(b)** Add a dedicated SK pattern `DS#HASH#<input_hash>#<record_id>` as a secondary lookup item written alongside each record. Adds one extra write per record but gives O(1) dedup lookups.
+  - **(c)** Use an LSI with `input_hash` as the sort key — requires table recreation (not viable for existing tables).
+
+  **Phase 1 decision**: Accept AP8 as-is with the 10K ceiling. Option (b) is the recommended future upgrade path.
+
+- **All other patterns** are efficient: GetItem (O(1)), Query with precise key conditions, or BatchGetItem with known keys. No table scans.
+
 ### Record Deduplication
 
 Each record has an `input_hash` field: SHA256 of the JSON-serialized sorted inputs dict (8-char hex prefix). On upsert, query all records (`SK begins_with DS#REC#`) with a `FilterExpression` on `input_hash` to find existing records with matching inputs. If found, update in place; otherwise insert new.
