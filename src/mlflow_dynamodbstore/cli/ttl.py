@@ -7,7 +7,7 @@ import time
 import boto3
 import click
 
-from mlflow_dynamodbstore.cli import CliContext, pass_context
+from mlflow_dynamodbstore.cli._context import CliContext, pass_context
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
 from mlflow_dynamodbstore.dynamodb.schema import (
     PK_EXPERIMENT_PREFIX,

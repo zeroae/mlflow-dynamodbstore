@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from mlflow_dynamodbstore.cli import CliContext, pass_context
+from mlflow_dynamodbstore.cli._context import CliContext, pass_context
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_MODELS_PREFIX,

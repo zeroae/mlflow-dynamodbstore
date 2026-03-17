@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from mlflow_dynamodbstore.cli import CliContext, pass_context
+from mlflow_dynamodbstore.cli._context import CliContext, pass_context
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 
