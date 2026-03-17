@@ -1856,3 +1856,125 @@ class TestUnlinkTracesFromRun:
 
         # Should not raise
         tracking_store.unlink_traces_from_run(["tr-never-linked"], "run-789")
+
+
+class TestFindCompletedSessions:
+    """Tests for find_completed_sessions."""
+
+    def _create_session_traces(self, tracking_store, exp_id, session_id, timestamps):
+        """Helper: create traces with session metadata at given timestamps."""
+        for i, ts in enumerate(timestamps):
+            trace_info = _make_trace_info(
+                exp_id,
+                trace_id=f"tr-{session_id}-{i}",
+                request_time=ts,
+                trace_metadata={
+                    TraceTagKey.TRACE_NAME: "my-trace",
+                    "mlflow.traceSession": session_id,
+                },
+            )
+            tracking_store.start_trace(trace_info)
+
+    def test_find_sessions_in_time_window(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_session_traces(tracking_store, exp_id, "sess-a", [1000, 2000])
+        self._create_session_traces(tracking_store, exp_id, "sess-b", [3000, 4000])
+        self._create_session_traces(tracking_store, exp_id, "sess-c", [5000, 6000])
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=2000,
+            max_last_trace_timestamp_ms=4000,
+        )
+        session_ids = [s.session_id for s in result]
+        assert "sess-a" in session_ids
+        assert "sess-b" in session_ids
+        assert "sess-c" not in session_ids
+
+    def test_sessions_outside_window_excluded(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_session_traces(tracking_store, exp_id, "sess-early", [100])
+        self._create_session_traces(tracking_store, exp_id, "sess-late", [9000])
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=500,
+            max_last_trace_timestamp_ms=8000,
+        )
+        session_ids = [s.session_id for s in result]
+        assert "sess-early" not in session_ids
+        assert "sess-late" not in session_ids
+
+    def test_max_results_limits_output(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        for i in range(5):
+            self._create_session_traces(tracking_store, exp_id, f"sess-{i}", [1000 + i * 100])
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=0,
+            max_last_trace_timestamp_ms=9999,
+            max_results=2,
+        )
+        assert len(result) <= 2
+
+    def test_empty_experiment_returns_empty(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=0,
+            max_last_trace_timestamp_ms=9999,
+        )
+        assert result == []
+
+    def test_filter_string_filters_sessions(self, tracking_store):
+        """filter_string filters sessions by trace attributes."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_id="tr-filt-match",
+            request_time=1000,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "mlflow.traceSession": "sess-match",
+            },
+            tags={"env": "prod"},
+        )
+        tracking_store.start_trace(trace_info)
+        trace_info2 = _make_trace_info(
+            exp_id,
+            trace_id="tr-filt-nomatch",
+            request_time=2000,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "mlflow.traceSession": "sess-nomatch",
+            },
+            tags={"env": "dev"},
+        )
+        tracking_store.start_trace(trace_info2)
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=0,
+            max_last_trace_timestamp_ms=9999,
+            filter_string="tag.env = 'prod'",
+        )
+        session_ids = [s.session_id for s in result]
+        assert "sess-match" in session_ids
+        assert "sess-nomatch" not in session_ids
+
+    def test_session_attributes(self, tracking_store):
+        """Verify CompletedSession fields are populated correctly."""
+        exp_id = _create_experiment(tracking_store)
+        self._create_session_traces(tracking_store, exp_id, "sess-check", [1000, 2000, 3000])
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=0,
+            max_last_trace_timestamp_ms=9999,
+        )
+        assert len(result) == 1
+        session = result[0]
+        assert session.session_id == "sess-check"
+        assert session.first_trace_timestamp_ms == 1000
+        assert session.last_trace_timestamp_ms == 3000

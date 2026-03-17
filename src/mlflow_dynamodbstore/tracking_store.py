@@ -3022,6 +3022,75 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return results
 
+    def find_completed_sessions(
+        self,
+        experiment_id: str,
+        min_last_trace_timestamp_ms: int,
+        max_last_trace_timestamp_ms: int,
+        max_results: int | None = None,
+        filter_string: str | None = None,
+    ) -> list[Any]:
+        """Find completed sessions by last trace timestamp range via GSI2."""
+        from mlflow.genai.scorers.online.entities import CompletedSession
+
+        gsi2pk = f"{GSI2_SESSIONS_PREFIX}{self._workspace}#{experiment_id}"
+
+        items = self._table.query(
+            pk=gsi2pk,
+            sk_gte=f"{min_last_trace_timestamp_ms:020d}",
+            sk_lte=f"{max_last_trace_timestamp_ms:020d}",
+            index_name="gsi2",
+            scan_forward=True,
+        )
+
+        # Optional: post-filter sessions by trace attributes
+        if filter_string:
+            from mlflow_dynamodbstore.dynamodb.search import (
+                _apply_trace_post_filter,
+                parse_trace_filter,
+            )
+
+            preds = parse_trace_filter(filter_string)
+            filtered_items = []
+            for item in items:
+                session_id = item["session_id"]
+                exp_pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+                trace_items = self._table.query(
+                    pk=exp_pk,
+                    sk_prefix=SK_TRACE_PREFIX,
+                )
+                session_qualifies = False
+                for t_item in trace_items:
+                    if "trace_id" not in t_item:
+                        continue
+                    tid = t_item["trace_id"]
+                    rmeta_sk = f"{SK_TRACE_PREFIX}{tid}#RMETA#mlflow.traceSession"
+                    rmeta = self._table.get_item(pk=exp_pk, sk=rmeta_sk)
+                    if rmeta and rmeta.get("value") == session_id:
+                        if all(
+                            _apply_trace_post_filter(self._table, exp_pk, tid, t_item, p)
+                            for p in preds
+                        ):
+                            session_qualifies = True
+                            break
+                if session_qualifies:
+                    filtered_items.append(item)
+            items = filtered_items
+
+        results: list[CompletedSession] = []
+        for item in items:
+            session = CompletedSession(
+                session_id=item["session_id"],
+                first_trace_timestamp_ms=int(item["first_trace_timestamp_ms"]),
+                last_trace_timestamp_ms=int(item["last_trace_timestamp_ms"]),
+            )
+            results.append(session)
+
+        if max_results is not None:
+            results = results[:max_results]
+
+        return results
+
     # ------------------------------------------------------------------
     # Assessment CRUD
     # ------------------------------------------------------------------
