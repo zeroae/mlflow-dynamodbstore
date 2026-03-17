@@ -1746,6 +1746,45 @@ class TestBatchGetTraces:
         result = tracking_store.batch_get_traces(["tr-dup", "tr-dup"])
         assert len(result) == 1
 
+    def test_v3_span_format_fallback(self, tracking_store):
+        """batch_get_traces handles V3-like format spans gracefully via fallback."""
+        import json as _json
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-v3")
+        tracking_store.start_trace(trace_info)
+
+        # Write V3-like SPANS item (has start_time_unix_nano key)
+        # Real V3 spans from Span.to_dict() have base64-encoded IDs,
+        # but if from_dict fails, batch_get_traces falls back to X-Ray converter
+        v3_span_dict = {
+            "name": "root",
+            "span_type": "CHAIN",
+            "trace_id": "tr-v3",
+            "span_id": "span-1",
+            "parent_span_id": None,
+            "start_time_unix_nano": 0,
+            "start_time_ns": 0,
+            "end_time_unix_nano": 1000000000,
+            "end_time_ns": 1000000000,
+            "status": "OK",
+            "attributes": {"mlflow.traceRequestId": "tr-v3"},
+            "events": [],
+        }
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        tracking_store._table.put_item(
+            {
+                "PK": pk,
+                "SK": f"{SK_TRACE_PREFIX}tr-v3#SPANS",
+                "data": _json.dumps([v3_span_dict]),
+            }
+        )
+
+        result = tracking_store.batch_get_traces(["tr-v3"])
+        assert len(result) == 1
+        # Fallback to X-Ray converter succeeds
+        assert len(result[0].data.spans) == 1
+
     def test_with_location_parameter(self, tracking_store):
         exp_id = _create_experiment(tracking_store)
         self._create_trace_with_spans(tracking_store, exp_id, "tr-loc")

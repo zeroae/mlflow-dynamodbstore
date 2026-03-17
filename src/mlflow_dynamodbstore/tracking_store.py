@@ -2516,6 +2516,8 @@ class DynamoDBTrackingStore(AbstractStore):
             try:
                 experiment_id = location or self._resolve_trace_experiment(trace_id)
             except MlflowException:
+                if not location:
+                    continue  # Skip unresolvable traces
                 experiment_id = location
 
             pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
@@ -3138,12 +3140,14 @@ class DynamoDBTrackingStore(AbstractStore):
             cached = self._table.get_item(pk=pk, sk=spans_sk)
             if cached is not None:
                 span_dicts = _json.loads(cached["data"])
-                # Handle both V3 format (Span.to_dict) and X-Ray format
+                # Try V3 format (Span.to_dict) first, fall back to X-Ray format
                 if span_dicts and "start_time_unix_nano" in span_dicts[0]:
-                    # V3 format: use Span.from_dict
-                    from mlflow.entities.span import Span as SpanEntity
+                    try:
+                        from mlflow.entities.span import Span as SpanEntity
 
-                    spans = [SpanEntity.from_dict(sd) for sd in span_dicts]
+                        spans = [SpanEntity.from_dict(sd) for sd in span_dicts]
+                    except MlflowException:
+                        spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
                 else:
                     # X-Ray converter format
                     spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
