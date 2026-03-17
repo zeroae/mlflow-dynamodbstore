@@ -32,12 +32,12 @@ Evaluation Datasets get their own partition family (`DS#<dataset_id>`) because t
 
 ### Item Types
 
-| Item | PK | SK | Attributes |
-|------|----|----|------------|
-| Dataset META | `DS#<dataset_id>` | `DS#META` | name, digest, schema (JSON), profile (JSON), tags (denormalized dict), created_time, last_update_time, created_by, last_updated_by, workspace |
-| Dataset Tag | `DS#<dataset_id>` | `DS#TAG#<key>` | key, value |
-| Dataset Record | `DS#<dataset_id>` | `DS#REC#<record_id>` | inputs (JSON), outputs (JSON), expectations (JSON), tags (JSON), source (JSON), input_hash, created_time, last_update_time, created_by, last_updated_by |
-| Experiment Link | `DS#<dataset_id>` | `DS#EXP#<exp_id>` | (minimal association item) |
+| Item | PK | SK | lsi1sk | lsi2sk | lsi3sk | Attributes |
+|------|----|----|--------|--------|--------|------------|
+| Dataset META | `DS#<dataset_id>` | `DS#META` | `created_time` | `last_update_time` | `lower(name)` | name, digest, schema (JSON), profile (JSON), tags (denormalized dict), created_time, last_update_time, created_by, last_updated_by, workspace |
+| Dataset Tag | `DS#<dataset_id>` | `DS#TAG#<key>` | — | — | — | key, value |
+| Dataset Record | `DS#<dataset_id>` | `DS#REC#<record_id>` | `created_time` | `last_update_time` | `input_hash` | inputs (JSON), outputs (JSON), expectations (JSON), tags (JSON), source (JSON), input_hash, created_time, last_update_time, created_by, last_updated_by |
+| Experiment Link | `DS#<dataset_id>` | `DS#EXP#<exp_id>` | — | — | — | (minimal association item) |
 
 ### ID Generation
 
@@ -67,7 +67,7 @@ Every store method must map to Query or GetItem — never Scan. The table below 
 | AP5 | Find datasets for an experiment | `search_datasets` (with experiment_ids) | Query | GSI1 | `PK=DS_EXP#<exp_id>` | — | One query per experiment_id; merge results |
 | AP6 | Get experiment_ids for a dataset | `get_dataset_experiment_ids` | Query | Table | `PK=DS#<id>, SK begins_with DS#EXP#` | — | Bounded by experiment count |
 | AP7 | Load records (paginated) | `_load_dataset_records` | Query | Table | `PK=DS#<id>, SK begins_with DS#REC#` | — | DynamoDB-native `Limit` + `LastEvaluatedKey` |
-| AP8 | Find record by input hash (dedup) | `upsert_dataset_records` | Query | Table | `PK=DS#<id>, SK begins_with DS#REC#` | `FilterExpression: input_hash = :h` | **Partition scan with filter** — reads all records but filters server-side. See scaling note below. |
+| AP8 | Find record by input hash (dedup) | `upsert_dataset_records` | Query | LSI3 | `PK=DS#<id>, lsi3sk=<input_hash>` | `FilterExpression: SK begins_with DS#REC#` | Indexed lookup via LSI3; O(1) per unique hash |
 | AP9 | Get all items for deletion | `delete_dataset` | Query | Table | `PK=DS#<id>` (no SK condition) | — | Full partition read; bounded by total items in dataset |
 | AP10 | Delete specific records | `delete_dataset_records` | BatchDeleteItem | Table | `PK=DS#<id>, SK=DS#REC#<rec_id>` per item | — | O(N) where N = record_ids count |
 | AP11 | Legacy: datasets linked to runs | `_search_datasets` | Query | Table | `PK=EXP#<exp_id>, SK begins_with D#` | — | Existing V2 pattern |
@@ -76,20 +76,38 @@ Every store method must map to Query or GetItem — never Scan. The table below 
 
 ### Scan Risk Assessment
 
-- **AP8 (record dedup)** is the only pattern that reads more data than needed. It queries the full `DS#REC#` SK range within a single partition and applies a `FilterExpression` server-side on `input_hash`. DynamoDB still reads all record items (consuming read capacity) but returns only matches. This is acceptable for datasets with up to ~10,000 records. Mitigation options for larger datasets:
-  - **(a)** Add a denormalized `input_hash_index` map on the META item (`{hash: record_id}`) — limited by DynamoDB's 400KB item size (~5,000 entries).
-  - **(b)** Add a dedicated SK pattern `DS#HASH#<input_hash>#<record_id>` as a secondary lookup item written alongside each record. Adds one extra write per record but gives O(1) dedup lookups.
-  - **(c)** Use an LSI with `input_hash` as the sort key — requires table recreation (not viable for existing tables).
+**All 13 access patterns are efficient.** No table scans. Every operation uses GetItem (O(1)), Query with precise key conditions (PK + SK prefix or LSI), or BatchGetItem with known keys.
 
-  **Phase 1 decision**: Accept AP8 as-is with the 10K ceiling. Option (b) is the recommended future upgrade path.
+AP8 (record dedup) uses LSI3 for an indexed lookup by `input_hash`, avoiding any partition-level scanning.
 
-- **All other patterns** are efficient: GetItem (O(1)), Query with precise key conditions, or BatchGetItem with known keys. No table scans.
+### LSI Usage
+
+LSIs are overloaded per entity type within the `DS#<dataset_id>` partition, following the existing pattern for experiments, runs, traces, and registered models.
+
+| LSI | Attribute | Dataset META | Dataset Record |
+|-----|-----------|-------------|---------------|
+| LSI1 | `lsi1sk` | `created_time` | `created_time` |
+| LSI2 | `lsi2sk` | `last_update_time` | `last_update_time` |
+| LSI3 | `lsi3sk` | `lower(name)` | `input_hash` |
+| LSI4 | `lsi4sk` | — | — |
+| LSI5 | `lsi5sk` | — | — |
+
+**LSI1** — Sort datasets/records by creation time.
+**LSI2** — Sort by last modification time.
+**LSI3** — META: name prefix search via `begins_with`. Records: O(1) dedup lookup by `input_hash` (see below).
+
+Tag and Experiment Link items do not populate LSI attributes (consistent with existing sub-item convention).
 
 ### Record Deduplication
 
-Each record has an `input_hash` field: SHA256 of the JSON-serialized sorted inputs dict (8-char hex prefix). On upsert, query all records (`SK begins_with DS#REC#`) with a `FilterExpression` on `input_hash` to find existing records with matching inputs. If found, update in place; otherwise insert new.
+Each record has an `input_hash` field: SHA256 of the JSON-serialized sorted inputs dict (8-char hex prefix), stored in `lsi3sk`. On upsert, find existing records with matching inputs via LSI3:
 
-**Scaling note**: This approach scans all records in the partition with a server-side filter. Acceptable for Phase 1 up to ~10,000 records per dataset. A future phase may add an LSI on `input_hash` or a denormalized hash→record_id map on META if larger datasets are needed.
+```
+Query LSI3: PK=DS#<dataset_id>, lsi3sk=<input_hash>,
+            FilterExpression: SK begins_with DS#REC#
+```
+
+This is an indexed lookup, not a partition scan. If a match is found, update in place; otherwise insert new.
 
 ### Digest Computation
 
@@ -131,7 +149,7 @@ Dataset digest = first 8 chars of SHA256(`name:last_update_time`). Recomputed on
 1. Verify dataset exists (get META).
 2. For each record:
    a. Compute `input_hash` = SHA256(json.dumps(sorted inputs)).
-   b. Query existing records, filter on `input_hash` to find duplicate.
+   b. Query LSI3 with `lsi3sk=<input_hash>` + `FilterExpression: SK begins_with DS#REC#` to find duplicate.
    c. If exists: update outputs, expectations, tags, source, last_update_time.
    d. If not: generate `edrec_<ulid>` ID, put new record item.
 3. Recompute schema by merging field types from all record inputs/outputs/expectations.
