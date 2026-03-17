@@ -1478,3 +1478,107 @@ class TestHybridSearchTraces:
             filter_string="span.type = 'LLM'",
         )
         assert len(results) == 0
+
+
+class TestStartTraceSessionTracker:
+    """Tests for session tracker upsert in start_trace."""
+
+    def test_trace_with_session_creates_session_tracker(self, tracking_store):
+        """start_trace with mlflow.traceSession metadata creates a SESS# item."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_id="tr-sess-1",
+            request_time=1000,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "mlflow.traceSession": "session-abc",
+            },
+        )
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-abc")
+        assert item is not None
+        assert item["session_id"] == "session-abc"
+        assert int(item["trace_count"]) == 1
+        assert int(item["first_trace_timestamp_ms"]) == 1000
+        assert int(item["last_trace_timestamp_ms"]) == 1000
+
+    def test_trace_without_session_no_session_tracker(self, tracking_store):
+        """start_trace without mlflow.traceSession does NOT create a SESS# item."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-no-sess")
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#any")
+        assert item is None
+
+    def test_multiple_traces_same_session_increments(self, tracking_store):
+        """Multiple traces in same session increment trace_count and update timestamps."""
+        exp_id = _create_experiment(tracking_store)
+        for i, (tid, ts) in enumerate(
+            [
+                ("tr-s1", 1000),
+                ("tr-s2", 2000),
+                ("tr-s3", 3000),
+            ]
+        ):
+            trace_info = _make_trace_info(
+                exp_id,
+                trace_id=tid,
+                request_time=ts,
+                trace_metadata={
+                    TraceTagKey.TRACE_NAME: "my-trace",
+                    "mlflow.traceSession": "session-xyz",
+                },
+            )
+            tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-xyz")
+        assert item is not None
+        assert int(item["trace_count"]) == 3
+        assert int(item["first_trace_timestamp_ms"]) == 1000
+        assert int(item["last_trace_timestamp_ms"]) == 3000
+
+    def test_session_tracker_has_gsi2_attributes(self, tracking_store):
+        """Session tracker item has GSI2 PK/SK for find_completed_sessions queries."""
+        from mlflow_dynamodbstore.dynamodb.schema import GSI2_PK, GSI2_SK
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_id="tr-gsi2",
+            request_time=5000,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "mlflow.traceSession": "session-gsi2",
+            },
+        )
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-gsi2")
+        assert item[GSI2_PK] == f"SESSIONS#default#{exp_id}"
+        # GSI2 SK is zero-padded string for correct lexicographic ordering
+        assert item[GSI2_SK] == f"{5000:020d}"
+
+    def test_session_tracker_has_ttl(self, tracking_store):
+        """Session tracker item inherits trace TTL."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_id="tr-ttl",
+            request_time=1000,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "mlflow.traceSession": "session-ttl",
+            },
+        )
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-ttl")
+        assert "ttl" in item

@@ -135,3 +135,11 @@ SK_SCORER_OSCFG_SUFFIX = "#OSCFG"
 GSI1_SCOR_PREFIX = "SCOR#"
 GSI2_ACTIVE_SCORERS_PREFIX = "ACTIVE_SCORERS#"
 GSI3_SCOR_NAME_PREFIX = "SCOR_NAME#"
+
+# ---------------------------------------------------------------------------
+# Session tracking (within EXP# partition)
+# ---------------------------------------------------------------------------
+SK_SESSION_PREFIX = "SESS#"
+
+# GSI prefixes for sessions
+GSI2_SESSIONS_PREFIX = "SESSIONS#"

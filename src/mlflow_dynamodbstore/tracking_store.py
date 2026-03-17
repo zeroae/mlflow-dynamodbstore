@@ -78,6 +78,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
     GSI2_PK,
+    GSI2_SESSIONS_PREFIX,
     GSI2_SK,
     GSI3_DS_NAME_PREFIX,
     GSI3_EXP_NAME_PREFIX,
@@ -120,6 +121,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_RUN_PREFIX,
     SK_SCORER_OSCFG_SUFFIX,
     SK_SCORER_PREFIX,
+    SK_SESSION_PREFIX,
     SK_TAG_PREFIX,
     SK_TRACE_PREFIX,
 )
@@ -1760,6 +1762,49 @@ class DynamoDBTrackingStore(AbstractStore):
             ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
         )
 
+    def _upsert_session_tracker(
+        self,
+        experiment_id: str,
+        session_id: str,
+        timestamp_ms: int,
+        ttl: int | None,
+    ) -> None:
+        """Upsert a session tracker item using atomic ADD + conditional SET."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_SESSION_PREFIX}{session_id}"
+        gsi2pk = f"{GSI2_SESSIONS_PREFIX}{self._workspace}#{experiment_id}"
+
+        # GSI2 SK must be a zero-padded string (GSI key schema is type S)
+        gsi2sk_str = f"{timestamp_ms:020d}"
+
+        # Combined ADD + SET requires raw boto3 (same pattern as _denormalize_tag)
+        update_expr = (
+            "ADD trace_count :one "
+            "SET first_trace_timestamp_ms = if_not_exists(first_trace_timestamp_ms, :ts), "
+            "last_trace_timestamp_ms = :ts, "
+            "session_id = if_not_exists(session_id, :sid), "
+            "#gsi2pk = :gsi2pk, #gsi2sk = :gsi2sk"
+        )
+        expr_names = {"#gsi2pk": "gsi2pk", "#gsi2sk": "gsi2sk"}
+        expr_values: dict[str, Any] = {
+            ":one": 1,
+            ":ts": timestamp_ms,
+            ":sid": session_id,
+            ":gsi2pk": gsi2pk,
+            ":gsi2sk": gsi2sk_str,
+        }
+        if ttl is not None:
+            update_expr += ", #ttl = :ttl"
+            expr_names["#ttl"] = "ttl"
+            expr_values[":ttl"] = ttl
+
+        self._table._table.update_item(
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression=update_expr,
+            ExpressionAttributeNames=expr_names,
+            ExpressionAttributeValues=expr_values,
+        )
+
     def _delete_fts_for_entity_field(
         self,
         pk: str,
@@ -2273,6 +2318,16 @@ class DynamoDBTrackingStore(AbstractStore):
             if trace_info.tags is None:
                 trace_info.tags = {}
             trace_info.tags[MLFLOW_ARTIFACT_LOCATION] = artifact_loc
+
+        # Upsert session tracker if trace has session metadata
+        session_id = (trace_info.trace_metadata or {}).get("mlflow.traceSession")
+        if session_id:
+            self._upsert_session_tracker(
+                experiment_id=experiment_id,
+                session_id=session_id,
+                timestamp_ms=trace_info.request_time,
+                ttl=ttl,
+            )
 
         return trace_info
 
