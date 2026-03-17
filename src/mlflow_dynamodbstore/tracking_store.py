@@ -39,6 +39,7 @@ from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
+from mlflow.protos.service_pb2 import DatasetSummary
 from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
@@ -1542,6 +1543,79 @@ class DynamoDBTrackingStore(AbstractStore):
             items.append(dlink_item)
 
         self._table.batch_write(items)
+
+    def _search_datasets(self, experiment_ids: list[str]) -> list[DatasetSummary]:
+        """Search for legacy V2 datasets (D# and DLINK# items) under experiment partitions.
+
+        This method queries existing D# (dataset) and DLINK# (dataset-run link) items
+        that are stored under experiment partitions when log_inputs is called.
+
+        Args:
+            experiment_ids: List of experiment IDs to search within.
+
+        Returns:
+            List of DatasetSummary protobuf objects.
+        """
+        dataset_map: dict[tuple[str, str], dict[str, Any]] = {}
+
+        for experiment_id in experiment_ids:
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+            # Query D# items (dataset items)
+            d_items = self._table.query(
+                pk=pk,
+                sk_prefix=SK_DATASET_PREFIX,
+            )
+            for item in d_items:
+                # SK format: D#<name>#<digest>
+                sk = item.get("SK", "")
+                if sk.startswith(SK_DATASET_PREFIX):
+                    parts = sk[len(SK_DATASET_PREFIX) :].split("#", 1)
+                    if len(parts) == 2:
+                        name, digest = parts
+                        key = (name, digest)
+                        if key not in dataset_map:
+                            dataset_map[key] = {
+                                "experiment_id": experiment_id,
+                                "name": item.get("name", name),
+                                "digest": item.get("digest", digest),
+                                "context": None,
+                            }
+
+            # Query DLINK# items (dataset-run link items) for context
+            dlink_items = self._table.query(
+                pk=pk,
+                sk_prefix=SK_DLINK_PREFIX,
+            )
+            for item in dlink_items:
+                # Extract context if present (mlflow.data.context tag from log_inputs)
+                if "context" in item:
+                    # SK format: DLINK#<name>#<digest>#R#<run_id>
+                    sk = item.get("SK", "")
+                    if sk.startswith(SK_DLINK_PREFIX):
+                        parts = sk[len(SK_DLINK_PREFIX) :].split("#", 2)
+                        if len(parts) >= 2:
+                            name, digest = parts[0], parts[1]
+                            key = (name, digest)
+                            if key in dataset_map:
+                                dataset_map[key]["context"] = item["context"]
+
+        # Build DatasetSummary protobuf objects
+        results: list[DatasetSummary] = []
+        for (name, digest), data in dataset_map.items():
+            summary = DatasetSummary()
+            exp_id: str = data["experiment_id"]
+            ds_name: str = data["name"]
+            ds_digest: str = data["digest"]
+            summary.experiment_id = exp_id
+            summary.name = ds_name
+            summary.digest = ds_digest
+            context = data["context"]
+            if context:
+                summary.context = context
+            results.append(summary)
+
+        return results
 
     # ------------------------------------------------------------------
     # Trace CRUD

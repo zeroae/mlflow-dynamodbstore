@@ -243,3 +243,11 @@ class TestDatasetRecords:
         remaining, _ = tracking_store._load_dataset_records(ds.dataset_id)
         assert len(remaining) == 1
         assert remaining[0].inputs["q"] == "keep"
+
+
+class TestSearchDatasetsLegacy:
+    def test_search_datasets_v2_empty(self, tracking_store):
+        """_search_datasets returns empty list when no datasets logged."""
+        exp_id = tracking_store.create_experiment("v2-empty")
+        results = tracking_store._search_datasets([exp_id])
+        assert results == []
