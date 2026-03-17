@@ -64,7 +64,7 @@ Deletes the CloudFormation stack.
 | Flag       | Description                                            |
 |------------|--------------------------------------------------------|
 | `--yes`    | Skip confirmation prompt                               |
-| `--retain` | Delete stack but keep the DynamoDB table (DeletionPolicy Retain) |
+| `--retain` | Delete stack but keep the DynamoDB table via `cfn.delete_stack(StackName=..., RetainResources=['MlflowTable'])` |
 
 Operator responsibility to stop the MLflow server before destroying — auto-deploy
 will re-create the stack if the server is still running.
@@ -76,15 +76,18 @@ to skip confirmation.
 
 #### `tag list/add/remove/backfill`
 
-Replaces `denormalize-tags`. Same subcommands, renamed group.
+Replaces `denormalize-tags`. Subcommand names simplified from `list_patterns` →
+`list`, `add_pattern` → `add`, `remove_pattern` → `remove`, `backfill` stays.
 
 #### `ttl show/set/cleanup`
 
-Replaces `ttl-policy` (`show`/`set`) and absorbs `cleanup-expired` as `cleanup`.
+Replaces `ttl-policy` and absorbs `cleanup-expired`. Subcommand names simplified
+from `show_policy` → `show`, `set_policy` → `set`, plus new `cleanup`.
 
 #### `fts list/add`
 
-Replaces `fts-trigrams`. Same subcommands, renamed group.
+Replaces `fts-trigrams`. Subcommand names simplified from `list_fields` → `list`,
+`add_field` → `add`.
 
 #### `trace cache`
 
@@ -96,6 +99,23 @@ Replaces `cache-spans`. Caches X-Ray spans for traces in DynamoDB.
 - Stack name = table name directly
 - `get_stack_name()` becomes identity function (or is removed)
 
+### Migration
+
+Existing deployments have stacks named `mlflow-dynamodbstore-<table>`. After
+upgrading, the new code looks for stacks named `<table>`. Existing users must
+either:
+
+1. Delete the old stack (`aws cloudformation delete-stack --stack-name mlflow-dynamodbstore-<table>`)
+   and let auto-deploy create the new one, or
+2. Manually rename by creating a new stack and migrating (the DynamoDB table
+   itself is unchanged — only the CloudFormation wrapper changes).
+
+The DynamoDB table name does not change, so data is preserved in both paths.
+The `deploy` command will fail if the table already exists without a matching
+stack — in that case, use CloudFormation resource import (`aws cloudformation
+create-change-set --change-set-type IMPORT`) to adopt the existing table into
+a new stack, or simply delete the old stack first (path 1).
+
 ## Auto-Deploy Behavior
 
 - **Default (no query param or `?deploy=true`)**: stores call
@@ -105,7 +125,7 @@ Replaces `cache-spans`. Caches X-Ray spans for traces in DynamoDB.
   exist, fail with a clear error:
   `Table 'X' not found. Run 'mlflow-dynamodbstore --name X --region R deploy' first.`
 - URI parsing in `dynamodb/uri.py` extended to handle `?deploy=true|false` query
-  parameter.
+  parameter. Add `deploy: bool = True` field to `DynamoDBUriComponents`.
 
 ## File Changes
 
@@ -125,6 +145,7 @@ Replaces `cache-spans`. Caches X-Ray spans for traces in DynamoDB.
 | Update    | `tracking_store.py`                 | Conditional deploy based on URI param                  |
 | Update    | `registry_store.py`                 | Conditional deploy based on URI param                  |
 | Update    | `workspace_store.py`                | Conditional deploy based on URI param                  |
+| Update    | `auth/store.py`                     | Conditional deploy based on URI param                  |
 | Rewrite   | `docs/operator-guide/cli-reference.md` | Single mkdocs-click directive + examples            |
 | Update    | `tests/unit/cli/`                   | Rename test files, update command invocations          |
 
