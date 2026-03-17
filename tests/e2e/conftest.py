@@ -113,6 +113,7 @@ def _start_mlflow_moto():
 
     env = os.environ.copy()
     env["MLFLOW_FLASK_SERVER_SECRET_KEY"] = "e2e-test-secret-key"
+    env["MLFLOW_ENABLE_WORKSPACES"] = "true"
     env["AWS_ACCESS_KEY_ID"] = "testing"
     env["AWS_SECRET_ACCESS_KEY"] = "testing"
     env["AWS_DEFAULT_REGION"] = _REGION
@@ -195,6 +196,7 @@ def _start_mlflow_aws():
 
     env = os.environ.copy()
     env["MLFLOW_FLASK_SERVER_SECRET_KEY"] = "e2e-test-secret-key"
+    env["MLFLOW_ENABLE_WORKSPACES"] = "true"
 
     log_file = open(_SERVER_LOG, "w")
     print(f"Server log: {_SERVER_LOG}")

@@ -224,6 +224,7 @@ class DynamoDBTrackingStore(AbstractStore):
         self._uri = uri
         self._cache = ResolutionCache()
         self._artifact_uri = artifact_uri or "./mlartifacts"
+        self.artifact_root_uri = self._artifact_uri
         self._workspace = "default"
         self._config = ConfigReader(self._table)
         self._config.reconcile()

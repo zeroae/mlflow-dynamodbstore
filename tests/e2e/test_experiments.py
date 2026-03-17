@@ -75,6 +75,16 @@ class TestExperiments:
         exp = client.get_experiment(exp_id)
         assert exp.tags["team"] == "ml-platform"
 
+    def test_delete_experiment_tag(self, client: MlflowClient):
+        exp_id = client.create_experiment(f"e2e-deltag-{_uid()}")
+        client.set_experiment_tag(exp_id, "team", "ml-platform")
+        exp = client.get_experiment(exp_id)
+        assert exp.tags["team"] == "ml-platform"
+
+        client.delete_experiment_tag(exp_id, "team")
+        exp = client.get_experiment(exp_id)
+        assert "team" not in exp.tags
+
     def test_rename_experiment(self, client: MlflowClient):
         exp_id = client.create_experiment(f"e2e-rename-old-{_uid()}")
         new_name = f"e2e-rename-new-{_uid()}"
