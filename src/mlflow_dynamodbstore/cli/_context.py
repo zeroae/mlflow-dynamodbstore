@@ -11,7 +11,7 @@ import click
 class CliContext:
     """Shared context for all CLI commands."""
 
-    def __init__(self, name: str, region: str, endpoint_url: str | None) -> None:
+    def __init__(self, name: str, region: str | None, endpoint_url: str | None) -> None:
         self.name = name
         self.region = region
         self.endpoint_url = endpoint_url

@@ -14,7 +14,7 @@ class TestParseDynamoDBUri:
         result = parse_dynamodb_uri("dynamodb://localhost:5000/test-table")
         assert result.endpoint_url == "http://localhost:5000"
         assert result.table_name == "test-table"
-        assert result.region == "us-east-1"  # default
+        assert result.region is None  # no region in URI, defer to boto3
 
     def test_custom_endpoint(self):
         result = parse_dynamodb_uri("dynamodb://http://localhost:8000/test-table")

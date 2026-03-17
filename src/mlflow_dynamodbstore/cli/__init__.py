@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 import click
 
 from mlflow_dynamodbstore.cli._context import CliContext, pass_context
@@ -11,25 +9,13 @@ from mlflow_dynamodbstore.cli._context import CliContext, pass_context
 __all__ = ["CliContext", "pass_context", "cli"]
 
 
-def _default_region() -> str | None:
-    return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
-
-
 @click.group()
-@click.option("--name", default="mlflow-dynamodbstore", show_default=True, help="Stack/table name")
-@click.option(
-    "--region",
-    default=_default_region,
-    help="AWS region (defaults to AWS_REGION or AWS_DEFAULT_REGION)",
-)
+@click.option("--name", default="mlflow", show_default=True, help="Stack/table name")
+@click.option("--region", default=None, help="AWS region (omit to use boto3 default chain)")
 @click.option("--endpoint-url", default=None, help="Custom endpoint URL (for LocalStack/testing)")
 @click.pass_context
 def cli(ctx: click.Context, name: str, region: str | None, endpoint_url: str | None) -> None:
     """mlflow-dynamodbstore admin commands."""
-    if not region:
-        raise click.UsageError(
-            "Missing --region. Set AWS_REGION or AWS_DEFAULT_REGION, or pass --region explicitly."
-        )
     ctx.ensure_object(dict)
     ctx.obj = CliContext(name=name, region=region, endpoint_url=endpoint_url)
 

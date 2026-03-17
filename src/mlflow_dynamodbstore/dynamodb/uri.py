@@ -12,7 +12,7 @@ class DynamoDBUriComponents:
     """Parsed components of a dynamodb:// URI."""
 
     table_name: str
-    region: str = "us-east-1"
+    region: str | None = None
     endpoint_url: str | None = None
     deploy: bool = True
 

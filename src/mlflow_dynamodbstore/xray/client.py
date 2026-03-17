@@ -12,8 +12,10 @@ _MAX_BATCH_SIZE = 5
 class XRayClient:
     """Wrapper around boto3 X-Ray client with automatic chunking and pagination."""
 
-    def __init__(self, region: str = "us-east-1", endpoint_url: str | None = None):
-        kwargs: dict[str, Any] = {"region_name": region}
+    def __init__(self, region: str | None = None, endpoint_url: str | None = None):
+        kwargs: dict[str, Any] = {}
+        if region:
+            kwargs["region_name"] = region
         if endpoint_url:
             kwargs["endpoint_url"] = endpoint_url
         self._client = boto3.client("xray", **kwargs)

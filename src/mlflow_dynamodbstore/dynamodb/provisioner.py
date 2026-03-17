@@ -84,15 +84,26 @@ def _build_template(table_name: str, retain_table: bool = False) -> dict[str, An
     }
 
 
+def _boto_kwargs(
+    region: str | None = None,
+    endpoint_url: str | None = None,
+) -> dict[str, Any]:
+    """Build kwargs for boto3 client/resource calls."""
+    kwargs: dict[str, Any] = {}
+    if region:
+        kwargs["region_name"] = region
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    return kwargs
+
+
 def _seed_initial_data(
     table_name: str,
-    region: str,
+    region: str | None = None,
     endpoint_url: str | None = None,
 ) -> None:
     """Seed default workspace, experiment, and config items."""
-    kwargs: dict[str, Any] = {"region_name": region}
-    if endpoint_url:
-        kwargs["endpoint_url"] = endpoint_url
+    kwargs = _boto_kwargs(region, endpoint_url)
 
     ddb = boto3.resource("dynamodb", **kwargs)
     table = ddb.Table(table_name)
@@ -180,7 +191,7 @@ def _stack_exists(cfn: Any, stack_name: str) -> bool:
 
 def ensure_stack_exists(
     table_name: str,
-    region: str = "us-east-1",
+    region: str | None = None,
     endpoint_url: str | None = None,
 ) -> None:
     """Ensure the CloudFormation stack and DynamoDB table exist.
@@ -192,11 +203,7 @@ def ensure_stack_exists(
     """
     stack_name = table_name
 
-    kwargs: dict[str, Any] = {"region_name": region}
-    if endpoint_url:
-        kwargs["endpoint_url"] = endpoint_url
-
-    cfn = boto3.client("cloudformation", **kwargs)
+    cfn = boto3.client("cloudformation", **_boto_kwargs(region, endpoint_url))
 
     if not _stack_exists(cfn, stack_name):
         template = _build_template(table_name)
@@ -211,7 +218,7 @@ def ensure_stack_exists(
 
 def destroy_stack(
     table_name: str,
-    region: str = "us-east-1",
+    region: str | None = None,
     endpoint_url: str | None = None,
     retain: bool = False,
 ) -> None:
@@ -219,18 +226,14 @@ def destroy_stack(
 
     Args:
         table_name: The DynamoDB table name (also the stack name).
-        region: AWS region.
+        region: AWS region (omit to use boto3 default chain).
         endpoint_url: Optional custom endpoint URL.
         retain: If True, retain the DynamoDB table resource when deleting the stack.
 
     Raises:
         ClientError: If the stack does not exist or deletion fails.
     """
-    kwargs: dict[str, Any] = {"region_name": region}
-    if endpoint_url:
-        kwargs["endpoint_url"] = endpoint_url
-
-    cfn = boto3.client("cloudformation", **kwargs)
+    cfn = boto3.client("cloudformation", **_boto_kwargs(region, endpoint_url))
 
     # Verify the stack exists first (raises if not)
     cfn.describe_stacks(StackName=table_name)
