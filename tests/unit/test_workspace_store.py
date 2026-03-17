@@ -38,3 +38,13 @@ class TestWorkspaceCRUD:
     def test_delete_default_workspace_raises(self, workspace_store):
         with pytest.raises(Exception):
             workspace_store.delete_workspace("default")
+
+    def test_create_and_delete_workspace(self, workspace_store):
+        """Create a workspace, verify it exists, delete it, verify gone."""
+        workspace_store.create_workspace("test-ws", description="Unit test")
+        ws = workspace_store.get_workspace("test-ws")
+        assert ws["name"] == "test-ws"
+        assert ws["description"] == "Unit test"
+
+        workspace_store.delete_workspace("test-ws")
+        assert workspace_store.get_workspace("test-ws") is None

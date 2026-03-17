@@ -14,6 +14,12 @@ from mlflow.entities import (
 )
 
 
+class TestExperiments:
+    def test_supports_workspaces(self, tracking_store):
+        """DynamoDB store always supports workspaces."""
+        assert tracking_store.supports_workspaces is True
+
+
 class TestExperimentCRUD:
     def test_create_experiment(self, tracking_store):
         exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
@@ -97,6 +103,27 @@ class TestExperimentCRUD:
         tracking_store.set_experiment_tag(exp_id, tag)
         exp = tracking_store.get_experiment(exp_id)
         assert exp.tags["my-key"] == "my-value"
+
+    def test_delete_experiment_tag(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        tag = ExperimentTag("my-key", "my-value")
+        tracking_store.set_experiment_tag(exp_id, tag)
+        exp = tracking_store.get_experiment(exp_id)
+        assert exp.tags["my-key"] == "my-value"
+
+        tracking_store.delete_experiment_tag(exp_id, "my-key")
+        exp = tracking_store.get_experiment(exp_id)
+        assert "my-key" not in exp.tags
+
+    def test_delete_experiment_tag_nonexistent_is_silent(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
+        tracking_store.delete_experiment_tag(exp_id, "does-not-exist")
+
+    def test_delete_experiment_tag_nonexistent_experiment_raises(self, tracking_store):
+        from mlflow.exceptions import MlflowException
+
+        with pytest.raises(MlflowException, match="does not exist"):
+            tracking_store.delete_experiment_tag("nonexistent-id", "key")
 
     def test_create_experiment_with_tags(self, tracking_store):
         tags = [ExperimentTag("k1", "v1"), ExperimentTag("k2", "v2")]
