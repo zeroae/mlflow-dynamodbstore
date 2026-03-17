@@ -1660,3 +1660,94 @@ class TestBatchGetTraceInfos:
         result = tracking_store.batch_get_trace_infos(tids, location=exp_id)
         assert len(result) == 1
         assert result[0].trace_id == tids[0]
+
+
+class TestBatchGetTraces:
+    """Tests for batch_get_traces."""
+
+    def _create_trace_with_spans(self, tracking_store, exp_id, trace_id, request_time=1000):
+        """Helper: create a trace and write a SPANS cache item in X-Ray converter format."""
+        import json as _json
+
+        from mlflow_dynamodbstore.xray.span_converter import span_dicts_to_mlflow_spans
+
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_id=trace_id,
+            request_time=request_time,
+        )
+        tracking_store.start_trace(trace_info)
+
+        # Use X-Ray converter format (same as get_trace caches)
+        span_dicts = [
+            {
+                "name": "root",
+                "span_type": "CHAIN",
+                "trace_id": trace_id,
+                "span_id": "span-1",
+                "parent_span_id": None,
+                "start_time_ns": 0,
+                "end_time_ns": 1000,
+                "status": "OK",
+                "attributes": {},
+                "events": [],
+            }
+        ]
+        # Verify the format is valid for deserialization
+        assert len(span_dicts_to_mlflow_spans(span_dicts, trace_id)) == 1
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        spans_item = {
+            "PK": pk,
+            "SK": f"{SK_TRACE_PREFIX}{trace_id}#SPANS",
+            "data": _json.dumps(span_dicts),
+        }
+        tracking_store._table.put_item(spans_item)
+
+    def test_batch_get_single_trace_with_spans(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_with_spans(tracking_store, exp_id, "tr-spans-1")
+        result = tracking_store.batch_get_traces(["tr-spans-1"])
+        assert len(result) == 1
+        assert result[0].info.trace_id == "tr-spans-1"
+        assert len(result[0].data.spans) > 0
+
+    def test_batch_get_trace_without_spans(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-no-spans")
+        tracking_store.start_trace(trace_info)
+        result = tracking_store.batch_get_traces(["tr-no-spans"])
+        assert len(result) == 1
+        assert result[0].info.trace_id == "tr-no-spans"
+        assert result[0].data.spans == []
+
+    def test_batch_get_multiple_traces(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        for i in range(3):
+            self._create_trace_with_spans(
+                tracking_store, exp_id, f"tr-multi-{i}", request_time=1000 + i
+            )
+        result = tracking_store.batch_get_traces([f"tr-multi-{i}" for i in range(3)])
+        assert len(result) == 3
+
+    def test_nonexistent_trace_excluded(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_with_spans(tracking_store, exp_id, "tr-exists")
+        result = tracking_store.batch_get_traces(["tr-exists", "tr-ghost"])
+        assert len(result) == 1
+
+    def test_empty_list_returns_empty(self, tracking_store):
+        result = tracking_store.batch_get_traces([])
+        assert result == []
+
+    def test_duplicate_ids_deduplicated(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_with_spans(tracking_store, exp_id, "tr-dup")
+        result = tracking_store.batch_get_traces(["tr-dup", "tr-dup"])
+        assert len(result) == 1
+
+    def test_with_location_parameter(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_with_spans(tracking_store, exp_id, "tr-loc")
+        result = tracking_store.batch_get_traces(["tr-loc"], location=exp_id)
+        assert len(result) == 1

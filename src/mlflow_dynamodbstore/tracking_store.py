@@ -2935,6 +2935,62 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return results
 
+    def batch_get_traces(self, trace_ids: list[str], location: str | None = None) -> list[Trace]:
+        """Get complete traces with spans for given trace IDs."""
+        import json as _json
+
+        from mlflow.entities.trace import Trace
+        from mlflow.entities.trace_data import TraceData
+
+        from mlflow_dynamodbstore.xray.span_converter import span_dicts_to_mlflow_spans
+
+        if not trace_ids:
+            return []
+
+        seen: set[str] = set()
+        results: list[Trace] = []
+
+        for trace_id in trace_ids:
+            if trace_id in seen:
+                continue
+            seen.add(trace_id)
+
+            try:
+                if location:
+                    experiment_id = location
+                else:
+                    experiment_id = self._resolve_trace_experiment(trace_id)
+            except MlflowException:
+                continue
+
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+            if meta is None:
+                continue
+
+            trace_info = self._build_trace_info(experiment_id, trace_id, meta)
+
+            # Read cached spans
+            spans_sk = f"{SK_TRACE_PREFIX}{trace_id}#SPANS"
+            cached = self._table.get_item(pk=pk, sk=spans_sk)
+            if cached is not None:
+                span_dicts = _json.loads(cached["data"])
+                # Handle both V3 format (Span.to_dict) and X-Ray format
+                if span_dicts and "start_time_unix_nano" in span_dicts[0]:
+                    # V3 format: use Span.from_dict
+                    from mlflow.entities.span import Span as SpanEntity
+
+                    spans = [SpanEntity.from_dict(sd) for sd in span_dicts]
+                else:
+                    # X-Ray converter format
+                    spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
+            else:
+                spans = []
+
+            results.append(Trace(info=trace_info, data=TraceData(spans=spans)))
+
+        return results
+
     # ------------------------------------------------------------------
     # Assessment CRUD
     # ------------------------------------------------------------------
