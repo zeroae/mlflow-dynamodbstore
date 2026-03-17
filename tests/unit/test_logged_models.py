@@ -18,6 +18,8 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI4_SK,
     PK_EXPERIMENT_PREFIX,
     SK_LM_PREFIX,
+    SK_RANK_LM_PREFIX,
+    SK_RANK_LMD_PREFIX,
 )
 
 
@@ -225,3 +227,92 @@ class TestRecordLoggedModel:
         models = json.loads(logged_models_tag)
         assert len(models) == 1
         assert models[0]["model_id"] == "m-test"
+
+
+class TestLogLoggedModelMetric:
+    def test_log_metric(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="metric-test")
+
+        tracking_store._log_logged_model_metric(
+            experiment_id=exp_id,
+            model_id=model.model_id,
+            metric_name="accuracy",
+            metric_value=0.95,
+            metric_timestamp_ms=1000,
+            metric_step=0,
+            run_id="run-abc",
+        )
+
+        fetched = tracking_store.get_logged_model(model.model_id)
+        assert len(fetched.metrics) == 1
+        assert fetched.metrics[0].key == "accuracy"
+        assert fetched.metrics[0].value == 0.95
+
+    def test_log_metric_writes_rank_item(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="rank-test")
+
+        tracking_store._log_logged_model_metric(
+            experiment_id=exp_id,
+            model_id=model.model_id,
+            metric_name="accuracy",
+            metric_value=0.95,
+            metric_timestamp_ms=1000,
+            metric_step=0,
+            run_id="run-abc",
+        )
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        rank_items = tracking_store._table.query(pk=pk, sk_prefix=f"{SK_RANK_LM_PREFIX}accuracy#")
+        assert len(rank_items) == 1
+        assert rank_items[0]["model_id"] == model.model_id
+
+    def test_log_metric_with_dataset_writes_scoped_rank(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="ds-rank")
+
+        tracking_store._log_logged_model_metric(
+            experiment_id=exp_id,
+            model_id=model.model_id,
+            metric_name="accuracy",
+            metric_value=0.90,
+            metric_timestamp_ms=1000,
+            metric_step=0,
+            run_id="run-abc",
+            dataset_name="eval_set",
+            dataset_digest="abc123",
+        )
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        rank_items = tracking_store._table.query(
+            pk=pk, sk_prefix=f"{SK_RANK_LMD_PREFIX}accuracy#eval_set#abc123#"
+        )
+        assert len(rank_items) == 1
+
+    def test_log_metric_replaces_rank_on_update(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        model = tracking_store.create_logged_model(experiment_id=exp_id, name="replace-rank")
+
+        tracking_store._log_logged_model_metric(
+            experiment_id=exp_id,
+            model_id=model.model_id,
+            metric_name="accuracy",
+            metric_value=0.80,
+            metric_timestamp_ms=1000,
+            metric_step=0,
+            run_id="run-abc",
+        )
+        tracking_store._log_logged_model_metric(
+            experiment_id=exp_id,
+            model_id=model.model_id,
+            metric_name="accuracy",
+            metric_value=0.95,
+            metric_timestamp_ms=2000,
+            metric_step=1,
+            run_id="run-abc",
+        )
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        rank_items = tracking_store._table.query(pk=pk, sk_prefix=f"{SK_RANK_LM_PREFIX}accuracy#")
+        assert len(rank_items) == 1  # Old deleted, new written

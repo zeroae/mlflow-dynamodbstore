@@ -1270,6 +1270,89 @@ class DynamoDBTrackingStore(AbstractStore):
         inv = max_val - value
         return f"{inv:020.4f}"
 
+    def _log_logged_model_metric(
+        self,
+        experiment_id: str,
+        model_id: str,
+        metric_name: str,
+        metric_value: float,
+        metric_timestamp_ms: int,
+        metric_step: int,
+        run_id: str,
+        dataset_name: str | None = None,
+        dataset_digest: str | None = None,
+    ) -> None:
+        """Write a metric sub-item and RANK items for a logged model."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        metric_sk = f"{SK_LM_PREFIX}{model_id}{SK_LM_METRIC_PREFIX}{metric_name}#{run_id}"
+
+        # Check for existing metric to delete old RANK item(s) first
+        existing = self._table.get_item(pk=pk, sk=metric_sk)
+        if existing is not None:
+            old_inv = self._invert_metric_value(float(existing["metric_value"]))
+            old_rank_sk = f"{SK_RANK_LM_PREFIX}{metric_name}#{old_inv}#{model_id}"
+            self._table.delete_item(pk=pk, sk=old_rank_sk)
+            if existing.get("dataset_name") and existing.get("dataset_digest"):
+                old_rank_ds = (
+                    f"{SK_RANK_LMD_PREFIX}{metric_name}#"
+                    f"{existing['dataset_name']}#{existing['dataset_digest']}#{old_inv}#{model_id}"
+                )
+                self._table.delete_item(pk=pk, sk=old_rank_ds)
+
+        # Write metric sub-item
+        metric_item: dict[str, Any] = {
+            "PK": pk,
+            "SK": metric_sk,
+            "metric_name": metric_name,
+            "metric_value": Decimal(str(metric_value)),
+            "metric_timestamp_ms": metric_timestamp_ms,
+            "metric_step": metric_step,
+            "run_id": run_id,
+            "model_id": model_id,
+        }
+        if dataset_name:
+            metric_item["dataset_name"] = dataset_name
+        if dataset_digest:
+            metric_item["dataset_digest"] = dataset_digest
+        self._table.put_item(metric_item)
+
+        # Write global RANK item (descending by inverted value)
+        inv_value = self._invert_metric_value(metric_value)
+        self._table.put_item(
+            {
+                "PK": pk,
+                "SK": f"{SK_RANK_LM_PREFIX}{metric_name}#{inv_value}#{model_id}",
+                "model_id": model_id,
+                "metric_name": metric_name,
+                "metric_value": Decimal(str(metric_value)),
+            }
+        )
+
+        # Write dataset-scoped RANK item
+        if dataset_name and dataset_digest:
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": (
+                        f"{SK_RANK_LMD_PREFIX}{metric_name}#"
+                        f"{dataset_name}#{dataset_digest}#{inv_value}#{model_id}"
+                    ),
+                    "model_id": model_id,
+                    "metric_name": metric_name,
+                    "metric_value": Decimal(str(metric_value)),
+                    "dataset_name": dataset_name,
+                    "dataset_digest": dataset_digest,
+                }
+            )
+
+        # Update last_updated_timestamp_ms on the model meta item
+        now_ms = int(time.time() * 1000)
+        self._table.update_item(
+            pk=pk,
+            sk=f"{SK_LM_PREFIX}{model_id}",
+            updates={"last_updated_timestamp_ms": now_ms},
+        )
+
     def update_run_info(
         self, run_id: str, run_status: str | int, end_time: int, run_name: str
     ) -> RunInfo:
