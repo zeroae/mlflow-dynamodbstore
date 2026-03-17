@@ -1751,3 +1751,108 @@ class TestBatchGetTraces:
         self._create_trace_with_spans(tracking_store, exp_id, "tr-loc")
         result = tracking_store.batch_get_traces(["tr-loc"], location=exp_id)
         assert len(result) == 1
+
+
+class TestLinkPromptsToTrace:
+    """Tests for link_prompts_to_trace."""
+
+    def test_link_single_prompt(self, tracking_store):
+        from mlflow.entities.model_registry import PromptVersion
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-prompt-1")
+        tracking_store.start_trace(trace_info)
+
+        pv = PromptVersion(name="my-prompt", version=1, template="hello {name}")
+        tracking_store.link_prompts_to_trace("tr-prompt-1", [pv])
+
+        fetched = tracking_store.get_trace_info("tr-prompt-1")
+        assert "mlflow.promptVersions" in fetched.tags
+        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        assert len(versions) == 1
+        assert versions[0]["name"] == "my-prompt"
+        assert versions[0]["version"] == 1
+
+    def test_link_multiple_prompts(self, tracking_store):
+        from mlflow.entities.model_registry import PromptVersion
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-prompt-2")
+        tracking_store.start_trace(trace_info)
+
+        pvs = [
+            PromptVersion(name="prompt-a", version=1, template="a"),
+            PromptVersion(name="prompt-b", version=3, template="b"),
+        ]
+        tracking_store.link_prompts_to_trace("tr-prompt-2", pvs)
+
+        fetched = tracking_store.get_trace_info("tr-prompt-2")
+        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        assert len(versions) == 2
+
+    def test_overwrite_existing_prompt_links(self, tracking_store):
+        from mlflow.entities.model_registry import PromptVersion
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-prompt-3")
+        tracking_store.start_trace(trace_info)
+
+        pv1 = PromptVersion(name="old-prompt", version=1, template="old")
+        tracking_store.link_prompts_to_trace("tr-prompt-3", [pv1])
+
+        pv2 = PromptVersion(name="new-prompt", version=2, template="new")
+        tracking_store.link_prompts_to_trace("tr-prompt-3", [pv2])
+
+        fetched = tracking_store.get_trace_info("tr-prompt-3")
+        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        assert len(versions) == 1
+        assert versions[0]["name"] == "new-prompt"
+
+    def test_link_nonexistent_trace_raises(self, tracking_store):
+        from mlflow.entities.model_registry import PromptVersion
+
+        pv = PromptVersion(name="p", version=1, template="t")
+        with pytest.raises(MlflowException, match="does not exist"):
+            tracking_store.link_prompts_to_trace("nonexistent-trace", [pv])
+
+
+class TestUnlinkTracesFromRun:
+    """Tests for unlink_traces_from_run."""
+
+    def test_unlink_single_trace(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-unlink-1")
+        tracking_store.start_trace(trace_info)
+        tracking_store.link_traces_to_run(["tr-unlink-1"], "run-123")
+
+        # Verify linked
+        fetched = tracking_store.get_trace_info("tr-unlink-1")
+        assert TraceMetadataKey.SOURCE_RUN in fetched.trace_metadata
+
+        tracking_store.unlink_traces_from_run(["tr-unlink-1"], "run-123")
+
+        # Verify unlinked
+        fetched = tracking_store.get_trace_info("tr-unlink-1")
+        assert TraceMetadataKey.SOURCE_RUN not in fetched.trace_metadata
+
+    def test_unlink_multiple_traces(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        for tid in ["tr-ul-a", "tr-ul-b"]:
+            trace_info = _make_trace_info(exp_id, trace_id=tid)
+            tracking_store.start_trace(trace_info)
+        tracking_store.link_traces_to_run(["tr-ul-a", "tr-ul-b"], "run-456")
+
+        tracking_store.unlink_traces_from_run(["tr-ul-a", "tr-ul-b"], "run-456")
+
+        for tid in ["tr-ul-a", "tr-ul-b"]:
+            fetched = tracking_store.get_trace_info(tid)
+            assert TraceMetadataKey.SOURCE_RUN not in fetched.trace_metadata
+
+    def test_unlink_not_linked_trace_is_silent(self, tracking_store):
+        """Unlinking a trace that was never linked should not raise."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-never-linked")
+        tracking_store.start_trace(trace_info)
+
+        # Should not raise
+        tracking_store.unlink_traces_from_run(["tr-never-linked"], "run-789")

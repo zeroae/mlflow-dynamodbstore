@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from mlflow.entities.model_registry import PromptVersion
     from mlflow.entities.trace import Trace
     from mlflow.genai.scorers.online.entities import OnlineScorer, OnlineScoringConfig
 
@@ -2901,6 +2902,36 @@ class DynamoDBTrackingStore(AbstractStore):
             if ttl is not None:
                 rmeta_item["ttl"] = ttl
             self._table.put_item(rmeta_item)
+
+    def unlink_traces_from_run(self, trace_ids: list[str], run_id: str) -> None:
+        """Unlink traces from a run by deleting mlflow.sourceRun RMETA items."""
+        for trace_id in trace_ids:
+            try:
+                experiment_id = self._resolve_trace_experiment(trace_id)
+            except MlflowException:
+                continue
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            sk = f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{TraceMetadataKey.SOURCE_RUN}"
+            self._table.delete_item(pk=pk, sk=sk)
+
+    def link_prompts_to_trace(self, trace_id: str, prompt_versions: list[PromptVersion]) -> None:
+        """Link prompt versions to a trace by writing mlflow.promptVersions tag."""
+        import json as _json
+
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+        if meta is None:
+            raise MlflowException(
+                f"Trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
+
+        versions_json = _json.dumps(
+            [{"name": pv.name, "version": pv.version} for pv in prompt_versions]
+        )
+        self._write_trace_tag(experiment_id, trace_id, "mlflow.promptVersions", versions_json, ttl)
 
     def batch_get_trace_infos(
         self, trace_ids: list[str], location: str | None = None
