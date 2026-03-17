@@ -208,6 +208,15 @@ This matches the existing `delete_run` pattern exactly.
 2. Delete item `SK=LM#<model_id>#TAG#<key>`.
 3. Remove key from denormalized tags dict on META, update last_updated_timestamp_ms.
 
+### Metrics (internal)
+
+**`_log_logged_model_metric(experiment_id, model_id, metric_name, metric_value, metric_timestamp_ms, metric_step, run_id, dataset_name=None, dataset_digest=None)`**
+1. If metric sub-item already exists for this (model_id, metric_name, run_id): read existing value to reconstruct old RANK SK for deletion.
+2. Put metric sub-item `SK=LM#<model_id>#METRIC#<metric_name>#<run_id>`.
+3. Delete old RANK item (if value changed) and put new global RANK item `SK=RANK#lm#<metric_name>#<inv_value>#<model_id>`.
+4. If dataset_name and dataset_digest: delete old dataset-scoped RANK item and put new `SK=RANK#lmd#<metric_name>#<dataset_name>#<dataset_digest>#<inv_value>#<model_id>`.
+5. Update last_updated_timestamp_ms on META.
+
 ### Run Association
 
 **`record_logged_model(run_id, mlflow_model)`**
@@ -233,6 +242,8 @@ GSI1_LM_PREFIX = "LM#"
 ```
 
 No new partition key prefixes needed — logged models reuse the existing `EXP#<exp_id>` partition family.
+
+**Migration note**: The existing `SK_LOGGED_MODEL_PREFIX = "#LM#"` (with leading `#`) in `schema.py` is the V2 run-scoped pattern (`R#<ulid>#LM#<model_id>`). The new `SK_LM_PREFIX = "LM#"` (no leading `#`) is the V3 experiment-scoped pattern. Both coexist — the old constant supports legacy run-scoped model items, the new constant supports standalone logged models.
 
 ## Testing Strategy
 
