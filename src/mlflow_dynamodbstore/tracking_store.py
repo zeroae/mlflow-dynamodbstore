@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from mlflow.entities.trace import Trace
+    from mlflow.genai.scorers.online.entities import OnlineScorer, OnlineScoringConfig
 
     from mlflow_dynamodbstore.xray.client import XRayClient
 
@@ -27,6 +28,7 @@ from mlflow.entities import (
     RunInfo,
     RunInputs,
     RunTag,
+    ScorerVersion,
     TraceInfo,
     TraceLocation,
     TraceLocationType,
@@ -36,6 +38,7 @@ from mlflow.entities import (
 from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
+    INVALID_PARAMETER_VALUE,
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
@@ -62,8 +65,10 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_DS_EXP_PREFIX,
     GSI1_PK,
     GSI1_RUN_PREFIX,
+    GSI1_SCOR_PREFIX,
     GSI1_SK,
     GSI1_TRACE_PREFIX,
+    GSI2_ACTIVE_SCORERS_PREFIX,
     GSI2_DS_LIST_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
@@ -72,6 +77,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI3_DS_NAME_PREFIX,
     GSI3_EXP_NAME_PREFIX,
     GSI3_PK,
+    GSI3_SCOR_NAME_PREFIX,
     GSI3_SK,
     GSI5_EXP_NAMES_PREFIX,
     GSI5_PK,
@@ -101,6 +107,8 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_PARAM_PREFIX,
     SK_RANK_PREFIX,
     SK_RUN_PREFIX,
+    SK_SCORER_OSCFG_SUFFIX,
+    SK_SCORER_PREFIX,
     SK_TAG_PREFIX,
     SK_TRACE_PREFIX,
 )
@@ -112,6 +120,29 @@ from mlflow_dynamodbstore.ids import generate_ulid, ulid_from_timestamp
 def _rev(s: str) -> str:
     """Return reversed string."""
     return s[::-1]
+
+
+class _ScorerVersionCompat(ScorerVersion):
+    """ScorerVersion that handles non-integer experiment_id in to_proto().
+
+    MLflow's ScorerVersion.to_proto() calls int(experiment_id) which fails
+    for ULID string IDs. This subclass skips the experiment_id proto field
+    since the handler's response already includes it as a string.
+    """
+
+    def to_proto(self) -> Any:
+        from mlflow.protos.service_pb2 import Scorer as ProtoScorer
+
+        proto = ProtoScorer()
+        # Skip experiment_id — proto field is int32, our IDs are ULID strings.
+        # The REST handler's response includes experiment_id separately.
+        proto.scorer_name = self.scorer_name
+        proto.scorer_version = self.scorer_version
+        proto.serialized_scorer = self._serialized_scorer
+        proto.creation_time = self.creation_time
+        if self.scorer_id is not None:
+            proto.scorer_id = self.scorer_id
+        return proto
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -2569,6 +2600,386 @@ class DynamoDBTrackingStore(AbstractStore):
         # Clean up FTS items via reverse index
         field = f"assess_{assessment_id}"
         self._delete_fts_for_entity_field(pk=pk, entity_type="T", entity_id=trace_id, field=field)
+
+    # ------------------------------------------------------------------
+    # Scorer CRUD
+    # ------------------------------------------------------------------
+
+    def _resolve_scorer_id(self, experiment_id: str, name: str) -> str | None:
+        """Resolve scorer name to scorer_id via GSI3. Returns None if not found."""
+        results = self._table.query(
+            pk=f"{GSI3_SCOR_NAME_PREFIX}{self._workspace}#{experiment_id}#{name}",
+            index_name="gsi3",
+            limit=1,
+        )
+        if not results:
+            return None
+        return str(results[0][GSI3_SK])  # gsi3sk holds the scorer_id directly
+
+    def register_scorer(
+        self, experiment_id: str, name: str, serialized_scorer: str
+    ) -> ScorerVersion:
+        self.get_experiment(experiment_id)  # verify exists
+        now_ms = int(time.time() * 1000)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        existing_scorer_id = self._resolve_scorer_id(experiment_id, name)
+
+        if existing_scorer_id is None:
+            scorer_id = generate_ulid()
+            meta_sk = f"{SK_SCORER_PREFIX}{scorer_id}"
+            meta_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": meta_sk,
+                "scorer_name": name,
+                "scorer_id": scorer_id,
+                "latest_version": 1,
+                "workspace": self._workspace,
+                GSI1_PK: f"{GSI1_SCOR_PREFIX}{scorer_id}",
+                GSI1_SK: pk,
+                GSI3_PK: f"{GSI3_SCOR_NAME_PREFIX}{self._workspace}#{experiment_id}#{name}",
+                GSI3_SK: scorer_id,
+                LSI3_SK: name.lower(),
+            }
+            try:
+                self._table.put_item(meta_item, condition="attribute_not_exists(SK)")
+            except Exception:
+                # Race: another registration won. Retry via existing path.
+                existing_scorer_id = self._resolve_scorer_id(experiment_id, name)
+                if existing_scorer_id is None:
+                    raise
+
+            if existing_scorer_id is None:
+                # New scorer path succeeded
+                version = 1
+                padded = f"{version:010d}"
+                ver_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{meta_sk}#V#{padded}",
+                    "scorer_version": version,
+                    "serialized_scorer": serialized_scorer,
+                    "creation_time": now_ms,
+                }
+                self._table.put_item(ver_item)
+                return _ScorerVersionCompat(
+                    experiment_id=experiment_id,
+                    scorer_name=name,
+                    scorer_version=version,
+                    serialized_scorer=serialized_scorer,
+                    creation_time=now_ms,
+                    scorer_id=scorer_id,
+                )
+
+        # Existing scorer path (including race retry)
+        scorer_id = existing_scorer_id
+        meta_sk = f"{SK_SCORER_PREFIX}{scorer_id}"
+        updated = self._table.add_attribute(pk=pk, sk=meta_sk, attribute="latest_version", value=1)
+        version = int(updated["latest_version"])
+        padded = f"{version:010d}"
+        ver_item = {
+            "PK": pk,
+            "SK": f"{meta_sk}#V#{padded}",
+            "scorer_version": version,
+            "serialized_scorer": serialized_scorer,
+            "creation_time": now_ms,
+        }
+        self._table.put_item(ver_item)
+        return _ScorerVersionCompat(
+            experiment_id=experiment_id,
+            scorer_name=name,
+            scorer_version=version,
+            serialized_scorer=serialized_scorer,
+            creation_time=now_ms,
+            scorer_id=scorer_id,
+        )
+
+    def get_scorer(
+        self, experiment_id: str, name: str, version: int | None = None
+    ) -> ScorerVersion:
+        scorer_id = self._resolve_scorer_id(experiment_id, name)
+        if scorer_id is None:
+            raise MlflowException(
+                f"Scorer '{name}' not found in experiment '{experiment_id}'.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        meta_sk = f"{SK_SCORER_PREFIX}{scorer_id}"
+
+        if version is not None:
+            padded = f"{version:010d}"
+            item = self._table.get_item(pk=pk, sk=f"{meta_sk}#V#{padded}")
+            if item is None:
+                raise MlflowException(
+                    f"Scorer '{name}' version {version} not found.",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+        else:
+            # AP3: latest version by SK sort descending
+            items = self._table.query(pk=pk, sk_prefix=f"{meta_sk}#V#", scan_forward=False, limit=1)
+            if not items:
+                raise MlflowException(
+                    f"Scorer '{name}' has no versions.",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            item = items[0]
+
+        # Read META for scorer_name (in case name casing differs)
+        meta = self._table.get_item(pk=pk, sk=meta_sk)
+        return _ScorerVersionCompat(
+            experiment_id=experiment_id,
+            scorer_name=meta["scorer_name"] if meta else name,
+            scorer_version=int(item["scorer_version"]),
+            serialized_scorer=item["serialized_scorer"],
+            creation_time=int(item["creation_time"]),
+            scorer_id=scorer_id,
+        )
+
+    def list_scorers(self, experiment_id: str) -> list[ScorerVersion]:
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        # Query all SCOR# items and filter to META items in Python.
+        # META items have SK = "SCOR#<ulid>" (no #V# or #OSCFG suffix).
+        items = self._table.query(pk=pk, sk_prefix=SK_SCORER_PREFIX)
+        meta_items = [item for item in items if "#" not in item["SK"][len(SK_SCORER_PREFIX) :]]
+
+        result: list[ScorerVersion] = []
+        for meta in meta_items:
+            scorer_id = meta["SK"][len(SK_SCORER_PREFIX) :]
+            # AP3: get latest version
+            versions = self._table.query(
+                pk=pk,
+                sk_prefix=f"{SK_SCORER_PREFIX}{scorer_id}#V#",
+                scan_forward=False,
+                limit=1,
+            )
+            if versions:
+                ver = versions[0]
+                result.append(
+                    _ScorerVersionCompat(
+                        experiment_id=experiment_id,
+                        scorer_name=meta["scorer_name"],
+                        scorer_version=int(ver["scorer_version"]),
+                        serialized_scorer=ver["serialized_scorer"],
+                        creation_time=int(ver["creation_time"]),
+                        scorer_id=scorer_id,
+                    )
+                )
+        return result
+
+    def list_scorer_versions(self, experiment_id: str, name: str) -> list[ScorerVersion]:
+        scorer_id = self._resolve_scorer_id(experiment_id, name)
+        if scorer_id is None:
+            raise MlflowException(
+                f"Scorer '{name}' not found in experiment '{experiment_id}'.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        # AP5: all versions ascending
+        items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_SCORER_PREFIX}{scorer_id}#V#",
+            scan_forward=True,
+        )
+        # Read META for canonical scorer_name
+        meta = self._table.get_item(pk=pk, sk=f"{SK_SCORER_PREFIX}{scorer_id}")
+        scorer_name = meta["scorer_name"] if meta else name
+        return [
+            _ScorerVersionCompat(
+                experiment_id=experiment_id,
+                scorer_name=scorer_name,
+                scorer_version=int(item["scorer_version"]),
+                serialized_scorer=item["serialized_scorer"],
+                creation_time=int(item["creation_time"]),
+                scorer_id=scorer_id,
+            )
+            for item in items
+        ]
+
+    def delete_scorer(self, experiment_id: str, name: str, version: int | None = None) -> None:
+        scorer_id = self._resolve_scorer_id(experiment_id, name)
+        if scorer_id is None:
+            raise MlflowException(
+                f"Scorer '{name}' not found in experiment '{experiment_id}'.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        meta_sk = f"{SK_SCORER_PREFIX}{scorer_id}"
+
+        if version is None:
+            # AP6: delete all items (META + versions + config)
+            items = self._table.query(pk=pk, sk_prefix=f"{SK_SCORER_PREFIX}{scorer_id}")
+            if items:
+                self._table.batch_delete([{"PK": pk, "SK": item["SK"]} for item in items])
+        else:
+            # AP7: delete single version
+            padded = f"{version:010d}"
+            ver_sk = f"{meta_sk}#V#{padded}"
+            item = self._table.get_item(pk=pk, sk=ver_sk)
+            if item is None:
+                raise MlflowException(
+                    f"Scorer '{name}' version {version} not found.",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            self._table.delete_item(pk=pk, sk=ver_sk)
+
+            # Check if any versions remain
+            remaining = self._table.query(pk=pk, sk_prefix=f"{meta_sk}#V#", limit=1)
+            if not remaining:
+                # Delete META and config too
+                self._table.delete_item(pk=pk, sk=meta_sk)
+                self._table.delete_item(pk=pk, sk=f"{meta_sk}{SK_SCORER_OSCFG_SUFFIX}")
+            else:
+                # Update latest_version cache if needed
+                latest = self._table.query(
+                    pk=pk,
+                    sk_prefix=f"{meta_sk}#V#",
+                    scan_forward=False,
+                    limit=1,
+                )
+                if latest:
+                    new_max = int(latest[0]["scorer_version"])
+                    self._table.update_item(
+                        pk=pk,
+                        sk=meta_sk,
+                        updates={"latest_version": new_max},
+                    )
+
+    def upsert_online_scoring_config(
+        self,
+        experiment_id: str,
+        scorer_name: str,
+        sample_rate: float,
+        filter_string: str | None = None,
+    ) -> OnlineScoringConfig:
+        from mlflow.genai.scorers.online.entities import OnlineScoringConfig
+
+        if not (0.0 <= sample_rate <= 1.0):
+            raise MlflowException(
+                f"sample_rate must be in [0.0, 1.0], got {sample_rate}.",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        scorer_id = self._resolve_scorer_id(experiment_id, scorer_name)
+        if scorer_id is None:
+            raise MlflowException(
+                f"Scorer '{scorer_name}' not found in experiment '{experiment_id}'.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        config_id = generate_ulid()
+        config_sk = f"{SK_SCORER_PREFIX}{scorer_id}{SK_SCORER_OSCFG_SUFFIX}"
+
+        item: dict[str, Any] = {
+            "PK": pk,
+            "SK": config_sk,
+            "online_scoring_config_id": config_id,
+            "scorer_id": scorer_id,
+            "sample_rate": Decimal(str(sample_rate)),
+            "experiment_id": experiment_id,
+        }
+        if filter_string is not None:
+            item["filter_string"] = filter_string
+
+        # GSI2: only index when active (sample_rate > 0)
+        if sample_rate > 0:
+            item[GSI2_PK] = f"{GSI2_ACTIVE_SCORERS_PREFIX}{self._workspace}"
+            item[GSI2_SK] = scorer_id
+
+        self._table.put_item(item)  # atomic overwrite (fixed SK)
+
+        return OnlineScoringConfig(
+            online_scoring_config_id=config_id,
+            scorer_id=scorer_id,
+            sample_rate=sample_rate,
+            experiment_id=experiment_id,
+            filter_string=filter_string,
+        )
+
+    def get_online_scoring_configs(self, scorer_ids: list[str]) -> list[OnlineScoringConfig]:
+        from mlflow.genai.scorers.online.entities import OnlineScoringConfig
+
+        configs: list[OnlineScoringConfig] = []
+        for scorer_id in scorer_ids:
+            # AP11: resolve scorer_id → experiment_id via GSI1
+            results = self._table.query(
+                pk=f"{GSI1_SCOR_PREFIX}{scorer_id}",
+                index_name="gsi1",
+                limit=1,
+            )
+            if not results:
+                continue
+            exp_id = results[0][GSI1_SK][len(PK_EXPERIMENT_PREFIX) :]
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            config_sk = f"{SK_SCORER_PREFIX}{scorer_id}{SK_SCORER_OSCFG_SUFFIX}"
+            item = self._table.get_item(pk=pk, sk=config_sk)
+            if item is None:
+                continue
+            configs.append(
+                OnlineScoringConfig(
+                    online_scoring_config_id=item["online_scoring_config_id"],
+                    scorer_id=item["scorer_id"],
+                    sample_rate=float(item["sample_rate"]),
+                    experiment_id=item["experiment_id"],
+                    filter_string=item.get("filter_string"),
+                )
+            )
+        return configs
+
+    def get_active_online_scorers(self) -> list[OnlineScorer]:
+        from mlflow.genai.scorers.online.entities import (
+            OnlineScorer,
+            OnlineScoringConfig,
+        )
+
+        # AP9: query GSI2 for active configs
+        items = self._table.query(
+            pk=f"{GSI2_ACTIVE_SCORERS_PREFIX}{self._workspace}",
+            index_name="gsi2",
+        )
+
+        # Deduplicate by scorer_id
+        seen: set[str] = set()
+        unique_items: list[dict[str, Any]] = []
+        for item in items:
+            sid = item["scorer_id"]
+            if sid not in seen:
+                seen.add(sid)
+                unique_items.append(item)
+
+        result: list[OnlineScorer] = []
+        for item in unique_items:
+            scorer_id = item["scorer_id"]
+            exp_id = item["experiment_id"]
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+
+            # Get META for scorer_name
+            meta = self._table.get_item(pk=pk, sk=f"{SK_SCORER_PREFIX}{scorer_id}")
+            if meta is None:
+                continue
+
+            # AP3: get latest version for serialized_scorer
+            versions = self._table.query(
+                pk=pk,
+                sk_prefix=f"{SK_SCORER_PREFIX}{scorer_id}#V#",
+                scan_forward=False,
+                limit=1,
+            )
+            if not versions:
+                continue
+
+            config = OnlineScoringConfig(
+                online_scoring_config_id=item["online_scoring_config_id"],
+                scorer_id=scorer_id,
+                sample_rate=float(item["sample_rate"]),
+                experiment_id=exp_id,
+                filter_string=item.get("filter_string"),
+            )
+            result.append(
+                OnlineScorer(
+                    name=meta["scorer_name"],
+                    serialized_scorer=versions[0]["serialized_scorer"],
+                    online_config=config,
+                )
+            )
+        return result
 
     def delete_traces(
         self,
