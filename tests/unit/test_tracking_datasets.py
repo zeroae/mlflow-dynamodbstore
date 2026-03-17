@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from mlflow.entities import EvaluationDataset
 from mlflow.exceptions import MlflowException
@@ -176,3 +178,68 @@ class TestDatasetExperimentAssociation:
         tracking_store.add_dataset_to_experiments(ds.dataset_id, [exp1])
         ids = tracking_store.get_dataset_experiment_ids(ds.dataset_id)
         assert ids.count(exp1) == 1
+
+
+class TestDatasetRecords:
+    def test_upsert_inserts_new_records(self, tracking_store):
+        ds = tracking_store.create_dataset(name="records-test")
+        result = tracking_store.upsert_dataset_records(
+            ds.dataset_id,
+            [
+                {"inputs": {"q": "hello"}, "outputs": {"a": "world"}},
+                {"inputs": {"q": "foo"}, "outputs": {"a": "bar"}},
+            ],
+        )
+        assert result["inserted"] == 2
+        assert result["updated"] == 0
+
+    def test_upsert_updates_existing_by_input_hash(self, tracking_store):
+        ds = tracking_store.create_dataset(name="dedup-test")
+        tracking_store.upsert_dataset_records(
+            ds.dataset_id,
+            [{"inputs": {"q": "hello"}, "outputs": {"a": "old"}}],
+        )
+        result = tracking_store.upsert_dataset_records(
+            ds.dataset_id,
+            [{"inputs": {"q": "hello"}, "outputs": {"a": "new"}}],
+        )
+        assert result["inserted"] == 0
+        assert result["updated"] == 1
+
+    def test_upsert_updates_profile(self, tracking_store):
+        ds = tracking_store.create_dataset(name="profile-test")
+        tracking_store.upsert_dataset_records(
+            ds.dataset_id,
+            [{"inputs": {"q": "a"}}, {"inputs": {"q": "b"}}],
+        )
+        fetched = tracking_store.get_dataset(ds.dataset_id)
+        profile = json.loads(fetched.profile) if fetched.profile else {}
+        assert profile.get("num_records") == 2
+
+    def test_load_records_paginated(self, tracking_store):
+        ds = tracking_store.create_dataset(name="paginate-test")
+        tracking_store.upsert_dataset_records(
+            ds.dataset_id,
+            [{"inputs": {"q": f"item-{i}"}} for i in range(5)],
+        )
+        records, token = tracking_store._load_dataset_records(ds.dataset_id, max_results=2)
+        assert len(records) == 2
+        assert token is not None
+        records2, token2 = tracking_store._load_dataset_records(
+            ds.dataset_id, max_results=2, page_token=token
+        )
+        assert len(records2) == 2
+
+    def test_delete_records(self, tracking_store):
+        ds = tracking_store.create_dataset(name="del-records")
+        tracking_store.upsert_dataset_records(
+            ds.dataset_id,
+            [{"inputs": {"q": "keep"}}, {"inputs": {"q": "remove"}}],
+        )
+        records, _ = tracking_store._load_dataset_records(ds.dataset_id)
+        to_delete = [r.dataset_record_id for r in records if r.inputs["q"] == "remove"]
+        deleted = tracking_store.delete_dataset_records(ds.dataset_id, to_delete)
+        assert deleted == 1
+        remaining, _ = tracking_store._load_dataset_records(ds.dataset_id)
+        assert len(remaining) == 1
+        assert remaining[0].inputs["q"] == "keep"

@@ -85,6 +85,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_DATASET_EXP_PREFIX,
     SK_DATASET_META,
     SK_DATASET_PREFIX,
+    SK_DATASET_RECORD_PREFIX,
     SK_DATASET_TAG_PREFIX,
     SK_DLINK_PREFIX,
     SK_EXPERIMENT_META,
@@ -2651,6 +2652,7 @@ class DynamoDBTrackingStore(AbstractStore):
             created_time=int(meta["created_time"]),
             last_update_time=int(meta["last_update_time"]),
             tags=tags,
+            profile=meta.get("profile"),
         )
         ds.experiment_ids = experiment_ids
         return ds
@@ -2886,3 +2888,233 @@ class DynamoDBTrackingStore(AbstractStore):
                 updates={"last_update_time": now_ms, "digest": digest},
             )
         return self.get_dataset(dataset_id)
+
+    # ------------------------------------------------------------------
+    # Dataset Record CRUD
+    # ------------------------------------------------------------------
+
+    def upsert_dataset_records(
+        self,
+        dataset_id: str,
+        records: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        """Upsert records into an evaluation dataset.
+
+        Each record is keyed by its input_hash (SHA-256 of sorted JSON inputs).
+        Existing records with the same input_hash are updated; new ones are
+        inserted with a fresh ``edrec_<ulid>`` ID.
+
+        Args:
+            dataset_id: The ID of the dataset to update.
+            records: List of record dicts with keys: inputs, outputs,
+                expectations, tags, source.
+
+        Returns:
+            Dictionary with ``inserted`` and ``updated`` counts.
+        """
+        import json as _json
+
+        from boto3.dynamodb.conditions import Attr
+
+        # Verify dataset exists
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is None:
+            raise MlflowException(
+                f"Dataset '{dataset_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        inserted = 0
+        updated = 0
+
+        for record in records:
+            inputs = record.get("inputs", {})
+            outputs = record.get("outputs")
+            expectations = record.get("expectations")
+            record_tags = record.get("tags")
+            source = record.get("source")
+
+            # Compute input_hash
+            input_hash = hashlib.sha256(
+                _json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:8]
+
+            # Dedup: query LSI3 for existing record with same input_hash
+            existing_items, _ = self._table.query_page(
+                pk=pk,
+                sk_prefix=input_hash,
+                index_name="lsi3",
+                filter_expression=Attr("SK").begins_with(SK_DATASET_RECORD_PREFIX),
+            )
+
+            now_ms = int(time.time() * 1000)
+
+            if existing_items:
+                # Update the first matching record
+                existing = existing_items[0]
+                updates: dict[str, Any] = {
+                    "last_update_time": now_ms,
+                    LSI2_SK: str(now_ms),
+                }
+                if outputs is not None:
+                    updates["outputs"] = outputs
+                if expectations is not None:
+                    updates["expectations"] = expectations
+                if record_tags is not None:
+                    updates["tags"] = record_tags
+                if source is not None:
+                    updates["source"] = source
+                self._table.update_item(
+                    pk=existing["PK"],
+                    sk=existing["SK"],
+                    updates=updates,
+                )
+                updated += 1
+            else:
+                # Insert new record
+                record_id = f"edrec_{generate_ulid()}"
+                record_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_RECORD_PREFIX}{record_id}",
+                    "dataset_id": dataset_id,
+                    "dataset_record_id": record_id,
+                    "inputs": inputs,
+                    "input_hash": input_hash,
+                    "created_time": now_ms,
+                    "last_update_time": now_ms,
+                    # LSI projections
+                    LSI1_SK: str(now_ms),
+                    LSI2_SK: str(now_ms),
+                    LSI3_SK: input_hash,
+                }
+                if outputs is not None:
+                    record_item["outputs"] = outputs
+                if expectations is not None:
+                    record_item["expectations"] = expectations
+                if record_tags is not None:
+                    record_item["tags"] = record_tags
+                if source is not None:
+                    record_item["source"] = source
+                self._table.put_item(record_item)
+                inserted += 1
+
+        # Recount records to update META profile
+        all_records, _ = self._table.query_page(
+            pk=pk,
+            sk_prefix=SK_DATASET_RECORD_PREFIX,
+            limit=10000,
+        )
+        num_records = len(all_records)
+
+        now_ms = int(time.time() * 1000)
+        digest = self._compute_dataset_digest(meta["name"], now_ms)
+        self._table.update_item(
+            pk=pk,
+            sk=SK_DATASET_META,
+            updates={
+                "profile": _json.dumps({"num_records": num_records}),
+                "last_update_time": now_ms,
+                "digest": digest,
+                LSI2_SK: str(now_ms),
+            },
+        )
+
+        return {"inserted": inserted, "updated": updated}
+
+    def _load_dataset_records(
+        self,
+        dataset_id: str,
+        max_results: int = 1000,
+        page_token: str | None = None,
+    ) -> tuple[list[Any], str | None]:
+        """Load records for a dataset with pagination.
+
+        Args:
+            dataset_id: The dataset to load records for.
+            max_results: Maximum records per page.
+            page_token: Opaque cursor from a previous call.
+
+        Returns:
+            Tuple of (records, next_page_token). next_page_token is None on
+            the last page.
+        """
+        from mlflow.entities.dataset_record import DatasetRecord
+
+        from mlflow_dynamodbstore.dynamodb.pagination import (
+            decode_page_token,
+            encode_page_token,
+        )
+
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+
+        token_state = decode_page_token(page_token)
+        exclusive_start_key = token_state.get("lek") if token_state else None
+
+        items, lek = self._table.query_page(
+            pk=pk,
+            sk_prefix=SK_DATASET_RECORD_PREFIX,
+            limit=max_results,
+            exclusive_start_key=exclusive_start_key,
+        )
+
+        record_list = [
+            DatasetRecord(
+                dataset_id=dataset_id,
+                dataset_record_id=item["dataset_record_id"],
+                inputs=item.get("inputs", {}),
+                created_time=int(item["created_time"]),
+                last_update_time=int(item["last_update_time"]),
+                outputs=item.get("outputs"),
+                expectations=item.get("expectations"),
+                tags=item.get("tags"),
+            )
+            for item in items
+        ]
+
+        next_token = encode_page_token({"lek": lek}) if lek else None
+        return record_list, next_token
+
+    def delete_dataset_records(
+        self,
+        dataset_id: str,
+        record_ids: list[str],
+    ) -> int:
+        """Delete specific records from a dataset.
+
+        Args:
+            dataset_id: The dataset to delete records from.
+            record_ids: List of record IDs (``edrec_...``) to delete.
+
+        Returns:
+            Count of records deleted.
+        """
+        import json as _json
+
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        keys = [{"PK": pk, "SK": f"{SK_DATASET_RECORD_PREFIX}{rec_id}"} for rec_id in record_ids]
+        self._table.batch_delete(keys)
+
+        # Recount and update META profile
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is not None:
+            all_records, _ = self._table.query_page(
+                pk=pk,
+                sk_prefix=SK_DATASET_RECORD_PREFIX,
+                limit=10000,
+            )
+            num_records = len(all_records)
+            now_ms = int(time.time() * 1000)
+            digest = self._compute_dataset_digest(meta["name"], now_ms)
+            self._table.update_item(
+                pk=pk,
+                sk=SK_DATASET_META,
+                updates={
+                    "profile": _json.dumps({"num_records": num_records}),
+                    "last_update_time": now_ms,
+                    "digest": digest,
+                    LSI2_SK: str(now_ms),
+                },
+            )
+
+        return len(record_ids)
