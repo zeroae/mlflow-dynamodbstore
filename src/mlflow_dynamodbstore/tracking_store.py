@@ -39,7 +39,9 @@ from mlflow.protos.databricks_pb2 import (
 )
 from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
+from mlflow.utils.mlflow_tags import MLFLOW_ARTIFACT_LOCATION
 from mlflow.utils.proto_json_utils import milliseconds_to_proto_timestamp
+from mlflow.utils.uri import append_to_uri_path
 
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
@@ -209,7 +211,7 @@ class DynamoDBTrackingStore(AbstractStore):
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
         self._uri = uri
         self._cache = ResolutionCache()
-        self._artifact_uri = artifact_uri or ""
+        self._artifact_uri = artifact_uri or "./mlartifacts"
         self._workspace = "default"
         self._config = ConfigReader(self._table)
         self._config.reconcile()
@@ -1657,16 +1659,19 @@ class DynamoDBTrackingStore(AbstractStore):
             for tag_key, tag_value in trace_info.tags.items():
                 self._write_trace_tag(experiment_id, trace_id, tag_key, tag_value, ttl)
 
-        # Ensure artifact location tag is set (required by MLflow trace export)
-        artifact_loc_tag = "mlflow.artifactLocation"
-        if artifact_loc_tag not in (trace_info.tags or {}):
+        # Ensure artifact location tag is set (required by MLflow trace export).
+        # Matches SQLAlchemy store: always compute from experiment artifact_location.
+        if MLFLOW_ARTIFACT_LOCATION not in (trace_info.tags or {}):
             exp = self.get_experiment(experiment_id)
-            artifact_loc = exp.artifact_location or self._artifact_uri
-            if artifact_loc:
-                self._write_trace_tag(experiment_id, trace_id, artifact_loc_tag, artifact_loc, ttl)
-                if trace_info.tags is None:
-                    trace_info.tags = {}
-                trace_info.tags[artifact_loc_tag] = artifact_loc
+            artifact_loc = append_to_uri_path(
+                exp.artifact_location, "traces", trace_id, "artifacts"
+            )
+            self._write_trace_tag(
+                experiment_id, trace_id, MLFLOW_ARTIFACT_LOCATION, artifact_loc, ttl
+            )
+            if trace_info.tags is None:
+                trace_info.tags = {}
+            trace_info.tags[MLFLOW_ARTIFACT_LOCATION] = artifact_loc
 
         return trace_info
 
