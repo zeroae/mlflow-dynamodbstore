@@ -14,8 +14,6 @@ class CliContext:
 
 pass_context = click.make_pass_decorator(CliContext)
 
-from mlflow_dynamodbstore.cli.delete_workspace import delete_workspace  # noqa: E402
-
 
 @click.group()
 def cli() -> None:
@@ -23,7 +21,11 @@ def cli() -> None:
     pass
 
 
-cli.add_command(delete_workspace)
+def _register_workspace_command() -> None:
+    """Register workspace command. Imported lazily to avoid circular imports."""
+    from mlflow_dynamodbstore.cli.workspace import workspace
+
+    cli.add_command(workspace)
 
 
 def _register_trace_command() -> None:
@@ -58,3 +60,4 @@ _register_fts_command()
 _register_tag_command()
 _register_ttl_command()
 _register_trace_command()
+_register_workspace_command()

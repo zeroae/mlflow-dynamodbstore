@@ -1,9 +1,10 @@
-"""delete-workspace CLI command."""
+"""workspace CLI commands."""
 
 from __future__ import annotations
 
 import click
 
+from mlflow_dynamodbstore.cli import CliContext, pass_context
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_MODELS_PREFIX,
@@ -15,10 +16,14 @@ from mlflow_dynamodbstore.dynamodb.schema import (
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 
 
-@click.command("delete-workspace")
-@click.option("--table", required=True, help="DynamoDB table name")
-@click.option("--region", required=True, help="AWS region")
-@click.option("--workspace", required=True, help="Workspace name to delete")
+@click.group("workspace")
+def workspace() -> None:
+    """Workspace operations."""
+    pass
+
+
+@workspace.command("delete")
+@click.option("--workspace", "workspace_name", required=True, help="Workspace name to delete")
 @click.option(
     "--mode",
     type=click.Choice(["soft", "cascade"]),
@@ -26,29 +31,30 @@ from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
     help="Deletion mode",
 )
 @click.option("--yes", "confirmed", is_flag=True, help="Skip confirmation for cascade")
-def delete_workspace(table: str, region: str, workspace: str, mode: str, confirmed: bool) -> None:
+@pass_context
+def delete(ctx: CliContext, workspace_name: str, mode: str, confirmed: bool) -> None:
     """Delete a workspace."""
-    if workspace == "default":
+    if workspace_name == "default":
         click.echo("Error: Cannot delete the default workspace.", err=True)
         raise SystemExit(1)
 
-    ddb_table = DynamoDBTable(table_name=table, region=region)
-    pk = f"{PK_WORKSPACE_PREFIX}{workspace}"
+    ddb_table = DynamoDBTable(ctx.name, ctx.region, ctx.endpoint_url)
+    pk = f"{PK_WORKSPACE_PREFIX}{workspace_name}"
 
     # Verify workspace exists
     meta = ddb_table.get_item(pk=pk, sk=SK_WORKSPACE_META)
     if not meta:
-        click.echo(f"Error: Workspace '{workspace}' not found.", err=True)
+        click.echo(f"Error: Workspace '{workspace_name}' not found.", err=True)
         raise SystemExit(1)
 
     if mode == "soft":
         ddb_table.update_item(pk=pk, sk=SK_WORKSPACE_META, updates={"status": "deleted"})
-        click.echo(f"Workspace '{workspace}' marked as deleted.")
+        click.echo(f"Workspace '{workspace_name}' marked as deleted.")
 
     elif mode == "cascade":
         if not confirmed:
             click.confirm(
-                f"Delete workspace '{workspace}' and ALL its experiments and models?",
+                f"Delete workspace '{workspace_name}' and ALL its experiments and models?",
                 abort=True,
             )
 
@@ -57,7 +63,7 @@ def delete_workspace(table: str, region: str, workspace: str, mode: str, confirm
 
         # Delete all experiments in workspace
         for lifecycle in ("active", "deleted"):
-            gsi2pk = f"{GSI2_EXPERIMENTS_PREFIX}{workspace}#{lifecycle}"
+            gsi2pk = f"{GSI2_EXPERIMENTS_PREFIX}{workspace_name}#{lifecycle}"
             results = ddb_table.query(pk=gsi2pk, index_name="gsi2")
             for item in results:
                 exp_pk = item.get("PK", "")
@@ -69,7 +75,7 @@ def delete_workspace(table: str, region: str, workspace: str, mode: str, confirm
 
         # Delete all models in workspace
         for lifecycle in ("active", "deleted"):
-            gsi2pk = f"{GSI2_MODELS_PREFIX}{workspace}#{lifecycle}"
+            gsi2pk = f"{GSI2_MODELS_PREFIX}{workspace_name}#{lifecycle}"
             results = ddb_table.query(pk=gsi2pk, index_name="gsi2")
             for item in results:
                 model_pk = item.get("PK", "")
@@ -82,6 +88,6 @@ def delete_workspace(table: str, region: str, workspace: str, mode: str, confirm
         # Delete workspace META
         ddb_table.delete_item(pk=pk, sk=SK_WORKSPACE_META)
         click.echo(
-            f"Deleted workspace '{workspace}': "
+            f"Deleted workspace '{workspace_name}': "
             f"{deleted_experiments} experiments, {deleted_models} models removed."
         )
