@@ -2795,3 +2795,94 @@ class DynamoDBTrackingStore(AbstractStore):
         next_token = encode_page_token({"offset": next_offset}) if next_offset < total else None
 
         return PagedList(page, next_token)
+
+    def set_dataset_tags(self, dataset_id: str, tags: dict[str, str]) -> None:
+        """Set (upsert) one or more tags on an evaluation dataset."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        for key, value in tags.items():
+            # Write individual tag item (overwrite = upsert)
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_TAG_PREFIX}{key}",
+                    "key": key,
+                    "value": value,
+                }
+            )
+            # Update denormalized tags map on META item
+            self._denormalize_tag(pk=pk, sk=SK_DATASET_META, tag_key=key, tag_value=value)
+
+        # Update last_update_time and digest
+        now_ms = int(time.time() * 1000)
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is not None:
+            digest = self._compute_dataset_digest(meta["name"], now_ms)
+            self._table.update_item(
+                pk=pk,
+                sk=SK_DATASET_META,
+                updates={"last_update_time": now_ms, "digest": digest},
+            )
+
+    def delete_dataset_tag(self, dataset_id: str, key: str) -> None:
+        """Delete a single tag from an evaluation dataset."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        # Delete the individual tag item
+        self._table.delete_item(pk=pk, sk=f"{SK_DATASET_TAG_PREFIX}{key}")
+        # Remove from denormalized tags map on META
+        self._remove_denormalized_tag(pk=pk, sk=SK_DATASET_META, tag_key=key)
+        # Update last_update_time and digest
+        now_ms = int(time.time() * 1000)
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is not None:
+            digest = self._compute_dataset_digest(meta["name"], now_ms)
+            self._table.update_item(
+                pk=pk,
+                sk=SK_DATASET_META,
+                updates={"last_update_time": now_ms, "digest": digest},
+            )
+
+    def add_dataset_to_experiments(
+        self, dataset_id: str, experiment_ids: list[str]
+    ) -> EvaluationDataset:
+        """Associate an evaluation dataset with one or more experiments."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        for exp_id in experiment_ids:
+            # put_item overwrites = idempotent
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_DATASET_EXP_PREFIX}{exp_id}",
+                    GSI1_PK: f"{GSI1_DS_EXP_PREFIX}{exp_id}",
+                    GSI1_SK: dataset_id,
+                }
+            )
+        # Update last_update_time and digest
+        now_ms = int(time.time() * 1000)
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is not None:
+            digest = self._compute_dataset_digest(meta["name"], now_ms)
+            self._table.update_item(
+                pk=pk,
+                sk=SK_DATASET_META,
+                updates={"last_update_time": now_ms, "digest": digest},
+            )
+        return self.get_dataset(dataset_id)
+
+    def remove_dataset_from_experiments(
+        self, dataset_id: str, experiment_ids: list[str]
+    ) -> EvaluationDataset:
+        """Remove an evaluation dataset's association from one or more experiments."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        for exp_id in experiment_ids:
+            self._table.delete_item(pk=pk, sk=f"{SK_DATASET_EXP_PREFIX}{exp_id}")
+        # Update last_update_time and digest
+        now_ms = int(time.time() * 1000)
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is not None:
+            digest = self._compute_dataset_digest(meta["name"], now_ms)
+            self._table.update_item(
+                pk=pk,
+                sk=SK_DATASET_META,
+                updates={"last_update_time": now_ms, "digest": digest},
+            )
+        return self.get_dataset(dataset_id)

@@ -122,3 +122,57 @@ class TestSearchDatasets:
     def test_search_empty(self, tracking_store):
         results = tracking_store.search_datasets()
         assert len(results) == 0
+
+
+class TestDatasetTags:
+    def test_set_tags(self, tracking_store):
+        ds = tracking_store.create_dataset(name="tag-crud")
+        tracking_store.set_dataset_tags(ds.dataset_id, {"k1": "v1", "k2": "v2"})
+        fetched = tracking_store.get_dataset(ds.dataset_id)
+        assert fetched.tags["k1"] == "v1"
+        assert fetched.tags["k2"] == "v2"
+
+    def test_set_tags_overwrites(self, tracking_store):
+        ds = tracking_store.create_dataset(name="overwrite", tags={"k": "old"})
+        tracking_store.set_dataset_tags(ds.dataset_id, {"k": "new"})
+        fetched = tracking_store.get_dataset(ds.dataset_id)
+        assert fetched.tags["k"] == "new"
+
+    def test_delete_tag(self, tracking_store):
+        ds = tracking_store.create_dataset(name="del-tag", tags={"k": "v"})
+        tracking_store.delete_dataset_tag(ds.dataset_id, "k")
+        fetched = tracking_store.get_dataset(ds.dataset_id)
+        assert "k" not in fetched.tags
+
+
+class TestDatasetExperimentAssociation:
+    def test_get_experiment_ids(self, tracking_store):
+        exp1 = tracking_store.create_experiment("exp-1")
+        exp2 = tracking_store.create_experiment("exp-2")
+        ds = tracking_store.create_dataset(name="multi-exp", experiment_ids=[exp1, exp2])
+        ids = tracking_store.get_dataset_experiment_ids(ds.dataset_id)
+        assert set(ids) == {exp1, exp2}
+
+    def test_add_dataset_to_experiments(self, tracking_store):
+        exp1 = tracking_store.create_experiment("add-1")
+        exp2 = tracking_store.create_experiment("add-2")
+        ds = tracking_store.create_dataset(name="add-test")
+        tracking_store.add_dataset_to_experiments(ds.dataset_id, [exp1, exp2])
+        ids = tracking_store.get_dataset_experiment_ids(ds.dataset_id)
+        assert set(ids) == {exp1, exp2}
+
+    def test_remove_dataset_from_experiments(self, tracking_store):
+        exp1 = tracking_store.create_experiment("rm-1")
+        exp2 = tracking_store.create_experiment("rm-2")
+        ds = tracking_store.create_dataset(name="rm-test", experiment_ids=[exp1, exp2])
+        tracking_store.remove_dataset_from_experiments(ds.dataset_id, [exp1])
+        ids = tracking_store.get_dataset_experiment_ids(ds.dataset_id)
+        assert set(ids) == {exp2}
+
+    def test_add_idempotent(self, tracking_store):
+        exp1 = tracking_store.create_experiment("idem-1")
+        ds = tracking_store.create_dataset(name="idem-test")
+        tracking_store.add_dataset_to_experiments(ds.dataset_id, [exp1])
+        tracking_store.add_dataset_to_experiments(ds.dataset_id, [exp1])
+        ids = tracking_store.get_dataset_experiment_ids(ds.dataset_id)
+        assert ids.count(exp1) == 1
