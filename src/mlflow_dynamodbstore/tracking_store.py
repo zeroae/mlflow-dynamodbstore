@@ -212,6 +212,12 @@ def _item_to_run(
 ) -> Run:
     """Convert DynamoDB items to an MLflow Run entity."""
     info = _item_to_run_info(item)
+    # Populate run_name from mlflow.runName tag if not set on the item
+    if not info.run_name:
+        for t in tags:
+            if t["key"] == "mlflow.runName":
+                info._set_run_name(t["value"])
+                break
     data = RunData(
         tags=[RunTag(t["key"], t["value"]) for t in tags],
         params=[Param(p["key"], p["value"]) for p in params],
@@ -1659,7 +1665,34 @@ class DynamoDBTrackingStore(AbstractStore):
                     metric_items = self._table.query(
                         pk=pk, sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}"
                     )
-                    runs.append(_item_to_run(item, tag_items, param_items, metric_items))
+                    # Fetch dataset inputs for the run
+                    input_items = self._table.query(
+                        pk=pk, sk_prefix=f"{run_prefix}{SK_INPUT_PREFIX}"
+                    )
+                    # Fetch dataset definitions (D# items in experiment partition)
+                    dataset_items = (
+                        self._table.query(pk=pk, sk_prefix=SK_DATASET_PREFIX) if input_items else []
+                    )
+                    # Fetch input tags
+                    input_tag_items: list[dict[str, Any]] = []
+                    if input_items:
+                        for inp in input_items:
+                            inp_sk = inp["SK"]
+                            itags = self._table.query(
+                                pk=pk, sk_prefix=f"{inp_sk}{SK_INPUT_TAG_SUFFIX}"
+                            )
+                            input_tag_items.extend(itags)
+                    runs.append(
+                        _item_to_run(
+                            item,
+                            tag_items,
+                            param_items,
+                            metric_items,
+                            input_items,
+                            dataset_items,
+                            input_tag_items,
+                        )
+                    )
                     remaining -= 1
 
                     if remaining <= 0:
