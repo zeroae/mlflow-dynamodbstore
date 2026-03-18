@@ -16,7 +16,7 @@ class TestCreateDataset:
         ds = tracking_store.create_dataset(name="my-dataset")
         assert isinstance(ds, EvaluationDataset)
         assert ds.name == "my-dataset"
-        assert ds.dataset_id.startswith("eval_")
+        assert ds.dataset_id.startswith("d-")
         assert ds.digest != ""
         assert ds.created_time > 0
         assert ds.last_update_time > 0

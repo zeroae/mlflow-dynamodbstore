@@ -4278,7 +4278,7 @@ class DynamoDBTrackingStore(AbstractStore):
             )
 
         now_ms = int(time.time() * 1000)
-        dataset_id = f"eval_{generate_ulid()}"
+        dataset_id = f"d-{generate_ulid()}"
         digest = self._compute_dataset_digest(name, now_ms)
         pk = f"{PK_DATASET_PREFIX}{dataset_id}"
 
