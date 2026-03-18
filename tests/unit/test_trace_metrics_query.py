@@ -265,6 +265,45 @@ class TestTraceMetricsQuerySpans:
         assert len(result) == 1
         assert result[0].values["COUNT"] == 1.0
 
+    def test_span_cost_sum(self, tracking_store):
+        """SPANS view cost metrics from SMETRIC items."""
+        import json
+
+        exp_id = tracking_store.create_experiment("qtm-span-cost")
+        trace_id = "tr-span-cost"
+        tracking_store.start_trace(_make_trace_info(exp_id, trace_id))
+        tracking_store.log_spans(
+            exp_id,
+            [
+                _FakeSpan(
+                    trace_id,
+                    "s1",
+                    attributes={
+                        "mlflow.llm.cost": json.dumps(
+                            {"input_cost": 0.01, "output_cost": 0.02, "total_cost": 0.03}
+                        ),
+                    },
+                ),
+                _FakeSpan(
+                    trace_id,
+                    "s2",
+                    attributes={
+                        "mlflow.llm.cost": json.dumps(
+                            {"input_cost": 0.05, "output_cost": 0.10, "total_cost": 0.15}
+                        ),
+                    },
+                ),
+            ],
+        )
+        result = tracking_store.query_trace_metrics(
+            experiment_ids=[exp_id],
+            view_type=MetricViewType.SPANS,
+            metric_name="total_cost",
+            aggregations=[MetricAggregation(AggregationType.SUM)],
+        )
+        assert len(result) == 1
+        assert result[0].values["SUM"] == pytest.approx(0.18, rel=1e-2)
+
     def test_span_type_dimension(self, tracking_store):
         exp_id = tracking_store.create_experiment("qm-span-type-dim")
         tid = "tr-span-type"

@@ -2743,6 +2743,8 @@ class DynamoDBTrackingStore(AbstractStore):
 
             # --- Write trace-level metric items ---
             if has_token_usage:
+                from decimal import Decimal as _Decimal
+
                 for metric_key, metric_val in [
                     ("input_tokens", total_input_tokens),
                     ("output_tokens", total_output_tokens),
@@ -2751,7 +2753,7 @@ class DynamoDBTrackingStore(AbstractStore):
                     tmetric_item: dict[str, Any] = {
                         "PK": pk,
                         "SK": (f"{SK_TRACE_PREFIX}{trace_id}{SK_TRACE_METRIC_PREFIX}{metric_key}"),
-                        "value": metric_val,
+                        "value": _Decimal(str(metric_val)),
                         "key": metric_key,
                     }
                     if ttl is not None:
@@ -4857,6 +4859,10 @@ class DynamoDBTrackingStore(AbstractStore):
                     sk_lte=f"{end_time_ms:020d}",
                 )
             else:
+                # NOTE: Without time range, this fetches all T# items (including sub-items).
+                # The "request_time" in item filter discards non-META items in Python.
+                # This is known technical debt — a dedicated META-only
+                # index would be more efficient.
                 meta_candidates = self._table.query(pk=pk, sk_prefix=SK_TRACE_PREFIX)
 
             # Filter to META items only (have "request_time" attribute)
@@ -4865,10 +4871,23 @@ class DynamoDBTrackingStore(AbstractStore):
             for meta_item in meta_items:
                 trace_id = meta_item["SK"][len(SK_TRACE_PREFIX) :]
 
-                # Fetch trace tags and metadata for filtering
-                tag_items = self._table.query(pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#TAG#")
-                metadata_items = self._table.query(
-                    pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#"
+                # Only query tags if needed for filters or trace_name dimension
+                needs_tags = False
+                if filters:
+                    needs_tags = any("tag" in f for f in filters)
+                if dimensions and "trace_name" in dimensions:
+                    needs_tags = True
+                needs_metadata = bool(filters and any("metadata" in f for f in filters))
+
+                tag_items = (
+                    self._table.query(pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#TAG#")
+                    if needs_tags
+                    else []
+                )
+                metadata_items = (
+                    self._table.query(pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#")
+                    if needs_metadata
+                    else []
                 )
 
                 # Apply trace-level filters
@@ -5034,10 +5053,19 @@ class DynamoDBTrackingStore(AbstractStore):
             start_time_ms,
             end_time_ms,
         )
-        if len(all_data_points) > max_results:
-            cache_put(self._table, query_hash, all_data_points)
-            page = all_data_points[:max_results]
-            next_token = encode_page_token(query_hash, max_results)
-            return PagedList(page, next_token)  # type: ignore[arg-type]
+        offset = 0
+        if page_token:
+            from mlflow_dynamodbstore.trace_metrics.pagination import decode_page_token as _decode
 
-        return PagedList(all_data_points, None)  # type: ignore[arg-type]
+            token_data = _decode(page_token)
+            offset = token_data.get("offset", 0)
+
+        cache_put(self._table, query_hash, all_data_points)
+        page = all_data_points[offset : offset + max_results]
+        next_offset = offset + max_results
+        next_token = (
+            encode_page_token(query_hash, next_offset)
+            if next_offset < len(all_data_points)
+            else None
+        )
+        return PagedList(page, next_token)  # type: ignore[arg-type]

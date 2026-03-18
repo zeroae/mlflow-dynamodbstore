@@ -117,6 +117,7 @@ def meta_prefilter_spans(meta_item: dict[str, Any], filters: list[str] | None) -
         if not meta_field:
             continue
         values = meta_item.get(meta_field)
-        if not values or sf["value"] not in values:
+        if values is not None and sf["value"] not in values:
             return False
+        # If values is None (sets not yet populated), fall through to per-span filtering
     return True
