@@ -480,6 +480,249 @@ class TestTraceMetricsMultiExperiment:
 
 
 @mock_aws
+class TestTraceMetricsTraceName:
+    """Tests for TRACES view with trace_name dimension (line 4968)."""
+
+    def test_trace_name_dimension(self, tracking_store):
+        """Query with trace_name dimension triggers needs_tags=True (line 4968)."""
+        exp_id = tracking_store.create_experiment("qm-trace-name")
+
+        for i, tname in enumerate(["alpha", "beta"]):
+            tid = f"tr-name-{i}"
+            tracking_store.start_trace(_make_trace_info(exp_id, tid))
+            tracking_store.log_spans(exp_id, [_FakeSpan(tid, f"s{i}")])
+            tracking_store.set_trace_tag(tid, "mlflow.traceName", tname)
+
+        result = tracking_store.query_trace_metrics(
+            experiment_ids=[exp_id],
+            view_type=MetricViewType.TRACES,
+            metric_name=TraceMetricKey.TRACE_COUNT,
+            aggregations=[_count_agg()],
+            dimensions=["trace_name"],
+        )
+        assert len(result) == 2
+        by_name = {dp.dimensions["trace_name"]: dp for dp in result}
+        assert by_name["alpha"].values["COUNT"] == 1.0
+        assert by_name["beta"].values["COUNT"] == 1.0
+
+
+@mock_aws
+class TestTraceMetricsTokenNone:
+    """Tests for TRACES view returning None for missing token metrics (line 5007)."""
+
+    def test_input_tokens_without_token_usage_returns_empty(self, tracking_store):
+        """Traces without token usage data should yield no data points for input_tokens."""
+        exp_id = tracking_store.create_experiment("qm-no-tokens")
+        for i in range(2):
+            tid = f"tr-notok-{i}"
+            tracking_store.start_trace(_make_trace_info(exp_id, tid))
+            # Log spans without any token usage attributes
+            tracking_store.log_spans(exp_id, [_FakeSpan(tid, f"s{i}")])
+
+        result = tracking_store.query_trace_metrics(
+            experiment_ids=[exp_id],
+            view_type=MetricViewType.TRACES,
+            metric_name="input_tokens",
+            aggregations=[_sum_agg()],
+        )
+        # No traces have token data => value is None => all skipped => empty result
+        assert len(result) == 0
+
+
+@mock_aws
+class TestTraceMetricsSpansTimeBucket:
+    """Tests for SPANS view with time bucketing (lines 5049-5050, 5073-5074)."""
+
+    def test_spans_time_bucketing(self, tracking_store):
+        """SPANS view with time_interval_seconds triggers time bucket path."""
+        exp_id = tracking_store.create_experiment("qm-spans-timebucket")
+        base_time_ms = 1700000000000
+        base_time_ns = base_time_ms * 1_000_000
+        tid = "tr-spans-tbucket"
+
+        tracking_store.start_trace(_make_trace_info(exp_id, tid, request_time=base_time_ms))
+        # Two spans in the same 1-hour bucket but different start times
+        tracking_store.log_spans(
+            exp_id,
+            [
+                _FakeSpan(
+                    tid,
+                    "s1",
+                    start_time_ns=base_time_ns,
+                    end_time_ns=base_time_ns + 100_000_000,
+                ),
+                _FakeSpan(
+                    tid,
+                    "s2",
+                    start_time_ns=base_time_ns + 60_000_000_000,  # +60s
+                    end_time_ns=base_time_ns + 160_000_000_000,
+                ),
+            ],
+        )
+
+        result = tracking_store.query_trace_metrics(
+            experiment_ids=[exp_id],
+            view_type=MetricViewType.SPANS,
+            metric_name=SpanMetricKey.SPAN_COUNT,
+            aggregations=[_count_agg()],
+            time_interval_seconds=3600,
+            start_time_ms=base_time_ms,
+            end_time_ms=base_time_ms + 3_600_000,
+        )
+        assert len(result) >= 1
+        # All spans in the same bucket
+        assert result[0].values["COUNT"] == 2.0
+        assert "time_bucket" in result[0].dimensions
+
+
+@mock_aws
+class TestTraceMetricsAssessmentsTimeBucket:
+    """Tests for ASSESSMENTS view with time bucketing (lines 5093-5094, 5111-5112, 5114-5115)."""
+
+    def test_assessments_time_bucketing(self, tracking_store):
+        """ASSESSMENTS view with time_interval_seconds triggers time bucket path."""
+        exp_id = tracking_store.create_experiment("qm-assess-timebucket")
+        base_time_ms = 1700000000000
+        tid = "tr-assess-tbucket"
+
+        tracking_store.start_trace(_make_trace_info(exp_id, tid, request_time=base_time_ms))
+        tracking_store.log_spans(exp_id, [_FakeSpan(tid, "s1")])
+
+        tracking_store.create_assessment(
+            Feedback(
+                name="quality",
+                source=AssessmentSource(source_type="HUMAN", source_id="u1"),
+                trace_id=tid,
+                value="good",
+            )
+        )
+
+        result = tracking_store.query_trace_metrics(
+            experiment_ids=[exp_id],
+            view_type=MetricViewType.ASSESSMENTS,
+            metric_name=AssessmentMetricKey.ASSESSMENT_COUNT,
+            aggregations=[_count_agg()],
+            time_interval_seconds=3600,
+            start_time_ms=base_time_ms - 3_600_000,
+            end_time_ms=base_time_ms + 3_600_000 * 24,
+        )
+        assert len(result) >= 1
+        assert result[0].values["COUNT"] >= 1.0
+        assert "time_bucket" in result[0].dimensions
+
+
+@mock_aws
+class TestTraceMetricsAssessmentNameDimension:
+    """Tests for ASSESSMENTS view with assessment_name dimension (line 5104)."""
+
+    def test_assessment_name_dimension(self, tracking_store):
+        """Query ASSESSMENTS with assessment_name dimension groups by name."""
+        exp_id = tracking_store.create_experiment("qm-assess-name-dim")
+        tid = "tr-assess-namedim"
+
+        tracking_store.start_trace(_make_trace_info(exp_id, tid))
+        tracking_store.log_spans(exp_id, [_FakeSpan(tid, "s1")])
+
+        for name in ["accuracy", "fluency", "accuracy"]:
+            tracking_store.create_assessment(
+                Feedback(
+                    name=name,
+                    source=AssessmentSource(source_type="HUMAN", source_id="u1"),
+                    trace_id=tid,
+                    value="yes",
+                )
+            )
+
+        result = tracking_store.query_trace_metrics(
+            experiment_ids=[exp_id],
+            view_type=MetricViewType.ASSESSMENTS,
+            metric_name=AssessmentMetricKey.ASSESSMENT_COUNT,
+            aggregations=[_count_agg()],
+            dimensions=["assessment_name"],
+        )
+        assert len(result) == 2
+        by_name = {dp.dimensions["assessment_name"]: dp for dp in result}
+        assert by_name["accuracy"].values["COUNT"] == 2.0
+        assert by_name["fluency"].values["COUNT"] == 1.0
+
+
+@mock_aws
+class TestTraceMetricsCacheHitPagination:
+    """Tests for cache-hit pagination (line 4929)."""
+
+    def test_cache_hit_pagination_generates_next_token(self, tracking_store):
+        """When cached results span multiple pages, next_token is generated (line 4929)."""
+        exp_id = tracking_store.create_experiment("qm-cache-hit-pag")
+        base_time_ms = 1700000000000
+        # Create traces in 4 different 1-hour buckets to get 4 data points
+        for i in range(4):
+            tid = f"tr-cachehit-{i}"
+            t = base_time_ms + i * 3_600_000
+            tracking_store.start_trace(_make_trace_info(exp_id, tid, request_time=t))
+            tracking_store.log_spans(exp_id, [_FakeSpan(tid, f"s{i}")])
+
+        # First query: max_results=1 with 4 buckets => 4 data points, only 1 returned
+        result1 = tracking_store.query_trace_metrics(
+            experiment_ids=[exp_id],
+            view_type=MetricViewType.TRACES,
+            metric_name=TraceMetricKey.TRACE_COUNT,
+            aggregations=[_count_agg()],
+            time_interval_seconds=3600,
+            start_time_ms=base_time_ms,
+            end_time_ms=base_time_ms + 4 * 3_600_000,
+            max_results=1,
+        )
+        assert len(result1) == 1
+        assert result1.token is not None
+
+        # Second query with page_token => hits cache (line 4929 path when >1 page remains)
+        result2 = tracking_store.query_trace_metrics(
+            experiment_ids=[exp_id],
+            view_type=MetricViewType.TRACES,
+            metric_name=TraceMetricKey.TRACE_COUNT,
+            aggregations=[_count_agg()],
+            time_interval_seconds=3600,
+            start_time_ms=base_time_ms,
+            end_time_ms=base_time_ms + 4 * 3_600_000,
+            max_results=1,
+            page_token=result1.token,
+        )
+        assert len(result2) == 1
+        # More pages remain => next token should be set (exercises line 4929)
+        assert result2.token is not None
+
+
+@mock_aws
+class TestTraceMetricsCacheMissPagination:
+    """Tests for cache-miss pagination (lines 5147-5150)."""
+
+    def test_cache_miss_uses_offset_from_token(self, tracking_store):
+        """Fabricated page_token with non-zero offset that misses cache uses offset (5147-5150)."""
+
+        from mlflow_dynamodbstore.trace_metrics.pagination import encode_page_token
+
+        exp_id = tracking_store.create_experiment("qm-cache-miss-pag")
+        for i in range(3):
+            tid = f"tr-cachemiss-{i}"
+            tracking_store.start_trace(_make_trace_info(exp_id, tid))
+            tracking_store.log_spans(exp_id, [_FakeSpan(tid, f"s{i}")])
+
+        # Build a fabricated page_token pointing to an unknown (expired) query_hash
+        fake_token = encode_page_token("deadbeefdeadbeef", 1)
+
+        # When cache misses, the store re-runs the full query then applies the offset
+        result = tracking_store.query_trace_metrics(
+            experiment_ids=[exp_id],
+            view_type=MetricViewType.TRACES,
+            metric_name=TraceMetricKey.TRACE_COUNT,
+            aggregations=[_count_agg()],
+            page_token=fake_token,
+        )
+        # offset=1 on 1-element result means empty page (all 3 traces => 1 data point, skip 1)
+        assert len(result) == 0
+
+
+@mock_aws
 class TestTraceMetricsValidation:
     """Tests for parameter validation."""
 
