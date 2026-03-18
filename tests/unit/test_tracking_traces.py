@@ -2204,3 +2204,30 @@ class TestCalculateTraceFilterCorrelation:
             base_filter="tag.env = 'prod'",
         )
         assert result.total_count == 2  # only prod traces
+
+
+class TestLogSpansAsync:
+    """Tests for log_spans_async."""
+
+    @staticmethod
+    def _make_mock_span(trace_id, name="root"):
+        span = MagicMock()
+        span.trace_id = trace_id
+        span.to_dict.return_value = {"name": name, "trace_id": trace_id, "span_id": "s1"}
+        return span
+
+    def test_async_delegates_to_sync(self, tracking_store):
+        import asyncio
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-async-1")
+        tracking_store.start_trace(trace_info)
+
+        span = self._make_mock_span("tr-async-1")
+        result = asyncio.run(tracking_store.log_spans_async(exp_id, [span]))
+        assert len(result) == 1
+
+        # Verify SPANS item was written
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        cached = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-async-1#SPANS")
+        assert cached is not None

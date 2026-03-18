@@ -2057,6 +2057,38 @@ class DynamoDBTrackingStore(AbstractStore):
         ]
         return PagedList(metrics, token=None)
 
+    def get_metric_history_bulk_interval_from_steps(
+        self, run_id: str, metric_key: str, steps: list[int], max_results: int
+    ) -> list[Any]:
+        """Return metric history for specific steps, optimized for DynamoDB."""
+        from mlflow.entities.metric import MetricWithRunId
+
+        if not steps:
+            return []
+
+        experiment_id = self._resolve_run_experiment(run_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        prefix = f"{SK_RUN_PREFIX}{run_id}{SK_METRIC_HISTORY_PREFIX}{metric_key}#"
+
+        steps_set = set(steps)
+        items = self._table.query(pk=pk, sk_prefix=prefix)
+
+        metrics = sorted(
+            [
+                Metric(
+                    key=item["key"],
+                    value=float(item["value"]),
+                    timestamp=int(item.get("timestamp", 0)),
+                    step=int(item.get("step", 0)),
+                )
+                for item in items
+                if int(item.get("step", 0)) in steps_set
+            ],
+            key=lambda m: (m.step, m.timestamp),
+        )[:max_results]
+
+        return [MetricWithRunId(run_id=run_id, metric=m) for m in metrics]
+
     def set_tag(self, run_id: str, tag: RunTag) -> None:
         """Set a tag on a run."""
         experiment_id = self._resolve_run_experiment(run_id)
@@ -2577,6 +2609,10 @@ class DynamoDBTrackingStore(AbstractStore):
             self._table.put_item(spans_item)
 
         return spans
+
+    async def log_spans_async(self, location: str, spans: list[Any]) -> list[Any]:
+        """Async version of log_spans — delegates to synchronous implementation."""
+        return self.log_spans(location, spans)
 
     def search_traces(
         self,

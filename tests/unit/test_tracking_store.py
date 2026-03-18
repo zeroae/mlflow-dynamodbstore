@@ -544,3 +544,139 @@ class TestLogOutputs:
             run_name="r3",
         )
         tracking_store.log_outputs(run.info.run_id, [])
+
+
+class TestGetMetricHistoryBulkIntervalFromSteps:
+    """Tests for get_metric_history_bulk_interval_from_steps."""
+
+    def _log_metric_history(self, tracking_store, run_id, key, steps):
+        """Helper: log metrics at specific steps."""
+        from mlflow.entities import Metric
+
+        metrics = [Metric(key=key, value=float(s) * 0.1, timestamp=1000 + s, step=s) for s in steps]
+        tracking_store.log_batch(run_id, metrics=metrics, params=[], tags=[])
+
+    def test_returns_only_requested_steps(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-mhbi", artifact_location="s3://b")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1000,
+            tags=[],
+            run_name="r1",
+        )
+        run_id = run.info.run_id
+        self._log_metric_history(tracking_store, run_id, "loss", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+
+        result = tracking_store.get_metric_history_bulk_interval_from_steps(
+            run_id=run_id,
+            metric_key="loss",
+            steps=[3, 7],
+            max_results=100,
+        )
+        steps_returned = [m.step for m in result]
+        assert steps_returned == [3, 7]
+
+    def test_missing_steps_silently_skipped(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-mhbi-skip", artifact_location="s3://b")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1000,
+            tags=[],
+            run_name="r2",
+        )
+        run_id = run.info.run_id
+        self._log_metric_history(tracking_store, run_id, "acc", [1, 3, 5])
+
+        result = tracking_store.get_metric_history_bulk_interval_from_steps(
+            run_id=run_id,
+            metric_key="acc",
+            steps=[1, 2, 3, 4, 5],
+            max_results=100,
+        )
+        steps_returned = [m.step for m in result]
+        assert steps_returned == [1, 3, 5]
+
+    def test_sorted_by_step_timestamp(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-mhbi-sort", artifact_location="s3://b")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1000,
+            tags=[],
+            run_name="r3",
+        )
+        run_id = run.info.run_id
+        self._log_metric_history(tracking_store, run_id, "lr", [5, 1, 3])
+
+        result = tracking_store.get_metric_history_bulk_interval_from_steps(
+            run_id=run_id,
+            metric_key="lr",
+            steps=[5, 1, 3],
+            max_results=100,
+        )
+        steps_returned = [m.step for m in result]
+        assert steps_returned == [1, 3, 5]
+
+    def test_max_results_limits_output(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-mhbi-max", artifact_location="s3://b")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1000,
+            tags=[],
+            run_name="r4",
+        )
+        run_id = run.info.run_id
+        self._log_metric_history(tracking_store, run_id, "loss", list(range(1, 21)))
+
+        result = tracking_store.get_metric_history_bulk_interval_from_steps(
+            run_id=run_id,
+            metric_key="loss",
+            steps=list(range(1, 21)),
+            max_results=5,
+        )
+        assert len(result) == 5
+
+    def test_empty_steps_returns_empty(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-mhbi-empty", artifact_location="s3://b")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1000,
+            tags=[],
+            run_name="r5",
+        )
+        run_id = run.info.run_id
+
+        result = tracking_store.get_metric_history_bulk_interval_from_steps(
+            run_id=run_id,
+            metric_key="loss",
+            steps=[],
+            max_results=100,
+        )
+        assert result == []
+
+    def test_returns_metric_with_run_id(self, tracking_store):
+        """Verify return type is list[MetricWithRunId] with run_id attribute."""
+        exp_id = tracking_store.create_experiment("test-mhbi-type", artifact_location="s3://b")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1000,
+            tags=[],
+            run_name="r6",
+        )
+        run_id = run.info.run_id
+        self._log_metric_history(tracking_store, run_id, "val", [1])
+
+        result = tracking_store.get_metric_history_bulk_interval_from_steps(
+            run_id=run_id,
+            metric_key="val",
+            steps=[1],
+            max_results=100,
+        )
+        assert len(result) == 1
+        assert result[0].run_id == run_id
+        assert result[0].key == "val"
