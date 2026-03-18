@@ -144,3 +144,16 @@ SK_SESSION_PREFIX = "SESS#"
 
 # GSI prefixes for sessions
 GSI2_SESSIONS_PREFIX = "SESSIONS#"
+
+# Individual span items (within trace partition)
+SK_SPAN_PREFIX = "#SPAN#"
+
+# Trace-level metric items (token usage)
+SK_TRACE_METRIC_PREFIX = "#TMETRIC#"
+
+# Span-level metric items (costs)
+SK_SPAN_METRIC_PREFIX = "#SMETRIC#"
+
+# Query trace metrics cache
+PK_TMCACHE_PREFIX = "TMCACHE#"
+SK_TMCACHE_RESULT = "RESULT"
