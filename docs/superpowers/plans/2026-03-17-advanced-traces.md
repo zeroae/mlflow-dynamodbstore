@@ -17,7 +17,7 @@
 **Files:**
 - Modify: `src/mlflow_dynamodbstore/dynamodb/schema.py:129-138`
 
-- [ ] **Step 1: Add session tracking constants**
+- [x] **Step 1: Add session tracking constants**
 
 Add after the `GSI3_SCOR_NAME_PREFIX` line (line 137) in `schema.py`:
 
@@ -31,7 +31,7 @@ SK_SESSION_PREFIX = "SESS#"
 GSI2_SESSIONS_PREFIX = "SESSIONS#"
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/dynamodb/schema.py
@@ -48,7 +48,7 @@ git commit -m "feat(schema): add session tracking constants for Phase 3"
 
 **Context:** After existing trace creation logic in `start_trace`, check for `mlflow.traceSession` in `trace_info.trace_metadata`. If present, upsert a Session Tracker item at `SK=SESS#<session_id>` using raw boto3 `update_item` (same pattern as `_denormalize_tag` at line 1748). The combined `ADD trace_count :1` + `SET if_not_exists(...)` expression requires direct `self._table._table.update_item(...)`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add a new test class `TestStartTraceSessionTracker` at the end of `tests/unit/test_tracking_traces.py`:
 
@@ -155,12 +155,12 @@ class TestStartTraceSessionTracker:
         assert "ttl" in item
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestStartTraceSessionTracker -v`
 Expected: FAIL — no `SESS#` items are written yet.
 
-- [ ] **Step 3: Implement session tracker upsert in `start_trace`**
+- [x] **Step 3: Implement session tracker upsert in `start_trace`**
 
 Add the following import at the top of `tracking_store.py` (in the schema imports block around line 55):
 ```python
@@ -228,12 +228,12 @@ Add a new private method `_upsert_session_tracker` near the other trace helper m
         )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestStartTraceSessionTracker -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py src/mlflow_dynamodbstore/dynamodb/schema.py tests/unit/test_tracking_traces.py
@@ -250,7 +250,7 @@ git commit -m "feat(traces): add session tracker upsert in start_trace"
 
 **Context:** Reuses `_resolve_trace_experiment` (line 2150) and `_build_trace_info` (line 2702). For each trace_id: resolve experiment_id, query all items with `SK begins_with T#<trace_id>`, extract META item, call `_build_trace_info`. If `location` is provided, skip GSI1 resolution and use it as experiment_id.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add a new test class `TestBatchGetTraceInfos`:
 
@@ -312,12 +312,12 @@ class TestBatchGetTraceInfos:
         assert result[0].trace_id == tids[0]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestBatchGetTraceInfos -v`
 Expected: FAIL — method not implemented (raises `MlflowNotImplementedException` from base class).
 
-- [ ] **Step 3: Implement `batch_get_trace_infos`**
+- [x] **Step 3: Implement `batch_get_trace_infos`**
 
 Add to `DynamoDBTrackingStore` after `link_traces_to_run` (around line 2849):
 
@@ -356,12 +356,12 @@ Add to `DynamoDBTrackingStore` after `link_traces_to_run` (around line 2849):
         return results
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestBatchGetTraceInfos -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_traces.py
@@ -378,7 +378,7 @@ git commit -m "feat(traces): implement batch_get_trace_infos"
 
 **Context:** Same as `batch_get_trace_infos` but also reads the SPANS cache item (`SK=T#<trace_id>#SPANS`). Returns `list[Trace]` with `Trace(info=trace_info, data=TraceData(spans=...))`. Uses `Span.from_dict()` for deserialization. Traces without cached spans get an empty span list (no X-Ray fallback in batch — that's `get_trace`'s job).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add a new test class `TestBatchGetTraces`:
 
@@ -460,12 +460,12 @@ class TestBatchGetTraces:
         assert len(result) == 1
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestBatchGetTraces -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement `batch_get_traces`**
+- [x] **Step 3: Implement `batch_get_traces`**
 
 Add to `DynamoDBTrackingStore` after `batch_get_trace_infos`:
 
@@ -529,12 +529,12 @@ Add to `DynamoDBTrackingStore` after `batch_get_trace_infos`:
         return results
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestBatchGetTraces -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_traces.py
@@ -551,7 +551,7 @@ git commit -m "feat(traces): implement batch_get_traces"
 
 **Context:** Queries GSI2 with `PK=SESSIONS#<workspace>#<experiment_id>`, SK between `min_ts` and `max_ts`. Returns `list[CompletedSession]`. Session tracker items are created by the `start_trace` upsert from Task 2. If `filter_string` is provided, post-filter sessions by checking if any trace in the session matches the filter.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add a new test class `TestFindCompletedSessions`:
 
@@ -682,12 +682,12 @@ class TestFindCompletedSessions:
         assert session.last_trace_timestamp_ms == 3000
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestFindCompletedSessions -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement `find_completed_sessions`**
+- [x] **Step 3: Implement `find_completed_sessions`**
 
 Add the import at the top of `tracking_store.py` (TYPE_CHECKING block):
 ```python
@@ -769,12 +769,12 @@ Add method to `DynamoDBTrackingStore`:
         return results
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestFindCompletedSessions -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_traces.py
@@ -791,7 +791,7 @@ git commit -m "feat(traces): implement find_completed_sessions"
 
 **Context:** Resolve trace_id → experiment_id, serialize `prompt_versions` to JSON `[{"name": ..., "version": ...}, ...]`, write as trace tag `mlflow.promptVersions` using existing `_write_trace_tag`. The `PromptVersion` entity has `name` and `version` fields.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add a new test class `TestLinkPromptsToTrace`:
 
@@ -859,12 +859,12 @@ class TestLinkPromptsToTrace:
             tracking_store.link_prompts_to_trace("nonexistent-trace", [pv])
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestLinkPromptsToTrace -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement `link_prompts_to_trace`**
+- [x] **Step 3: Implement `link_prompts_to_trace`**
 
 Add to `DynamoDBTrackingStore`:
 
@@ -895,12 +895,12 @@ Add to `DynamoDBTrackingStore`:
         )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestLinkPromptsToTrace -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_traces.py
@@ -917,7 +917,7 @@ git commit -m "feat(traces): implement link_prompts_to_trace"
 
 **Context:** The inverse of `link_traces_to_run` (line 2832). That method writes `RMETA#mlflow.sourceRun` items. This method deletes them. Uses `TraceMetadataKey.SOURCE_RUN` for the key. Resolve each trace_id via GSI1, then delete the RMETA item. Silent on missing items (idempotent).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add a new test class `TestUnlinkTracesFromRun`:
 
@@ -964,12 +964,12 @@ class TestUnlinkTracesFromRun:
         tracking_store.unlink_traces_from_run(["tr-never-linked"], "run-789")
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestUnlinkTracesFromRun -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement `unlink_traces_from_run`**
+- [x] **Step 3: Implement `unlink_traces_from_run`**
 
 Add to `DynamoDBTrackingStore`:
 
@@ -986,12 +986,12 @@ Add to `DynamoDBTrackingStore`:
             self._table.delete_item(pk=pk, sk=sk)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestUnlinkTracesFromRun -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_traces.py
@@ -1008,7 +1008,7 @@ git commit -m "feat(traces): implement unlink_traces_from_run"
 
 **Context:** Groups spans by trace_id. For each trace_id: resolve experiment_id (from `location` if provided), serialize spans to JSON, write SPANS cache item at `SK=T#<trace_id>#SPANS`. Same SPANS item structure as `get_trace` (line 2390): `{"PK": pk, "SK": spans_sk, "data": json.dumps(span_dicts)}`. Uses `Span.to_dict()` for serialization and `Span.from_dict()` for deserialization.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add a new test class `TestLogSpans`:
 
@@ -1083,12 +1083,12 @@ class TestLogSpans:
             assert cached is not None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestLogSpans -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement `log_spans`**
+- [x] **Step 3: Implement `log_spans`**
 
 Add to `DynamoDBTrackingStore`:
 
@@ -1136,12 +1136,12 @@ Add to `DynamoDBTrackingStore`:
         return spans
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestLogSpans -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_traces.py
@@ -1171,7 +1171,7 @@ Edge cases per spec:
 - `filter1_count = 0` or `filter2_count = 0` → NPMI = 0.0
 - All traces match both → NPMI = 1.0
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add a new test class `TestCalculateTraceFilterCorrelation`:
 
@@ -1296,12 +1296,12 @@ class TestCalculateTraceFilterCorrelation:
         assert result.total_count == 2  # only prod traces
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestCalculateTraceFilterCorrelation -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement `calculate_trace_filter_correlation`**
+- [x] **Step 3: Implement `calculate_trace_filter_correlation`**
 
 Add to `DynamoDBTrackingStore`:
 
@@ -1403,12 +1403,12 @@ Add to `DynamoDBTrackingStore`:
         )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestCalculateTraceFilterCorrelation -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_traces.py
@@ -1423,7 +1423,7 @@ git commit -m "feat(traces): implement calculate_trace_filter_correlation"
 - Modify: `tests/integration/test_traces.py`
 - Modify: `tests/e2e/test_traces.py`
 
-- [ ] **Step 1: Add integration tests for batch operations**
+- [x] **Step 1: Add integration tests for batch operations**
 
 Add to `tests/integration/test_traces.py`:
 
@@ -1445,12 +1445,12 @@ class TestBatchTraceOperations:
         assert {t.trace_id for t in result} == set(trace_ids)
 ```
 
-- [ ] **Step 2: Run integration tests**
+- [x] **Step 2: Run integration tests**
 
 Run: `uv run pytest tests/integration/test_traces.py::TestBatchTraceOperations -v`
 Expected: PASS
 
-- [ ] **Step 3: Add e2e test for batch_get_traces**
+- [x] **Step 3: Add e2e test for batch_get_traces**
 
 Add to `tests/e2e/test_traces.py`:
 
@@ -1479,12 +1479,12 @@ class TestBatchGetTracesE2E:
             assert batch_result is not None
 ```
 
-- [ ] **Step 4: Run e2e tests**
+- [x] **Step 4: Run e2e tests**
 
 Run: `uv run pytest tests/e2e/test_traces.py::TestBatchGetTracesE2E -v --timeout=60`
 Expected: PASS (if e2e environment is available)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/integration/test_traces.py tests/e2e/test_traces.py
@@ -1495,7 +1495,7 @@ git commit -m "test(traces): add integration and e2e tests for Phase 3 methods"
 
 ### Task 11: Coverage Verification & Cleanup
 
-- [ ] **Step 1: Run full test suite with coverage**
+- [x] **Step 1: Run full test suite with coverage**
 
 ```bash
 uv run pytest tests/unit/test_tracking_traces.py -v --cov=mlflow_dynamodbstore --cov-report=term-missing
@@ -1503,7 +1503,7 @@ uv run pytest tests/unit/test_tracking_traces.py -v --cov=mlflow_dynamodbstore -
 
 Verify: 100% patch coverage on all new methods.
 
-- [ ] **Step 2: Run all unit tests to check for regressions**
+- [x] **Step 2: Run all unit tests to check for regressions**
 
 ```bash
 uv run pytest tests/unit/ -v
@@ -1511,7 +1511,7 @@ uv run pytest tests/unit/ -v
 
 Expected: All tests pass.
 
-- [ ] **Step 3: Run linting/type checks**
+- [x] **Step 3: Run linting/type checks**
 
 ```bash
 uv run ruff check src/mlflow_dynamodbstore/tracking_store.py src/mlflow_dynamodbstore/dynamodb/schema.py
@@ -1519,7 +1519,7 @@ uv run ruff check src/mlflow_dynamodbstore/tracking_store.py src/mlflow_dynamodb
 
 Expected: No errors.
 
-- [ ] **Step 4: Final commit if any cleanup needed**
+- [x] **Step 4: Final commit if any cleanup needed**
 
 ```bash
 git add -A
