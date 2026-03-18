@@ -1478,3 +1478,729 @@ class TestHybridSearchTraces:
             filter_string="span.type = 'LLM'",
         )
         assert len(results) == 0
+
+
+class TestStartTraceSessionTracker:
+    """Tests for session tracker upsert in start_trace."""
+
+    def test_trace_with_session_creates_session_tracker(self, tracking_store):
+        """start_trace with mlflow.traceSession metadata creates a SESS# item."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_id="tr-sess-1",
+            request_time=1000,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "mlflow.traceSession": "session-abc",
+            },
+        )
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-abc")
+        assert item is not None
+        assert item["session_id"] == "session-abc"
+        assert int(item["trace_count"]) == 1
+        assert int(item["first_trace_timestamp_ms"]) == 1000
+        assert int(item["last_trace_timestamp_ms"]) == 1000
+
+    def test_trace_without_session_no_session_tracker(self, tracking_store):
+        """start_trace without mlflow.traceSession does NOT create a SESS# item."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-no-sess")
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#any")
+        assert item is None
+
+    def test_multiple_traces_same_session_increments(self, tracking_store):
+        """Multiple traces in same session increment trace_count and update timestamps."""
+        exp_id = _create_experiment(tracking_store)
+        for i, (tid, ts) in enumerate(
+            [
+                ("tr-s1", 1000),
+                ("tr-s2", 2000),
+                ("tr-s3", 3000),
+            ]
+        ):
+            trace_info = _make_trace_info(
+                exp_id,
+                trace_id=tid,
+                request_time=ts,
+                trace_metadata={
+                    TraceTagKey.TRACE_NAME: "my-trace",
+                    "mlflow.traceSession": "session-xyz",
+                },
+            )
+            tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-xyz")
+        assert item is not None
+        assert int(item["trace_count"]) == 3
+        assert int(item["first_trace_timestamp_ms"]) == 1000
+        assert int(item["last_trace_timestamp_ms"]) == 3000
+
+    def test_session_tracker_has_gsi2_attributes(self, tracking_store):
+        """Session tracker item has GSI2 PK/SK for find_completed_sessions queries."""
+        from mlflow_dynamodbstore.dynamodb.schema import GSI2_PK, GSI2_SK
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_id="tr-gsi2",
+            request_time=5000,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "mlflow.traceSession": "session-gsi2",
+            },
+        )
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-gsi2")
+        assert item[GSI2_PK] == f"SESSIONS#default#{exp_id}"
+        # GSI2 SK is zero-padded string for correct lexicographic ordering
+        assert item[GSI2_SK] == f"{5000:020d}"
+
+    def test_multiple_traces_updates_gsi2_sk_to_last_timestamp(self, tracking_store):
+        """GSI2 SK reflects last_trace_timestamp_ms after multiple traces."""
+        from mlflow_dynamodbstore.dynamodb.schema import GSI2_SK
+
+        exp_id = _create_experiment(tracking_store)
+        for tid, ts in [("tr-g1", 1000), ("tr-g2", 2000), ("tr-g3", 3000)]:
+            trace_info = _make_trace_info(
+                exp_id,
+                trace_id=tid,
+                request_time=ts,
+                trace_metadata={
+                    TraceTagKey.TRACE_NAME: "my-trace",
+                    "mlflow.traceSession": "session-gsi2-multi",
+                },
+            )
+            tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-gsi2-multi")
+        assert item[GSI2_SK] == f"{3000:020d}"
+
+    def test_session_tracker_has_ttl(self, tracking_store):
+        """Session tracker item inherits trace TTL."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_id="tr-ttl",
+            request_time=1000,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "mlflow.traceSession": "session-ttl",
+            },
+        )
+        tracking_store.start_trace(trace_info)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        item = tracking_store._table.get_item(pk=pk, sk="SESS#session-ttl")
+        assert "ttl" in item
+
+
+class TestBatchGetTraceInfos:
+    """Tests for batch_get_trace_infos."""
+
+    def _create_traces(self, tracking_store, exp_id, count=3):
+        """Helper: create multiple traces, return their IDs."""
+        trace_ids = []
+        for i in range(count):
+            tid = f"tr-batch-info-{i}"
+            trace_info = _make_trace_info(
+                exp_id,
+                trace_id=tid,
+                request_time=1000 + i * 100,
+            )
+            tracking_store.start_trace(trace_info)
+            trace_ids.append(tid)
+        return trace_ids
+
+    def test_batch_get_single_trace(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tids = self._create_traces(tracking_store, exp_id, count=1)
+        result = tracking_store.batch_get_trace_infos(tids)
+        assert len(result) == 1
+        assert result[0].trace_id == tids[0]
+
+    def test_batch_get_multiple_traces(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tids = self._create_traces(tracking_store, exp_id, count=3)
+        result = tracking_store.batch_get_trace_infos(tids)
+        assert len(result) == 3
+        returned_ids = {t.trace_id for t in result}
+        assert returned_ids == set(tids)
+
+    def test_nonexistent_trace_excluded(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tids = self._create_traces(tracking_store, exp_id, count=1)
+        result = tracking_store.batch_get_trace_infos(tids + ["nonexistent-trace"])
+        assert len(result) == 1
+        assert result[0].trace_id == tids[0]
+
+    def test_empty_list_returns_empty(self, tracking_store):
+        result = tracking_store.batch_get_trace_infos([])
+        assert result == []
+
+    def test_duplicate_ids_deduplicated(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tids = self._create_traces(tracking_store, exp_id, count=1)
+        result = tracking_store.batch_get_trace_infos([tids[0], tids[0]])
+        assert len(result) == 1
+
+    def test_with_location_skips_resolution(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        tids = self._create_traces(tracking_store, exp_id, count=1)
+        result = tracking_store.batch_get_trace_infos(tids, location=exp_id)
+        assert len(result) == 1
+        assert result[0].trace_id == tids[0]
+
+
+class TestBatchGetTraces:
+    """Tests for batch_get_traces."""
+
+    def _create_trace_with_spans(self, tracking_store, exp_id, trace_id, request_time=1000):
+        """Helper: create a trace and write a SPANS cache item in X-Ray converter format."""
+        import json as _json
+
+        from mlflow_dynamodbstore.xray.span_converter import span_dicts_to_mlflow_spans
+
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_id=trace_id,
+            request_time=request_time,
+        )
+        tracking_store.start_trace(trace_info)
+
+        # Use X-Ray converter format (same as get_trace caches)
+        span_dicts = [
+            {
+                "name": "root",
+                "span_type": "CHAIN",
+                "trace_id": trace_id,
+                "span_id": "span-1",
+                "parent_span_id": None,
+                "start_time_ns": 0,
+                "end_time_ns": 1000,
+                "status": "OK",
+                "attributes": {},
+                "events": [],
+            }
+        ]
+        # Verify the format is valid for deserialization
+        assert len(span_dicts_to_mlflow_spans(span_dicts, trace_id)) == 1
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        spans_item = {
+            "PK": pk,
+            "SK": f"{SK_TRACE_PREFIX}{trace_id}#SPANS",
+            "data": _json.dumps(span_dicts),
+        }
+        tracking_store._table.put_item(spans_item)
+
+    def test_batch_get_single_trace_with_spans(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_with_spans(tracking_store, exp_id, "tr-spans-1")
+        result = tracking_store.batch_get_traces(["tr-spans-1"])
+        assert len(result) == 1
+        assert result[0].info.trace_id == "tr-spans-1"
+        assert len(result[0].data.spans) > 0
+
+    def test_batch_get_trace_without_spans(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-no-spans")
+        tracking_store.start_trace(trace_info)
+        result = tracking_store.batch_get_traces(["tr-no-spans"])
+        assert len(result) == 1
+        assert result[0].info.trace_id == "tr-no-spans"
+        assert result[0].data.spans == []
+
+    def test_batch_get_multiple_traces(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        for i in range(3):
+            self._create_trace_with_spans(
+                tracking_store, exp_id, f"tr-multi-{i}", request_time=1000 + i
+            )
+        result = tracking_store.batch_get_traces([f"tr-multi-{i}" for i in range(3)])
+        assert len(result) == 3
+
+    def test_nonexistent_trace_excluded(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_with_spans(tracking_store, exp_id, "tr-exists")
+        result = tracking_store.batch_get_traces(["tr-exists", "tr-ghost"])
+        assert len(result) == 1
+
+    def test_empty_list_returns_empty(self, tracking_store):
+        result = tracking_store.batch_get_traces([])
+        assert result == []
+
+    def test_duplicate_ids_deduplicated(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_with_spans(tracking_store, exp_id, "tr-dup")
+        result = tracking_store.batch_get_traces(["tr-dup", "tr-dup"])
+        assert len(result) == 1
+
+    def test_v3_span_format_fallback(self, tracking_store):
+        """batch_get_traces handles V3-like format spans gracefully via fallback."""
+        import json as _json
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-v3")
+        tracking_store.start_trace(trace_info)
+
+        # Write V3-like SPANS item (has start_time_unix_nano key)
+        # Real V3 spans from Span.to_dict() have base64-encoded IDs,
+        # but if from_dict fails, batch_get_traces falls back to X-Ray converter
+        v3_span_dict = {
+            "name": "root",
+            "span_type": "CHAIN",
+            "trace_id": "tr-v3",
+            "span_id": "span-1",
+            "parent_span_id": None,
+            "start_time_unix_nano": 0,
+            "start_time_ns": 0,
+            "end_time_unix_nano": 1000000000,
+            "end_time_ns": 1000000000,
+            "status": "OK",
+            "attributes": {"mlflow.traceRequestId": "tr-v3"},
+            "events": [],
+        }
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        tracking_store._table.put_item(
+            {
+                "PK": pk,
+                "SK": f"{SK_TRACE_PREFIX}tr-v3#SPANS",
+                "data": _json.dumps([v3_span_dict]),
+            }
+        )
+
+        result = tracking_store.batch_get_traces(["tr-v3"])
+        assert len(result) == 1
+        # Fallback to X-Ray converter succeeds
+        assert len(result[0].data.spans) == 1
+
+    def test_with_location_parameter(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_trace_with_spans(tracking_store, exp_id, "tr-loc")
+        result = tracking_store.batch_get_traces(["tr-loc"], location=exp_id)
+        assert len(result) == 1
+
+
+class TestLinkPromptsToTrace:
+    """Tests for link_prompts_to_trace."""
+
+    def test_link_single_prompt(self, tracking_store):
+        from mlflow.entities.model_registry import PromptVersion
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-prompt-1")
+        tracking_store.start_trace(trace_info)
+
+        pv = PromptVersion(name="my-prompt", version=1, template="hello {name}")
+        tracking_store.link_prompts_to_trace("tr-prompt-1", [pv])
+
+        fetched = tracking_store.get_trace_info("tr-prompt-1")
+        assert "mlflow.promptVersions" in fetched.tags
+        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        assert len(versions) == 1
+        assert versions[0]["name"] == "my-prompt"
+        assert versions[0]["version"] == 1
+
+    def test_link_multiple_prompts(self, tracking_store):
+        from mlflow.entities.model_registry import PromptVersion
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-prompt-2")
+        tracking_store.start_trace(trace_info)
+
+        pvs = [
+            PromptVersion(name="prompt-a", version=1, template="a"),
+            PromptVersion(name="prompt-b", version=3, template="b"),
+        ]
+        tracking_store.link_prompts_to_trace("tr-prompt-2", pvs)
+
+        fetched = tracking_store.get_trace_info("tr-prompt-2")
+        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        assert len(versions) == 2
+
+    def test_overwrite_existing_prompt_links(self, tracking_store):
+        from mlflow.entities.model_registry import PromptVersion
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-prompt-3")
+        tracking_store.start_trace(trace_info)
+
+        pv1 = PromptVersion(name="old-prompt", version=1, template="old")
+        tracking_store.link_prompts_to_trace("tr-prompt-3", [pv1])
+
+        pv2 = PromptVersion(name="new-prompt", version=2, template="new")
+        tracking_store.link_prompts_to_trace("tr-prompt-3", [pv2])
+
+        fetched = tracking_store.get_trace_info("tr-prompt-3")
+        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        assert len(versions) == 1
+        assert versions[0]["name"] == "new-prompt"
+
+    def test_link_nonexistent_trace_raises(self, tracking_store):
+        from mlflow.entities.model_registry import PromptVersion
+
+        pv = PromptVersion(name="p", version=1, template="t")
+        with pytest.raises(MlflowException, match="does not exist"):
+            tracking_store.link_prompts_to_trace("nonexistent-trace", [pv])
+
+
+class TestUnlinkTracesFromRun:
+    """Tests for unlink_traces_from_run."""
+
+    def test_unlink_single_trace(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-unlink-1")
+        tracking_store.start_trace(trace_info)
+        tracking_store.link_traces_to_run(["tr-unlink-1"], "run-123")
+
+        # Verify linked
+        fetched = tracking_store.get_trace_info("tr-unlink-1")
+        assert TraceMetadataKey.SOURCE_RUN in fetched.trace_metadata
+
+        tracking_store.unlink_traces_from_run(["tr-unlink-1"], "run-123")
+
+        # Verify unlinked
+        fetched = tracking_store.get_trace_info("tr-unlink-1")
+        assert TraceMetadataKey.SOURCE_RUN not in fetched.trace_metadata
+
+    def test_unlink_multiple_traces(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        for tid in ["tr-ul-a", "tr-ul-b"]:
+            trace_info = _make_trace_info(exp_id, trace_id=tid)
+            tracking_store.start_trace(trace_info)
+        tracking_store.link_traces_to_run(["tr-ul-a", "tr-ul-b"], "run-456")
+
+        tracking_store.unlink_traces_from_run(["tr-ul-a", "tr-ul-b"], "run-456")
+
+        for tid in ["tr-ul-a", "tr-ul-b"]:
+            fetched = tracking_store.get_trace_info(tid)
+            assert TraceMetadataKey.SOURCE_RUN not in fetched.trace_metadata
+
+    def test_unlink_not_linked_trace_is_silent(self, tracking_store):
+        """Unlinking a trace that was never linked should not raise."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-never-linked")
+        tracking_store.start_trace(trace_info)
+
+        # Should not raise
+        tracking_store.unlink_traces_from_run(["tr-never-linked"], "run-789")
+
+
+class TestFindCompletedSessions:
+    """Tests for find_completed_sessions."""
+
+    def _create_session_traces(self, tracking_store, exp_id, session_id, timestamps):
+        """Helper: create traces with session metadata at given timestamps."""
+        for i, ts in enumerate(timestamps):
+            trace_info = _make_trace_info(
+                exp_id,
+                trace_id=f"tr-{session_id}-{i}",
+                request_time=ts,
+                trace_metadata={
+                    TraceTagKey.TRACE_NAME: "my-trace",
+                    "mlflow.traceSession": session_id,
+                },
+            )
+            tracking_store.start_trace(trace_info)
+
+    def test_find_sessions_in_time_window(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_session_traces(tracking_store, exp_id, "sess-a", [1000, 2000])
+        self._create_session_traces(tracking_store, exp_id, "sess-b", [3000, 4000])
+        self._create_session_traces(tracking_store, exp_id, "sess-c", [5000, 6000])
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=2000,
+            max_last_trace_timestamp_ms=4000,
+        )
+        session_ids = [s.session_id for s in result]
+        assert "sess-a" in session_ids
+        assert "sess-b" in session_ids
+        assert "sess-c" not in session_ids
+
+    def test_sessions_outside_window_excluded(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        self._create_session_traces(tracking_store, exp_id, "sess-early", [100])
+        self._create_session_traces(tracking_store, exp_id, "sess-late", [9000])
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=500,
+            max_last_trace_timestamp_ms=8000,
+        )
+        session_ids = [s.session_id for s in result]
+        assert "sess-early" not in session_ids
+        assert "sess-late" not in session_ids
+
+    def test_max_results_limits_output(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        for i in range(5):
+            self._create_session_traces(tracking_store, exp_id, f"sess-{i}", [1000 + i * 100])
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=0,
+            max_last_trace_timestamp_ms=9999,
+            max_results=2,
+        )
+        assert len(result) <= 2
+
+    def test_empty_experiment_returns_empty(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=0,
+            max_last_trace_timestamp_ms=9999,
+        )
+        assert result == []
+
+    def test_filter_string_filters_sessions(self, tracking_store):
+        """filter_string filters sessions by trace attributes."""
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(
+            exp_id,
+            trace_id="tr-filt-match",
+            request_time=1000,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "mlflow.traceSession": "sess-match",
+            },
+            tags={"env": "prod"},
+        )
+        tracking_store.start_trace(trace_info)
+        trace_info2 = _make_trace_info(
+            exp_id,
+            trace_id="tr-filt-nomatch",
+            request_time=2000,
+            trace_metadata={
+                TraceTagKey.TRACE_NAME: "my-trace",
+                "mlflow.traceSession": "sess-nomatch",
+            },
+            tags={"env": "dev"},
+        )
+        tracking_store.start_trace(trace_info2)
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=0,
+            max_last_trace_timestamp_ms=9999,
+            filter_string="tag.env = 'prod'",
+        )
+        session_ids = [s.session_id for s in result]
+        assert "sess-match" in session_ids
+        assert "sess-nomatch" not in session_ids
+
+    def test_session_attributes(self, tracking_store):
+        """Verify CompletedSession fields are populated correctly."""
+        exp_id = _create_experiment(tracking_store)
+        self._create_session_traces(tracking_store, exp_id, "sess-check", [1000, 2000, 3000])
+
+        result = tracking_store.find_completed_sessions(
+            experiment_id=exp_id,
+            min_last_trace_timestamp_ms=0,
+            max_last_trace_timestamp_ms=9999,
+        )
+        assert len(result) == 1
+        session = result[0]
+        assert session.session_id == "sess-check"
+        assert session.first_trace_timestamp_ms == 1000
+        assert session.last_trace_timestamp_ms == 3000
+
+
+class TestLogSpans:
+    """Tests for log_spans."""
+
+    @staticmethod
+    def _make_mock_span(trace_id, span_id="span-1", name="root"):
+        """Helper: build a mock Span with to_dict() support."""
+        span = MagicMock()
+        span.trace_id = trace_id
+        span.name = name
+        span.to_dict.return_value = {
+            "name": name,
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "parent_span_id": None,
+            "start_time_unix_nano": 0,
+            "end_time_unix_nano": 1000000000,
+            "status": {"code": "OK", "message": ""},
+            "attributes": {"mlflow.traceRequestId": trace_id},
+            "events": [],
+        }
+        return span
+
+    def test_log_spans_creates_spans_item(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-logspan-1")
+        tracking_store.start_trace(trace_info)
+
+        span = self._make_mock_span("tr-logspan-1")
+        result = tracking_store.log_spans(exp_id, [span])
+        assert len(result) == 1
+
+        # Verify SPANS item was written
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        cached = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-logspan-1#SPANS")
+        assert cached is not None
+        assert "data" in cached
+
+    def test_log_spans_overwrites_existing(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-logspan-2")
+        tracking_store.start_trace(trace_info)
+
+        span1 = self._make_mock_span("tr-logspan-2", name="first")
+        tracking_store.log_spans(exp_id, [span1])
+
+        span2 = self._make_mock_span("tr-logspan-2", name="second")
+        tracking_store.log_spans(exp_id, [span2])
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        cached = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-logspan-2#SPANS")
+        data = json.loads(cached["data"])
+        assert any(s["name"] == "second" for s in data)
+
+    def test_log_spans_multiple_traces(self, tracking_store):
+        """Spans for different traces in one call create separate SPANS items."""
+        exp_id = _create_experiment(tracking_store)
+        for tid in ["tr-multi-a", "tr-multi-b"]:
+            tracking_store.start_trace(_make_trace_info(exp_id, trace_id=tid))
+
+        span_a = self._make_mock_span("tr-multi-a")
+        span_b = self._make_mock_span("tr-multi-b", span_id="span-2")
+        result = tracking_store.log_spans(exp_id, [span_a, span_b])
+        assert len(result) == 2
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        for tid in ["tr-multi-a", "tr-multi-b"]:
+            cached = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{tid}#SPANS")
+            assert cached is not None
+
+
+class TestCalculateTraceFilterCorrelation:
+    """Tests for calculate_trace_filter_correlation."""
+
+    def _create_traces_with_tags(self, tracking_store, exp_id, traces_spec):
+        """Helper: create traces with specified tags.
+
+        traces_spec: list of dicts with keys 'trace_id', 'tags'.
+        """
+        for i, spec in enumerate(traces_spec):
+            trace_info = _make_trace_info(
+                exp_id,
+                trace_id=spec["trace_id"],
+                request_time=1000 + i * 100,
+                tags=spec.get("tags", {}),
+            )
+            tracking_store.start_trace(trace_info)
+
+    def test_known_distribution(self, tracking_store):
+        """10 traces, 5 match f1, 4 match f2, 4 match both."""
+        exp_id = _create_experiment(tracking_store)
+        specs = []
+        for i in range(10):
+            tags = {}
+            if i < 5:
+                tags["color"] = "red"
+            if i < 4:
+                tags["size"] = "large"
+            if i >= 5:
+                tags["color"] = "blue"
+            if i >= 4:
+                tags["size"] = "small"
+            specs.append({"trace_id": f"tr-corr-{i}", "tags": tags})
+        self._create_traces_with_tags(tracking_store, exp_id, specs)
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.color = 'red'",
+            filter_string2="tag.size = 'large'",
+        )
+        assert result.total_count == 10
+        assert result.filter1_count == 5
+        assert result.filter2_count == 4
+        assert result.joint_count == 4  # first 4 have both red+large
+
+    def test_no_traces_returns_zero_npmi(self, tracking_store):
+        exp_id = _create_experiment(tracking_store)
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.x = 'a'",
+            filter_string2="tag.y = 'b'",
+        )
+        assert result.total_count == 0
+        assert result.npmi == 0.0
+
+    def test_joint_count_zero_returns_negative_one(self, tracking_store):
+        """Filters never co-occur -> NPMI = -1.0."""
+        exp_id = _create_experiment(tracking_store)
+        specs = [
+            {"trace_id": "tr-nc-0", "tags": {"group": "a"}},
+            {"trace_id": "tr-nc-1", "tags": {"group": "b"}},
+        ]
+        self._create_traces_with_tags(tracking_store, exp_id, specs)
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.group = 'a'",
+            filter_string2="tag.group = 'b'",
+        )
+        assert result.joint_count == 0
+        assert result.npmi == -1.0
+
+    def test_filter_count_zero_returns_zero_npmi(self, tracking_store):
+        """One filter matches nothing -> NPMI = 0.0."""
+        exp_id = _create_experiment(tracking_store)
+        specs = [{"trace_id": "tr-fz-0", "tags": {"x": "1"}}]
+        self._create_traces_with_tags(tracking_store, exp_id, specs)
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.x = '1'",
+            filter_string2="tag.x = '2'",
+        )
+        assert result.filter2_count == 0
+        assert result.npmi == 0.0
+
+    def test_perfect_correlation(self, tracking_store):
+        """All traces match both filters -> NPMI = 1.0."""
+        exp_id = _create_experiment(tracking_store)
+        specs = [{"trace_id": f"tr-pc-{i}", "tags": {"a": "1", "b": "2"}} for i in range(5)]
+        self._create_traces_with_tags(tracking_store, exp_id, specs)
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.a = '1'",
+            filter_string2="tag.b = '2'",
+        )
+        assert result.npmi == 1.0
+
+    def test_base_filter_restricts_universe(self, tracking_store):
+        """base_filter limits which traces are counted."""
+        exp_id = _create_experiment(tracking_store)
+        specs = [
+            {"trace_id": "tr-bf-0", "tags": {"env": "prod", "status": "ok"}},
+            {"trace_id": "tr-bf-1", "tags": {"env": "prod", "status": "fail"}},
+            {"trace_id": "tr-bf-2", "tags": {"env": "dev", "status": "ok"}},
+        ]
+        self._create_traces_with_tags(tracking_store, exp_id, specs)
+
+        result = tracking_store.calculate_trace_filter_correlation(
+            experiment_ids=[exp_id],
+            filter_string1="tag.status = 'ok'",
+            filter_string2="tag.status = 'fail'",
+            base_filter="tag.env = 'prod'",
+        )
+        assert result.total_count == 2  # only prod traces

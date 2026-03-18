@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from mlflow.entities.model_registry import PromptVersion
     from mlflow.entities.trace import Trace
     from mlflow.genai.scorers.online.entities import OnlineScorer, OnlineScoringConfig
 
@@ -49,6 +50,7 @@ from mlflow.protos.databricks_pb2 import (
 from mlflow.protos.service_pb2 import DatasetSummary
 from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.tracking.abstract_store import AbstractStore
+from mlflow.tracing.analysis import TraceFilterCorrelationResult
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
 from mlflow.utils.mlflow_tags import MLFLOW_ARTIFACT_LOCATION
 from mlflow.utils.proto_json_utils import milliseconds_to_proto_timestamp
@@ -78,6 +80,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
     GSI2_PK,
+    GSI2_SESSIONS_PREFIX,
     GSI2_SK,
     GSI3_DS_NAME_PREFIX,
     GSI3_EXP_NAME_PREFIX,
@@ -120,6 +123,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_RUN_PREFIX,
     SK_SCORER_OSCFG_SUFFIX,
     SK_SCORER_PREFIX,
+    SK_SESSION_PREFIX,
     SK_TAG_PREFIX,
     SK_TRACE_PREFIX,
 )
@@ -1760,6 +1764,49 @@ class DynamoDBTrackingStore(AbstractStore):
             ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
         )
 
+    def _upsert_session_tracker(
+        self,
+        experiment_id: str,
+        session_id: str,
+        timestamp_ms: int,
+        ttl: int | None,
+    ) -> None:
+        """Upsert a session tracker item using atomic ADD + conditional SET."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_SESSION_PREFIX}{session_id}"
+        gsi2pk = f"{GSI2_SESSIONS_PREFIX}{self._workspace}#{experiment_id}"
+
+        # GSI2 SK must be a zero-padded string (GSI key schema is type S)
+        gsi2sk_str = f"{timestamp_ms:020d}"
+
+        # Combined ADD + SET requires raw boto3 (same pattern as _denormalize_tag)
+        update_expr = (
+            "ADD trace_count :one "
+            "SET first_trace_timestamp_ms = if_not_exists(first_trace_timestamp_ms, :ts), "
+            "last_trace_timestamp_ms = :ts, "
+            "session_id = if_not_exists(session_id, :sid), "
+            "#gsi2pk = :gsi2pk, #gsi2sk = :gsi2sk"
+        )
+        expr_names = {"#gsi2pk": "gsi2pk", "#gsi2sk": "gsi2sk"}
+        expr_values: dict[str, Any] = {
+            ":one": 1,
+            ":ts": timestamp_ms,
+            ":sid": session_id,
+            ":gsi2pk": gsi2pk,
+            ":gsi2sk": gsi2sk_str,
+        }
+        if ttl is not None:
+            update_expr += ", #ttl = :ttl"
+            expr_names["#ttl"] = "ttl"
+            expr_values[":ttl"] = ttl
+
+        self._table._table.update_item(
+            Key={"PK": pk, "SK": sk},
+            UpdateExpression=update_expr,
+            ExpressionAttributeNames=expr_names,
+            ExpressionAttributeValues=expr_values,
+        )
+
     def _delete_fts_for_entity_field(
         self,
         pk: str,
@@ -2274,6 +2321,16 @@ class DynamoDBTrackingStore(AbstractStore):
                 trace_info.tags = {}
             trace_info.tags[MLFLOW_ARTIFACT_LOCATION] = artifact_loc
 
+        # Upsert session tracker if trace has session metadata
+        session_id = (trace_info.trace_metadata or {}).get("mlflow.traceSession")
+        if session_id:
+            self._upsert_session_tracker(
+                experiment_id=experiment_id,
+                session_id=session_id,
+                timestamp_ms=trace_info.request_time,
+                ttl=ttl,
+            )
+
         return trace_info
 
     def get_trace_info(self, trace_id: str) -> TraceInfo:
@@ -2440,6 +2497,47 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return Trace(info=trace_info, data=TraceData(spans=spans))
 
+    def log_spans(
+        self, location: str, spans: list[Any], tracking_uri: str | None = None
+    ) -> list[Any]:
+        """Log spans to the tracking store by writing SPANS cache items."""
+        import json as _json
+        from collections import defaultdict
+
+        if not spans:
+            return []
+
+        # Group spans by trace_id
+        spans_by_trace: dict[str, list[Any]] = defaultdict(list)
+        for span in spans:
+            spans_by_trace[span.trace_id].append(span)
+
+        for trace_id, trace_spans in spans_by_trace.items():
+            try:
+                experiment_id = location or self._resolve_trace_experiment(trace_id)
+            except MlflowException:
+                if not location:
+                    continue  # Skip unresolvable traces
+                experiment_id = location
+
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+            # Read TTL from trace META
+            meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+            ttl = int(meta["ttl"]) if meta and "ttl" in meta else self._get_trace_ttl()
+
+            span_dicts = [s.to_dict() for s in trace_spans]
+            spans_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": f"{SK_TRACE_PREFIX}{trace_id}#SPANS",
+                "data": _json.dumps(span_dicts),
+            }
+            if ttl is not None:
+                spans_item["ttl"] = ttl
+            self._table.put_item(spans_item)
+
+        return spans
+
     def search_traces(
         self,
         experiment_ids: list[str] | None = None,
@@ -2578,6 +2676,98 @@ class DynamoDBTrackingStore(AbstractStore):
                 break
 
         return traces, next_page_token
+
+    def calculate_trace_filter_correlation(
+        self,
+        experiment_ids: list[str],
+        filter_string1: str,
+        filter_string2: str,
+        base_filter: str | None = None,
+    ) -> TraceFilterCorrelationResult:
+        """Calculate NPMI correlation between two trace filters."""
+        import math
+
+        from mlflow_dynamodbstore.dynamodb.search import (
+            _apply_trace_post_filter,
+            execute_trace_query,
+            parse_trace_filter,
+            plan_trace_query,
+        )
+
+        preds1 = parse_trace_filter(filter_string1)
+        preds2 = parse_trace_filter(filter_string2)
+        base_preds = parse_trace_filter(base_filter)
+
+        # Plan query using base_filter predicates (for efficient index usage)
+        plan = plan_trace_query(base_preds, None)
+
+        total_count = 0
+        filter1_count = 0
+        filter2_count = 0
+        joint_count = 0
+
+        for exp_id in experiment_ids:
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+            page_token: str | None = None
+
+            while True:
+                items, page_token = execute_trace_query(
+                    table=self._table,
+                    plan=plan,
+                    pk=pk,
+                    max_results=1000,
+                    page_token=page_token,
+                    predicates=base_preds,
+                )
+
+                for item in items:
+                    trace_id = item["trace_id"]
+                    total_count += 1
+
+                    match1 = all(
+                        _apply_trace_post_filter(self._table, pk, trace_id, item, p) for p in preds1
+                    )
+                    match2 = all(
+                        _apply_trace_post_filter(self._table, pk, trace_id, item, p) for p in preds2
+                    )
+
+                    if match1:
+                        filter1_count += 1
+                    if match2:
+                        filter2_count += 1
+                    if match1 and match2:
+                        joint_count += 1
+
+                if not page_token:
+                    break
+
+        # Compute NPMI
+        if total_count == 0:
+            npmi = 0.0
+        elif filter1_count == 0 or filter2_count == 0:
+            npmi = 0.0
+        elif joint_count == 0:
+            npmi = -1.0
+        elif (
+            joint_count == total_count
+            and filter1_count == total_count
+            and filter2_count == total_count
+        ):
+            npmi = 1.0
+        else:
+            p1 = filter1_count / total_count
+            p2 = filter2_count / total_count
+            p_joint = joint_count / total_count
+            pmi = math.log(p_joint / (p1 * p2))
+            npmi = pmi / -math.log(p_joint)
+
+        return TraceFilterCorrelationResult(
+            npmi=npmi,
+            filter1_count=filter1_count,
+            filter2_count=filter2_count,
+            joint_count=joint_count,
+            total_count=total_count,
+        )
 
     @staticmethod
     def _match_span_predicates_cached(
@@ -2846,6 +3036,196 @@ class DynamoDBTrackingStore(AbstractStore):
             if ttl is not None:
                 rmeta_item["ttl"] = ttl
             self._table.put_item(rmeta_item)
+
+    def unlink_traces_from_run(self, trace_ids: list[str], run_id: str) -> None:
+        """Unlink traces from a run by deleting mlflow.sourceRun RMETA items."""
+        for trace_id in trace_ids:
+            try:
+                experiment_id = self._resolve_trace_experiment(trace_id)
+            except MlflowException:
+                continue
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            sk = f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{TraceMetadataKey.SOURCE_RUN}"
+            self._table.delete_item(pk=pk, sk=sk)
+
+    def link_prompts_to_trace(self, trace_id: str, prompt_versions: list[PromptVersion]) -> None:
+        """Link prompt versions to a trace by writing mlflow.promptVersions tag."""
+        import json as _json
+
+        experiment_id = self._resolve_trace_experiment(trace_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+        if meta is None:
+            raise MlflowException(
+                f"Trace '{trace_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
+
+        versions_json = _json.dumps(
+            [{"name": pv.name, "version": pv.version} for pv in prompt_versions]
+        )
+        self._write_trace_tag(experiment_id, trace_id, "mlflow.promptVersions", versions_json, ttl)
+
+    def batch_get_trace_infos(
+        self, trace_ids: list[str], location: str | None = None
+    ) -> list[TraceInfo]:
+        """Get trace metadata for given trace IDs without loading spans."""
+        if not trace_ids:
+            return []
+
+        seen: set[str] = set()
+        results: list[TraceInfo] = []
+
+        for trace_id in trace_ids:
+            if trace_id in seen:
+                continue
+            seen.add(trace_id)
+
+            try:
+                if location:
+                    experiment_id = location
+                else:
+                    experiment_id = self._resolve_trace_experiment(trace_id)
+            except MlflowException:
+                continue  # Skip non-existent traces
+
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+            if meta is None:
+                continue
+
+            trace_info = self._build_trace_info(experiment_id, trace_id, meta)
+            results.append(trace_info)
+
+        return results
+
+    def batch_get_traces(self, trace_ids: list[str], location: str | None = None) -> list[Trace]:
+        """Get complete traces with spans for given trace IDs."""
+        import json as _json
+
+        from mlflow.entities.trace import Trace
+        from mlflow.entities.trace_data import TraceData
+
+        from mlflow_dynamodbstore.xray.span_converter import span_dicts_to_mlflow_spans
+
+        if not trace_ids:
+            return []
+
+        seen: set[str] = set()
+        results: list[Trace] = []
+
+        for trace_id in trace_ids:
+            if trace_id in seen:
+                continue
+            seen.add(trace_id)
+
+            try:
+                if location:
+                    experiment_id = location
+                else:
+                    experiment_id = self._resolve_trace_experiment(trace_id)
+            except MlflowException:
+                continue
+
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+            if meta is None:
+                continue
+
+            trace_info = self._build_trace_info(experiment_id, trace_id, meta)
+
+            # Read cached spans
+            spans_sk = f"{SK_TRACE_PREFIX}{trace_id}#SPANS"
+            cached = self._table.get_item(pk=pk, sk=spans_sk)
+            if cached is not None:
+                span_dicts = _json.loads(cached["data"])
+                # Try V3 format (Span.to_dict) first, fall back to X-Ray format
+                if span_dicts and "start_time_unix_nano" in span_dicts[0]:
+                    try:
+                        from mlflow.entities.span import Span as SpanEntity
+
+                        spans = [SpanEntity.from_dict(sd) for sd in span_dicts]
+                    except MlflowException:
+                        spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
+                else:
+                    # X-Ray converter format
+                    spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
+            else:
+                spans = []
+
+            results.append(Trace(info=trace_info, data=TraceData(spans=spans)))
+
+        return results
+
+    def find_completed_sessions(
+        self,
+        experiment_id: str,
+        min_last_trace_timestamp_ms: int,
+        max_last_trace_timestamp_ms: int,
+        max_results: int | None = None,
+        filter_string: str | None = None,
+    ) -> list[Any]:
+        """Find completed sessions by last trace timestamp range via GSI2."""
+        from mlflow.genai.scorers.online.entities import CompletedSession
+
+        gsi2pk = f"{GSI2_SESSIONS_PREFIX}{self._workspace}#{experiment_id}"
+
+        items = self._table.query(
+            pk=gsi2pk,
+            sk_gte=f"{min_last_trace_timestamp_ms:020d}",
+            sk_lte=f"{max_last_trace_timestamp_ms:020d}",
+            index_name="gsi2",
+            scan_forward=True,
+        )
+
+        # Optional: post-filter sessions by trace attributes
+        if filter_string:
+            from mlflow_dynamodbstore.dynamodb.search import (
+                _apply_trace_post_filter,
+                parse_trace_filter,
+            )
+
+            preds = parse_trace_filter(filter_string)
+            filtered_items = []
+            for item in items:
+                session_id = item["session_id"]
+                exp_pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+                trace_items = self._table.query(
+                    pk=exp_pk,
+                    sk_prefix=SK_TRACE_PREFIX,
+                )
+                session_qualifies = False
+                for t_item in trace_items:
+                    if "trace_id" not in t_item:
+                        continue
+                    tid = t_item["trace_id"]
+                    rmeta_sk = f"{SK_TRACE_PREFIX}{tid}#RMETA#mlflow.traceSession"
+                    rmeta = self._table.get_item(pk=exp_pk, sk=rmeta_sk)
+                    if rmeta and rmeta.get("value") == session_id:
+                        if all(
+                            _apply_trace_post_filter(self._table, exp_pk, tid, t_item, p)
+                            for p in preds
+                        ):
+                            session_qualifies = True
+                            break
+                if session_qualifies:
+                    filtered_items.append(item)
+            items = filtered_items
+
+        results: list[CompletedSession] = []
+        for item in items:
+            session = CompletedSession(
+                session_id=item["session_id"],
+                first_trace_timestamp_ms=int(item["first_trace_timestamp_ms"]),
+                last_trace_timestamp_ms=int(item["last_trace_timestamp_ms"]),
+            )
+            results.append(session)
+
+        if max_results is not None:
+            results = results[:max_results]
+
+        return results
 
     # ------------------------------------------------------------------
     # Assessment CRUD
