@@ -3066,8 +3066,10 @@ class DynamoDBTrackingStore(AbstractStore):
         for pred in span_predicates:
             field_name = span_key_to_field.get(pred.key)
             if not field_name:
-                # Unknown span key, skip (will need X-Ray)
-                return False
+                # Unknown span key (e.g. "content" from trace.text ILIKE).
+                # Can't filter from cached META sets — skip this predicate
+                # and let the trace through rather than rejecting it.
+                continue
             values = item.get(field_name)
             if not values:
                 return False
