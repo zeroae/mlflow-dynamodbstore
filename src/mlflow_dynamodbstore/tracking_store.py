@@ -2436,6 +2436,19 @@ class DynamoDBTrackingStore(AbstractStore):
         state_str = meta.get("state", "STATE_UNSPECIFIED")
         state = TraceState(state_str)
 
+        # Read assessments
+        assess_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#",
+        )
+        assessments = []
+        for item in assess_items:
+            if "data" in item:
+                try:
+                    assessments.append(Assessment.from_dictionary(item["data"]))
+                except Exception:
+                    pass
+
         return TraceInfo(
             trace_id=trace_id,
             trace_location=TraceLocation(
@@ -2448,6 +2461,7 @@ class DynamoDBTrackingStore(AbstractStore):
             trace_metadata=trace_metadata,
             tags=tags,
             client_request_id=meta.get("client_request_id"),
+            assessments=assessments,
         )
 
     @property
@@ -3177,6 +3191,19 @@ class DynamoDBTrackingStore(AbstractStore):
         state_str = meta.get("state", "STATE_UNSPECIFIED")
         state = TraceState(state_str)
 
+        # Read assessments
+        assess_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#",
+        )
+        assessments = []
+        for item in assess_items:
+            if "data" in item:
+                try:
+                    assessments.append(Assessment.from_dictionary(item["data"]))
+                except Exception:
+                    pass
+
         return TraceInfo(
             trace_id=trace_id,
             trace_location=TraceLocation(
@@ -3189,6 +3216,7 @@ class DynamoDBTrackingStore(AbstractStore):
             trace_metadata=trace_metadata,
             tags=tags,
             client_request_id=meta.get("client_request_id"),
+            assessments=assessments,
         )
 
     def _write_trace_tag(
