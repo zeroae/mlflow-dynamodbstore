@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from mlflow.entities.model_registry import PromptVersion
     from mlflow.entities.trace import Trace
+    from mlflow.entities.trace_metrics import MetricAggregation, MetricDataPoint, MetricViewType
     from mlflow.genai.scorers.online.entities import OnlineScorer, OnlineScoringConfig
 
     from mlflow_dynamodbstore.xray.client import XRayClient
@@ -4770,3 +4771,273 @@ class DynamoDBTrackingStore(AbstractStore):
             )
 
         return len(record_ids)
+
+    # ------------------------------------------------------------------
+    # Trace Metrics Query
+    # ------------------------------------------------------------------
+
+    def query_trace_metrics(
+        self,
+        experiment_ids: list[str],
+        view_type: MetricViewType,
+        metric_name: str,
+        aggregations: list[MetricAggregation],
+        dimensions: list[str] | None = None,
+        filters: list[str] | None = None,
+        time_interval_seconds: int | None = None,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        max_results: int = 1000,
+        page_token: str | None = None,
+    ) -> PagedList[list[MetricDataPoint]]:
+        """Query aggregated trace metrics across experiments."""
+        from mlflow.entities.trace_metrics import AggregationType, MetricViewType
+        from mlflow.store.tracking.utils.sql_trace_metrics_utils import (
+            validate_query_trace_metrics_params,
+        )
+
+        from mlflow_dynamodbstore.trace_metrics.accumulators import MetricAccumulator
+        from mlflow_dynamodbstore.trace_metrics.extractors import (
+            TIME_BUCKET_LABEL,
+            build_dimension_key,
+            compute_time_bucket,
+            extract_metric_value,
+            get_timestamp_for_view,
+        )
+        from mlflow_dynamodbstore.trace_metrics.filters import (
+            apply_trace_metric_filters,
+            filter_assessment_items,
+            filter_span_items,
+            meta_prefilter_spans,
+        )
+        from mlflow_dynamodbstore.trace_metrics.pagination import (
+            cache_get,
+            cache_put,
+            compute_query_hash,
+            decode_page_token,
+            encode_page_token,
+        )
+
+        # 1. VALIDATE
+        validate_query_trace_metrics_params(view_type, metric_name, aggregations, dimensions)
+        if time_interval_seconds is not None and (start_time_ms is None or end_time_ms is None):
+            raise MlflowException(
+                "start_time_ms and end_time_ms are required when time_interval_seconds is set.",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        # 2. CHECK CACHE (if page_token)
+        if page_token:
+            token_data = decode_page_token(page_token)
+            cached = cache_get(self._table, token_data["query_hash"])
+            if cached is not None:
+                offset = token_data["offset"]
+                page = cached[offset : offset + max_results]
+                next_token = None
+                if offset + max_results < len(cached):
+                    next_token = encode_page_token(token_data["query_hash"], offset + max_results)
+                return PagedList(page, next_token)  # type: ignore[arg-type]
+
+        # Need percentile values?
+        need_values = any(a.aggregation_type == AggregationType.PERCENTILE for a in aggregations)
+
+        # 3. STREAM TRACE META ITEMS and accumulate
+        accumulators: dict[tuple[str | None, ...], MetricAccumulator] = {}
+        dim_labels: dict[tuple[str | None, ...], dict[str, str]] = {}
+
+        for experiment_id in experiment_ids:
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+            # Query META items (with optional time range via LSI1)
+            if start_time_ms is not None and end_time_ms is not None:
+                meta_candidates = self._table.query(
+                    pk=pk,
+                    index_name="lsi1",
+                    sk_gte=f"{start_time_ms:020d}",
+                    sk_lte=f"{end_time_ms:020d}",
+                )
+            else:
+                meta_candidates = self._table.query(pk=pk, sk_prefix=SK_TRACE_PREFIX)
+
+            # Filter to META items only (have "request_time" attribute)
+            meta_items = [item for item in meta_candidates if "request_time" in item]
+
+            for meta_item in meta_items:
+                trace_id = meta_item["SK"][len(SK_TRACE_PREFIX) :]
+
+                # Fetch trace tags and metadata for filtering
+                tag_items = self._table.query(pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#TAG#")
+                metadata_items = self._table.query(
+                    pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#"
+                )
+
+                # Apply trace-level filters
+                if not apply_trace_metric_filters(
+                    meta_item, filters, view_type, tag_items, metadata_items
+                ):
+                    continue
+
+                # Build trace_tags dict for dimension extraction
+                trace_tags = {t["key"]: t["value"] for t in tag_items}
+
+                if view_type == MetricViewType.TRACES:
+                    # Fetch TMETRIC items for token metrics
+                    tmetric_items = self._table.query(
+                        pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}{SK_TRACE_METRIC_PREFIX}"
+                    )
+
+                    # Compute time bucket
+                    time_bucket = None
+                    if time_interval_seconds is not None:
+                        ts = get_timestamp_for_view(view_type, meta_item, meta_item)
+                        time_bucket = compute_time_bucket(ts, time_interval_seconds)
+
+                    value = extract_metric_value(
+                        metric_name, view_type, meta_item, meta_item, tmetric_items
+                    )
+                    if value is None:
+                        continue
+
+                    dim_key = build_dimension_key(
+                        dimensions, view_type, meta_item, meta_item, trace_tags, time_bucket
+                    )
+                    # Skip if any dimension value is None
+                    if dimensions and any(v is None for v in dim_key):
+                        continue
+
+                    if dim_key not in accumulators:
+                        accumulators[dim_key] = MetricAccumulator(collect_values=need_values)
+                        # Build dimension labels
+                        labels: dict[str, str] = {}
+                        idx = 0
+                        if time_bucket is not None:
+                            labels[TIME_BUCKET_LABEL] = time_bucket
+                            idx = 1
+                        for d in dimensions or []:
+                            labels[d] = str(dim_key[idx]) if dim_key[idx] is not None else ""
+                            idx += 1
+                        dim_labels[dim_key] = labels
+                    accumulators[dim_key].add(value)
+
+                elif view_type == MetricViewType.SPANS:
+                    # Pre-filter using META denormalized fields
+                    if not meta_prefilter_spans(meta_item, filters):
+                        continue
+
+                    # Fetch span items and span metric items
+                    span_items = self._table.query(
+                        pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}{SK_SPAN_PREFIX}"
+                    )
+                    smetric_items = self._table.query(
+                        pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}{SK_SPAN_METRIC_PREFIX}"
+                    )
+
+                    # Apply span-level filters
+                    span_items = filter_span_items(span_items, filters)
+
+                    for span_item in span_items:
+                        time_bucket = None
+                        if time_interval_seconds is not None:
+                            ts = get_timestamp_for_view(view_type, span_item, meta_item)
+                            time_bucket = compute_time_bucket(ts, time_interval_seconds)
+
+                        value = extract_metric_value(
+                            metric_name,
+                            view_type,
+                            span_item,
+                            meta_item,
+                            span_metric_items=smetric_items,
+                        )
+                        if value is None:
+                            continue
+
+                        dim_key = build_dimension_key(
+                            dimensions, view_type, span_item, meta_item, trace_tags, time_bucket
+                        )
+                        if dimensions and any(v is None for v in dim_key):
+                            continue
+
+                        if dim_key not in accumulators:
+                            accumulators[dim_key] = MetricAccumulator(collect_values=need_values)
+                            labels = {}
+                            idx = 0
+                            if time_bucket is not None:
+                                labels[TIME_BUCKET_LABEL] = time_bucket
+                                idx = 1
+                            for d in dimensions or []:
+                                labels[d] = str(dim_key[idx]) if dim_key[idx] is not None else ""
+                                idx += 1
+                            dim_labels[dim_key] = labels
+                        accumulators[dim_key].add(value)
+
+                elif view_type == MetricViewType.ASSESSMENTS:
+                    # Fetch assessment items
+                    assess_items = self._table.query(
+                        pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#"
+                    )
+
+                    # Apply assessment-level filters
+                    assess_items = filter_assessment_items(assess_items, filters)
+
+                    for assess_item in assess_items:
+                        time_bucket = None
+                        if time_interval_seconds is not None:
+                            ts = get_timestamp_for_view(view_type, assess_item, meta_item)
+                            time_bucket = compute_time_bucket(ts, time_interval_seconds)
+
+                        value = extract_metric_value(metric_name, view_type, assess_item, meta_item)
+                        if value is None:
+                            continue
+
+                        dim_key = build_dimension_key(
+                            dimensions, view_type, assess_item, meta_item, trace_tags, time_bucket
+                        )
+                        if dimensions and any(v is None for v in dim_key):
+                            continue
+
+                        if dim_key not in accumulators:
+                            accumulators[dim_key] = MetricAccumulator(collect_values=need_values)
+                            labels = {}
+                            idx = 0
+                            if time_bucket is not None:
+                                labels[TIME_BUCKET_LABEL] = time_bucket
+                                idx = 1
+                            for d in dimensions or []:
+                                labels[d] = str(dim_key[idx]) if dim_key[idx] is not None else ""
+                                idx += 1
+                            dim_labels[dim_key] = labels
+                        accumulators[dim_key].add(value)
+
+        # 4. FINALIZE — compute aggregation results, convert to MetricDataPoint list
+        from mlflow.entities.trace_metrics import MetricDataPoint
+
+        all_data_points: list[MetricDataPoint] = []
+        for dim_key, acc in accumulators.items():
+            agg_values = acc.finalize(aggregations)
+            labels = dim_labels.get(dim_key, {})
+            dp = MetricDataPoint(
+                metric_name=metric_name,
+                dimensions=labels or {},
+                values=agg_values,
+            )
+            all_data_points.append(dp)
+
+        # 5. CACHE AND PAGINATE
+        query_hash = compute_query_hash(
+            experiment_ids,
+            view_type,
+            metric_name,
+            aggregations,
+            dimensions,
+            filters,
+            time_interval_seconds,
+            start_time_ms,
+            end_time_ms,
+        )
+        if len(all_data_points) > max_results:
+            cache_put(self._table, query_hash, all_data_points)
+            page = all_data_points[:max_results]
+            next_token = encode_page_token(query_hash, max_results)
+            return PagedList(page, next_token)  # type: ignore[arg-type]
+
+        return PagedList(all_data_points, None)  # type: ignore[arg-type]
