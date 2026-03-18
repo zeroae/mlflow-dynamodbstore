@@ -41,6 +41,7 @@ from mlflow.entities import (
     TraceState,
     ViewType,
 )
+from mlflow.entities.dataset_summary import _DatasetSummary
 from mlflow.entities.logged_model_status import LoggedModelStatus
 from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
@@ -49,7 +50,6 @@ from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
-from mlflow.protos.service_pb2 import DatasetSummary
 from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow.tracing.analysis import TraceFilterCorrelationResult
@@ -2183,7 +2183,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
         self._table.batch_write(items)
 
-    def _search_datasets(self, experiment_ids: list[str]) -> list[DatasetSummary]:
+    def _search_datasets(self, experiment_ids: list[str]) -> list[_DatasetSummary]:
         """Search for legacy V2 datasets (D# and DLINK# items) under experiment partitions.
 
         This method queries existing D# (dataset) and DLINK# (dataset-run link) items
@@ -2239,20 +2239,17 @@ class DynamoDBTrackingStore(AbstractStore):
                             if key in dataset_map:
                                 dataset_map[key]["context"] = item["context"]
 
-        # Build DatasetSummary protobuf objects
-        results: list[DatasetSummary] = []
+        # Build _DatasetSummary entity objects (handler calls .to_proto() on these)
+        results: list[_DatasetSummary] = []
         for (name, digest), data in dataset_map.items():
-            summary = DatasetSummary()
-            exp_id: str = data["experiment_id"]
-            ds_name: str = data["name"]
-            ds_digest: str = data["digest"]
-            summary.experiment_id = exp_id
-            summary.name = ds_name
-            summary.digest = ds_digest
-            context = data["context"]
-            if context:
-                summary.context = context
-            results.append(summary)
+            results.append(
+                _DatasetSummary(
+                    experiment_id=data["experiment_id"],
+                    name=data["name"],
+                    digest=data["digest"],
+                    context=data["context"],
+                )
+            )
 
         return results
 
