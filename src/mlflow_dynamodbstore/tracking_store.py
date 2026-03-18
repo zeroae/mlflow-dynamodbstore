@@ -2436,18 +2436,7 @@ class DynamoDBTrackingStore(AbstractStore):
         state_str = meta.get("state", "STATE_UNSPECIFIED")
         state = TraceState(state_str)
 
-        # Read assessments
-        assess_items = self._table.query(
-            pk=pk,
-            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#",
-        )
-        assessments = []
-        for item in assess_items:
-            if "data" in item:
-                try:
-                    assessments.append(Assessment.from_dictionary(item["data"]))
-                except Exception:
-                    pass
+        assessments = self._load_assessments(pk, trace_id)
 
         return TraceInfo(
             trace_id=trace_id,
@@ -3191,18 +3180,7 @@ class DynamoDBTrackingStore(AbstractStore):
         state_str = meta.get("state", "STATE_UNSPECIFIED")
         state = TraceState(state_str)
 
-        # Read assessments
-        assess_items = self._table.query(
-            pk=pk,
-            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#",
-        )
-        assessments = []
-        for item in assess_items:
-            if "data" in item:
-                try:
-                    assessments.append(Assessment.from_dictionary(item["data"]))
-                except Exception:
-                    pass
+        assessments = self._load_assessments(pk, trace_id)
 
         return TraceInfo(
             trace_id=trace_id,
@@ -3218,6 +3196,28 @@ class DynamoDBTrackingStore(AbstractStore):
             client_request_id=meta.get("client_request_id"),
             assessments=assessments,
         )
+
+    def _load_assessments(self, pk: str, trace_id: str) -> list[Assessment]:
+        """Load assessments for a trace, fixing the valid field for expectations."""
+        assess_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#",
+        )
+        assessments: list[Assessment] = []
+        for item in assess_items:
+            if "data" not in item:
+                continue
+            try:
+                a = Assessment.from_dictionary(item["data"])
+                # Expectation.to_dictionary() stores valid=None, but the SQL store
+                # always sets valid=True. Proto3 omits None values, causing the UI
+                # to not render the assessment. Fix by defaulting to True.
+                if a.valid is None:
+                    a.valid = True
+                assessments.append(a)
+            except Exception:
+                pass
+        return assessments
 
     def _write_trace_tag(
         self,
