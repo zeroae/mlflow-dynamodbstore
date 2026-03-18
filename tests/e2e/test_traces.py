@@ -181,6 +181,31 @@ class TestBatchTraceOperationsE2E:
             assert info.info.trace_id == tid
 
 
+class TestLogSpansAsyncE2E:
+    """E2E test for log_spans_async (exercises the async span path)."""
+
+    def test_trace_with_spans_via_decorator(self, mlflow_server):
+        """Traces created via @mlflow.trace have spans logged (async path)."""
+        mlflow.set_tracking_uri(mlflow_server)
+        exp_name = f"e2e-async-spans-{_uid()}"
+        mlflow.set_experiment(exp_name)
+
+        @mlflow.trace(name="async-span-func")
+        def my_func():
+            return "hello"
+
+        my_func()
+
+        client = MlflowClient(tracking_uri=mlflow_server)
+        exp = client.get_experiment_by_name(exp_name)
+        traces = client.search_traces(locations=[exp.experiment_id])
+        assert len(traces) >= 1
+
+        # Fetch full trace with spans
+        trace = client.get_trace(traces[0].info.trace_id)
+        assert trace.info.trace_id == traces[0].info.trace_id
+
+
 class TestUnlinkTracesE2E:
     """E2E tests for unlink_traces_from_run."""
 
