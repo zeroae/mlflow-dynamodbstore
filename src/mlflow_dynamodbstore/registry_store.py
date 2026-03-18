@@ -182,7 +182,7 @@ class DynamoDBRegistryStore(AbstractStore):
             "workspace": self._workspace,
             "tags": {},
             # LSI attributes
-            LSI2_SK: str(now_ms),
+            LSI2_SK: now_ms,
             LSI3_SK: name,
             LSI4_SK: _rev(name),
             # GSI2: list models by workspace
@@ -270,7 +270,7 @@ class DynamoDBRegistryStore(AbstractStore):
             updates={
                 "name": new_name,
                 "last_updated_timestamp": now_ms,
-                LSI2_SK: str(now_ms),
+                LSI2_SK: now_ms,
                 LSI3_SK: new_name,
                 LSI4_SK: _rev(new_name),
                 GSI2_SK: f"{now_ms}#{new_name}",
@@ -342,7 +342,7 @@ class DynamoDBRegistryStore(AbstractStore):
             updates={
                 "description": description,
                 "last_updated_timestamp": now_ms,
-                LSI2_SK: str(now_ms),
+                LSI2_SK: now_ms,
             },
         )
 
@@ -704,7 +704,7 @@ class DynamoDBRegistryStore(AbstractStore):
             "tags": {},
             # LSI attributes
             LSI1_SK: str(now_ms),
-            LSI2_SK: str(now_ms),
+            LSI2_SK: now_ms,
             LSI3_SK: f"None#{padded}",
         }
 
@@ -725,7 +725,7 @@ class DynamoDBRegistryStore(AbstractStore):
         self._table.update_item(
             pk=pk,
             sk=SK_MODEL_META,
-            updates={"last_updated_timestamp": now_ms, LSI2_SK: str(now_ms)},
+            updates={"last_updated_timestamp": now_ms, LSI2_SK: now_ms},
         )
 
         # Write tags if provided
@@ -767,7 +767,7 @@ class DynamoDBRegistryStore(AbstractStore):
             updates={
                 "description": description,
                 "last_updated_timestamp": now_ms,
-                LSI2_SK: str(now_ms),
+                LSI2_SK: now_ms,
             },
         )
 
@@ -983,7 +983,7 @@ class DynamoDBRegistryStore(AbstractStore):
             updates={
                 "current_stage": stage,
                 "last_updated_timestamp": now_ms,
-                LSI2_SK: str(now_ms),
+                LSI2_SK: now_ms,
                 LSI3_SK: f"{stage}#{padded}",
             },
         )

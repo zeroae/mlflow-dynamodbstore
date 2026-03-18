@@ -77,14 +77,15 @@ class TestModels:
         versions = client.search_model_versions(filter_string=f"name = '{name}'")
         assert len(versions) == 2
 
-    def test_get_latest_versions(self, client: MlflowClient):
+    def test_search_model_versions_returns_all(self, client: MlflowClient):
         name = f"e2e-latest-{_uid()}"
         client.create_registered_model(name)
         client.create_model_version(name, source="s3://bucket/model")
         client.create_model_version(name, source="s3://bucket/model-v2")
-        latest = client.get_latest_versions(name)
-        assert len(latest) >= 1
-        assert any(v.version == "2" for v in latest)
+        versions = client.search_model_versions(f"name='{name}'")
+        assert len(versions) == 2
+        version_numbers = {v.version for v in versions}
+        assert version_numbers == {"1", "2"}
 
     def test_search_models_by_name_like(self, client: MlflowClient):
         """Search by name LIKE — uses FTS."""

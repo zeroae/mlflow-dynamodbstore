@@ -116,3 +116,8 @@ markers = [
     "e2e: end-to-end tests (mlflow server over HTTP)",
 ]
 addopts = "--strict-markers --import-mode=importlib"
+filterwarnings = [
+    "ignore::DeprecationWarning:cloup.*",
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:fastapi.*",
+]

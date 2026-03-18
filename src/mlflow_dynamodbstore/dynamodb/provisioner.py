@@ -17,8 +17,13 @@ def _build_template(table_name: str, retain_table: bool = False) -> dict[str, An
         {"AttributeName": "PK", "AttributeType": "S"},
         {"AttributeName": "SK", "AttributeType": "S"},
     ]
+    # lsi2sk stores timestamps (numeric); all others are string sort keys
+    _lsi_types = {"lsi2sk": "N"}
     for i in range(1, 6):
-        attr_defs.append({"AttributeName": f"lsi{i}sk", "AttributeType": "S"})
+        attr_name = f"lsi{i}sk"
+        attr_defs.append(
+            {"AttributeName": attr_name, "AttributeType": _lsi_types.get(attr_name, "S")}
+        )
     for i in range(1, 6):
         attr_defs.append({"AttributeName": f"gsi{i}pk", "AttributeType": "S"})
         attr_defs.append({"AttributeName": f"gsi{i}sk", "AttributeType": "S"})

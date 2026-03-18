@@ -365,7 +365,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "tags": {},
             # LSI attributes
             LSI1_SK: f"active#{exp_id}",
-            LSI2_SK: str(now_ms),
+            LSI2_SK: now_ms,
             LSI3_SK: name,
             LSI4_SK: _rev(name),
             # GSI2: list experiments by lifecycle
@@ -463,7 +463,7 @@ class DynamoDBTrackingStore(AbstractStore):
             updates={
                 "name": new_name,
                 "last_update_time": now_ms,
-                LSI2_SK: str(now_ms),
+                LSI2_SK: now_ms,
                 LSI3_SK: new_name,
                 LSI4_SK: _rev(new_name),
                 GSI3_PK: f"{GSI3_EXP_NAME_PREFIX}{self._workspace}#{new_name}",
@@ -529,7 +529,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "lifecycle_stage": "deleted",
             "last_update_time": now_ms,
             LSI1_SK: f"deleted#{experiment_id}",
-            LSI2_SK: str(now_ms),
+            LSI2_SK: now_ms,
             GSI2_PK: f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#deleted",
         }
 
@@ -555,7 +555,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 "lifecycle_stage": "active",
                 "last_update_time": now_ms,
                 LSI1_SK: f"active#{experiment_id}",
-                LSI2_SK: str(now_ms),
+                LSI2_SK: now_ms,
                 GSI2_PK: f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#active",
             },
             removes=["ttl"],
@@ -1064,7 +1064,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "workspace": self._workspace,
             # LSI projections for filtering/sorting
             LSI1_SK: f"active#{model_id}",
-            LSI2_SK: str(now_ms),
+            LSI2_SK: now_ms,
             LSI3_SK: f"PENDING#{model_id}",
             LSI4_SK: name.lower(),
             # GSI1: reverse lookup model_id -> experiment_id
@@ -1448,7 +1448,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
         if end_time is not None:
             updates["end_time"] = end_time
-            updates[LSI2_SK] = str(end_time)
+            updates[LSI2_SK] = end_time
             start_time = current.get("start_time", 0)
             if start_time:
                 updates[LSI5_SK] = str(end_time - start_time)
@@ -2205,7 +2205,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "tags": {},
             # LSI attributes (must be strings, zero-padded for sort order)
             LSI1_SK: f"{request_time:020d}",
-            LSI2_SK: f"{request_time + execution_duration:020d}",
+            LSI2_SK: request_time + execution_duration,
             LSI3_SK: f"{state_str}#{request_time:020d}",
             LSI5_SK: f"{execution_duration:020d}",
             # GSI1: reverse lookup trace_id -> experiment_id
@@ -3554,7 +3554,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "workspace": self._workspace,
             "tags": tags or {},
             # LSI projections
-            LSI1_SK: now_ms,
+            LSI1_SK: f"{now_ms:020d}",
             LSI2_SK: now_ms,
             LSI3_SK: name.lower(),
             # GSI2: list all datasets in workspace
@@ -3925,7 +3925,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 existing = existing_items[0]
                 updates: dict[str, Any] = {
                     "last_update_time": now_ms,
-                    LSI2_SK: str(now_ms),
+                    LSI2_SK: now_ms,
                 }
                 if outputs is not None:
                     updates["outputs"] = outputs
@@ -3954,8 +3954,8 @@ class DynamoDBTrackingStore(AbstractStore):
                     "created_time": now_ms,
                     "last_update_time": now_ms,
                     # LSI projections
-                    LSI1_SK: str(now_ms),
-                    LSI2_SK: str(now_ms),
+                    LSI1_SK: f"{now_ms:020d}",
+                    LSI2_SK: now_ms,
                     LSI3_SK: input_hash,
                 }
                 if outputs is not None:
@@ -3986,7 +3986,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 "profile": _json.dumps({"num_records": num_records}),
                 "last_update_time": now_ms,
                 "digest": digest,
-                LSI2_SK: str(now_ms),
+                LSI2_SK: now_ms,
             },
         )
 
@@ -4083,7 +4083,7 @@ class DynamoDBTrackingStore(AbstractStore):
                     "profile": _json.dumps({"num_records": num_records}),
                     "last_update_time": now_ms,
                     "digest": digest,
-                    LSI2_SK: str(now_ms),
+                    LSI2_SK: now_ms,
                 },
             )
 

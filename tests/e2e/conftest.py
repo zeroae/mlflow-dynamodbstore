@@ -1,4 +1,7 @@
-"""E2E test fixtures: mlflow server over HTTP.
+"""E2E test fixtures: in-process mlflow server over HTTP.
+
+The server runs in-process via threaded uvicorn so that coverage
+instrumentation captures the full request path (store, auth plugin, etc.).
 
 Backend selection:
 1. MLFLOW_TRACKING_URI set → uses existing server (fastest for iteration)
@@ -17,18 +20,16 @@ Local usage (moto fallback, no AWS):
 
 import os
 import socket
-import subprocess
-import sys
-import tempfile
+import threading
 import time
 
 import pytest
 import requests
+import uvicorn
 from mlflow import MlflowClient
 
 _TABLE_NAME = "e2e-mlflow"
 _REGION = "us-east-1"
-_SERVER_LOG = os.path.join(tempfile.gettempdir(), "mlflow-e2e-server.log")
 
 
 def _find_free_port() -> int:
@@ -37,7 +38,7 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _wait_for_server(url: str, timeout: int = 180) -> None:
+def _wait_for_server(url: str, timeout: int = 60) -> None:
     """Poll server health endpoint until ready."""
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -46,7 +47,7 @@ def _wait_for_server(url: str, timeout: int = 180) -> None:
             if resp.status_code == 200:
                 return
         except requests.ConnectionError:
-            time.sleep(1)
+            time.sleep(0.2)
     raise RuntimeError(f"Server at {url} did not become ready within {timeout}s")
 
 
@@ -61,6 +62,43 @@ def _has_aws_credentials() -> bool:
         return True
     except Exception:
         return False
+
+
+def _configure_mlflow_env(store_uri: str) -> None:
+    """Set internal env vars that MLflow's server reads at import/request time."""
+    os.environ["_MLFLOW_SERVER_FILE_STORE"] = store_uri
+    os.environ["_MLFLOW_SERVER_ARTIFACT_ROOT"] = "/tmp/mlflow-e2e-artifacts"
+    os.environ["MLFLOW_FLASK_SERVER_SECRET_KEY"] = "e2e-test-secret-key"
+    os.environ["MLFLOW_ENABLE_WORKSPACES"] = "true"
+
+
+def _create_app():
+    """Build the MLflow Flask app and wrap in FastAPI."""
+    from mlflow.server import app as flask_app
+    from mlflow.server.fastapi_app import create_fastapi_app
+    from mlflow.server.handlers import initialize_backend_stores
+
+    store_uri = os.environ["_MLFLOW_SERVER_FILE_STORE"]
+    artifact_root = os.environ["_MLFLOW_SERVER_ARTIFACT_ROOT"]
+
+    # Prime the tracking and registry store singletons
+    initialize_backend_stores(
+        backend_store_uri=store_uri,
+        registry_store_uri=store_uri,
+        default_artifact_root=artifact_root,
+    )
+
+    return create_fastapi_app(flask_app)
+
+
+def _start_server(host: str, port: int) -> uvicorn.Server:
+    """Start uvicorn in a background thread, return the server handle."""
+    app = _create_app()
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    return server
 
 
 @pytest.fixture(scope="session")
@@ -93,11 +131,11 @@ def pytest_report_header():
         return [f"e2e backend: existing server at {os.environ['MLFLOW_TRACKING_URI']}"]
     if _has_aws_credentials():
         return ["e2e backend: real AWS DynamoDB"]
-    return ["e2e backend: moto server"]
+    return ["e2e backend: moto (in-process)"]
 
 
 def _start_mlflow_moto():
-    """Start moto server + mlflow subprocess."""
+    """Start moto server + in-process mlflow server."""
     from moto.server import ThreadedMotoServer
 
     # Start moto server
@@ -107,62 +145,28 @@ def _start_mlflow_moto():
     moto_endpoint = f"http://localhost:{moto_port}"
     print(f"\nMoto server: {moto_endpoint}")
 
-    # Start mlflow server pointing at moto
-    mlflow_port = _find_free_port()
     store_uri = f"dynamodb://{moto_endpoint}/{_TABLE_NAME}"
 
-    env = os.environ.copy()
-    env["MLFLOW_FLASK_SERVER_SECRET_KEY"] = "e2e-test-secret-key"
-    env["MLFLOW_ENABLE_WORKSPACES"] = "true"
-    env["AWS_ACCESS_KEY_ID"] = "testing"
-    env["AWS_SECRET_ACCESS_KEY"] = "testing"
-    env["AWS_DEFAULT_REGION"] = _REGION
+    # Set env before importing mlflow.server (triggers is_running_as_server)
+    os.environ["AWS_ACCESS_KEY_ID"] = "testing"
+    os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
+    os.environ["AWS_DEFAULT_REGION"] = _REGION
+    _configure_mlflow_env(store_uri)
 
-    log_file = open(_SERVER_LOG, "w")
-    print(f"Server log: {_SERVER_LOG}")
-
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "mlflow",
-            "server",
-            "--backend-store-uri",
-            store_uri,
-            "--default-artifact-root",
-            "/tmp/mlflow-e2e-artifacts",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(mlflow_port),
-            "--workers",
-            "1",
-        ],
-        env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-    )
+    mlflow_port = _find_free_port()
+    server = _start_server("127.0.0.1", mlflow_port)
 
     tracking_uri = f"http://127.0.0.1:{mlflow_port}"
-
     try:
-        _wait_for_server(tracking_uri, timeout=60)
+        _wait_for_server(tracking_uri)
     except RuntimeError:
-        proc.kill()
-        log_file.close()
+        server.should_exit = True
         moto_server.stop()
-        with open(_SERVER_LOG) as f:
-            raise RuntimeError(f"MLflow server failed to start.\nLog:\n{f.read()}")
+        raise
 
     yield tracking_uri
 
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-    log_file.close()
+    server.should_exit = True
     moto_server.stop()
 
 
@@ -170,10 +174,9 @@ def _delete_stack(table_name: str, region: str) -> None:
     """Delete the CloudFormation stack and wait for completion."""
     import boto3
 
-    from mlflow_dynamodbstore.dynamodb.provisioner import get_stack_name
-
     cfn = boto3.client("cloudformation", region_name=region)
-    stack_name = get_stack_name(table_name)
+    # The provisioner uses table_name as the stack name
+    stack_name = table_name
     print(f"\nDeleting CloudFormation stack: {stack_name}")
     try:
         cfn.delete_stack(StackName=stack_name)
@@ -187,63 +190,27 @@ def _delete_stack(table_name: str, region: str) -> None:
 
 
 def _start_mlflow_aws():
-    """Start mlflow subprocess against real AWS DynamoDB.
+    """Start in-process mlflow server against real AWS DynamoDB.
 
     Deletes the CloudFormation stack on teardown.
     """
-    mlflow_port = _find_free_port()
     store_uri = f"dynamodb://{_REGION}/{_TABLE_NAME}"
+    _configure_mlflow_env(store_uri)
 
-    env = os.environ.copy()
-    env["MLFLOW_FLASK_SERVER_SECRET_KEY"] = "e2e-test-secret-key"
-    env["MLFLOW_ENABLE_WORKSPACES"] = "true"
-
-    log_file = open(_SERVER_LOG, "w")
-    print(f"Server log: {_SERVER_LOG}")
-
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "mlflow",
-            "server",
-            "--backend-store-uri",
-            store_uri,
-            "--default-artifact-root",
-            "/tmp/mlflow-e2e-artifacts",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(mlflow_port),
-            "--workers",
-            "1",
-        ],
-        env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-    )
+    mlflow_port = _find_free_port()
+    server = _start_server("127.0.0.1", mlflow_port)
 
     tracking_uri = f"http://127.0.0.1:{mlflow_port}"
-
     try:
         _wait_for_server(tracking_uri, timeout=180)
     except RuntimeError:
-        proc.kill()
-        log_file.close()
+        server.should_exit = True
         _delete_stack(_TABLE_NAME, _REGION)
-        with open(_SERVER_LOG) as f:
-            raise RuntimeError(f"MLflow server failed to start.\nLog:\n{f.read()}")
+        raise
 
     yield tracking_uri
 
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-    log_file.close()
-
+    server.should_exit = True
     _delete_stack(_TABLE_NAME, _REGION)
 
 
@@ -251,3 +218,11 @@ def _start_mlflow_aws():
 def client(mlflow_server) -> MlflowClient:
     """Return an MlflowClient pointed at the e2e server."""
     return MlflowClient(tracking_uri=mlflow_server)
+
+
+@pytest.fixture(scope="session")
+def http_session(mlflow_server) -> requests.Session:
+    """Return a requests.Session with base URL pre-configured."""
+    session = requests.Session()
+    session.base_url = mlflow_server  # type: ignore[attr-defined]
+    return session

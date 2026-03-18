@@ -23,6 +23,27 @@ _INDEX_KEY_ATTRS: dict[str, tuple[str, str]] = {
 
 _BATCH_WRITE_CHUNK_SIZE = 25
 
+# Attributes that must be numeric (DynamoDB N type) per table schema.
+# All other index key attributes are String (S).
+_NUMERIC_ATTRS: frozenset[str] = frozenset({"lsi2sk"})
+
+
+def _validate_index_key_types(item: dict[str, Any]) -> None:
+    """Raise TypeError if an index key attribute has the wrong Python type."""
+    for attr in _NUMERIC_ATTRS:
+        if attr in item and not isinstance(item[attr], int | float):
+            val = item[attr]
+            raise TypeError(
+                f"Attribute {attr!r} must be numeric, got {type(val).__name__}: {val!r}"
+            )
+    # String index keys: all LSI sk attrs except the numeric ones
+    for attr_key in ("lsi1sk", "lsi3sk", "lsi4sk", "lsi5sk"):
+        if attr_key in item and not isinstance(item[attr_key], str):
+            val = item[attr_key]
+            raise TypeError(
+                f"Attribute {attr_key!r} must be str, got {type(val).__name__}: {val!r}"
+            )
+
 
 class DynamoDBTable:
     """High-level DynamoDB table client using boto3 resource API."""
@@ -47,6 +68,7 @@ class DynamoDBTable:
 
     def put_item(self, item: dict[str, Any], condition: str | None = None) -> None:
         """Write an item, with optional ConditionExpression."""
+        _validate_index_key_types(item)
         kwargs: dict[str, Any] = {"Item": item}
         if condition:
             kwargs["ConditionExpression"] = condition
@@ -80,6 +102,7 @@ class DynamoDBTable:
         expr_values: dict[str, Any] = {}
 
         if updates:
+            _validate_index_key_types(updates)
             set_clauses = []
             for i, (attr, val) in enumerate(updates.items()):
                 name_token = f"#u{i}"
@@ -205,6 +228,8 @@ class DynamoDBTable:
 
     def batch_write(self, items: list[dict[str, Any]]) -> None:
         """Batch write items, chunking into groups of 25."""
+        for item in items:
+            _validate_index_key_types(item)
         with self._table.batch_writer() as batch:
             for item in items:
                 batch.put_item(Item=item)

@@ -2,7 +2,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
+from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable, _validate_index_key_types
 
 
 def _create_test_table(region: str = "us-east-1", table_name: str = "test"):
@@ -160,6 +160,27 @@ class TestDynamoDBTable:
         table.put_item({"PK": "EXP#1", "SK": "E#META"}, condition="attribute_not_exists(PK)")
         with pytest.raises(Exception):  # ConditionalCheckFailedException
             table.put_item({"PK": "EXP#1", "SK": "E#META"}, condition="attribute_not_exists(PK)")
+
+
+class TestValidateIndexKeyTypes:
+    def test_lsi2sk_rejects_string(self):
+        with pytest.raises(TypeError, match="lsi2sk.*must be numeric.*str"):
+            _validate_index_key_types({"PK": "X", "lsi2sk": "12345"})
+
+    def test_lsi2sk_accepts_int(self):
+        _validate_index_key_types({"PK": "X", "lsi2sk": 12345})
+
+    def test_string_lsi_rejects_int(self):
+        for attr in ("lsi1sk", "lsi3sk", "lsi4sk", "lsi5sk"):
+            with pytest.raises(TypeError, match=f"{attr}.*must be str.*int"):
+                _validate_index_key_types({"PK": "X", attr: 12345})
+
+    def test_string_lsi_accepts_str(self):
+        for attr in ("lsi1sk", "lsi3sk", "lsi4sk", "lsi5sk"):
+            _validate_index_key_types({"PK": "X", attr: "value"})
+
+    def test_items_without_lsi_keys_pass(self):
+        _validate_index_key_types({"PK": "X", "SK": "Y", "name": "test"})
 
 
 class TestBatchDelete:
