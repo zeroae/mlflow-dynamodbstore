@@ -126,7 +126,10 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_SCORER_OSCFG_SUFFIX,
     SK_SCORER_PREFIX,
     SK_SESSION_PREFIX,
+    SK_SPAN_METRIC_PREFIX,
+    SK_SPAN_PREFIX,
     SK_TAG_PREFIX,
+    SK_TRACE_METRIC_PREFIX,
     SK_TRACE_PREFIX,
 )
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
@@ -2525,8 +2528,8 @@ class DynamoDBTrackingStore(AbstractStore):
                 spans_item["ttl"] = ttl
             self._table.put_item(spans_item)
 
-            # Denormalize span attributes on META
-            if span_dicts:
+            # Denormalize span attributes on META (skip if already done)
+            if span_dicts and not (meta or {}).get("span_types"):
                 span_types = set()
                 span_statuses = set()
                 span_names = set()
@@ -2572,7 +2575,14 @@ class DynamoDBTrackingStore(AbstractStore):
     def log_spans(
         self, location: str, spans: list[Any], tracking_uri: str | None = None
     ) -> list[Any]:
-        """Log spans to the tracking store by writing SPANS cache items."""
+        """Log spans to the tracking store by writing SPANS cache items.
+
+        In addition to the SPANS JSON blob, writes:
+        - Individual span items (T#<trace_id>#SPAN#<span_id>)
+        - Trace metric items (T#<trace_id>#TMETRIC#<key>) for aggregated token usage
+        - Span metric items (T#<trace_id>#SMETRIC#<span_id>#<key>) for per-span costs
+        - META denormalization of span_types, span_names, span_statuses
+        """
         import json as _json
         from collections import defaultdict
 
@@ -2593,9 +2603,10 @@ class DynamoDBTrackingStore(AbstractStore):
                 experiment_id = location
 
             pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            sk = f"{SK_TRACE_PREFIX}{trace_id}"
 
             # Read TTL from trace META
-            meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+            meta = self._table.get_item(pk=pk, sk=sk)
             ttl = int(meta["ttl"]) if meta and "ttl" in meta else self._get_trace_ttl()
 
             span_dicts = [s.to_dict() for s in trace_spans]
@@ -2607,6 +2618,175 @@ class DynamoDBTrackingStore(AbstractStore):
             if ttl is not None:
                 spans_item["ttl"] = ttl
             self._table.put_item(spans_item)
+
+            # --- Write individual span items, metrics, and denormalize META ---
+            extra_items: list[dict[str, Any]] = []
+            span_types: set[str] = set()
+            span_statuses: set[str] = set()
+            span_names: set[str] = set()
+            # Accumulators for trace-level token usage
+            total_input_tokens = 0
+            total_output_tokens = 0
+            total_total_tokens = 0
+            has_token_usage = False
+
+            for span in trace_spans:
+                sd = span.to_dict()
+                attrs = sd.get("attributes", {})
+
+                # Read span fields — prefer direct properties, fall back to dict
+                span_id = getattr(span, "span_id", None) or sd.get("span_id")
+                name = getattr(span, "name", None) or sd.get("name", "")
+                span_type = getattr(span, "span_type", None) or sd.get("span_type", "")
+                start_ns = getattr(span, "start_time_ns", None)
+                if start_ns is None or not isinstance(start_ns, int | float):
+                    start_ns = sd.get("start_time_ns", sd.get("start_time_unix_nano", 0))
+                end_ns = getattr(span, "end_time_ns", None)
+                if end_ns is None or not isinstance(end_ns, int | float):
+                    end_ns = sd.get("end_time_ns", sd.get("end_time_unix_nano", 0))
+
+                # Extract status string
+                status = getattr(span, "status", None) or sd.get("status", "")
+                if hasattr(status, "status_code"):
+                    status_str = str(status.status_code)
+                elif isinstance(status, dict):
+                    status_str = str(status.get("code", status))
+                else:
+                    status_str = str(status)
+
+                # Collect for META denormalization
+                if span_type:
+                    span_types.add(str(span_type))
+                if status_str:
+                    span_statuses.add(status_str)
+                if name:
+                    span_names.add(str(name))
+
+                # Skip individual span item if we don't have a span_id
+                if not span_id:
+                    continue
+
+                # Build individual span item
+                span_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_TRACE_PREFIX}{trace_id}{SK_SPAN_PREFIX}{span_id}",
+                    "name": str(name),
+                    "type": str(span_type),
+                    "status": status_str,
+                    "start_time_ns": int(start_ns),
+                    "end_time_ns": int(end_ns),
+                    "duration_ms": (int(end_ns) - int(start_ns)) // 1_000_000,
+                }
+                model_name = attrs.get("mlflow.llm.model")
+                if model_name:
+                    try:
+                        model_name = _json.loads(model_name)
+                    except (TypeError, _json.JSONDecodeError):
+                        pass
+                    if model_name:
+                        span_item["model_name"] = model_name
+
+                model_provider = attrs.get("mlflow.llm.provider")
+                if model_provider:
+                    try:
+                        model_provider = _json.loads(model_provider)
+                    except (TypeError, _json.JSONDecodeError):
+                        pass
+                    if model_provider:
+                        span_item["model_provider"] = model_provider
+
+                if ttl is not None:
+                    span_item["ttl"] = ttl
+                extra_items.append(span_item)
+
+                # --- Token usage (aggregate to trace level) ---
+                token_usage_raw = attrs.get("mlflow.chat.tokenUsage")
+                if token_usage_raw:
+                    try:
+                        token_usage = (
+                            _json.loads(token_usage_raw)
+                            if isinstance(token_usage_raw, str)
+                            else token_usage_raw
+                        )
+                        total_input_tokens += int(token_usage.get("input_tokens", 0))
+                        total_output_tokens += int(token_usage.get("output_tokens", 0))
+                        total_total_tokens += int(token_usage.get("total_tokens", 0))
+                        has_token_usage = True
+                    except (TypeError, _json.JSONDecodeError, ValueError):
+                        pass
+
+                # --- Per-span cost metrics ---
+                cost_raw = attrs.get("mlflow.llm.cost")
+                if cost_raw:
+                    try:
+                        from decimal import Decimal as _Decimal
+
+                        cost = _json.loads(cost_raw) if isinstance(cost_raw, str) else cost_raw
+                        for cost_key in ("input_cost", "output_cost", "total_cost"):
+                            if cost_key in cost and cost[cost_key] is not None:
+                                cost_item: dict[str, Any] = {
+                                    "PK": pk,
+                                    "SK": (
+                                        f"{SK_TRACE_PREFIX}{trace_id}"
+                                        f"{SK_SPAN_METRIC_PREFIX}{span_id}#{cost_key}"
+                                    ),
+                                    "value": _Decimal(str(cost[cost_key])),
+                                    "key": cost_key,
+                                    "span_id": span_id,
+                                }
+                                if ttl is not None:
+                                    cost_item["ttl"] = ttl
+                                extra_items.append(cost_item)
+                    except (TypeError, _json.JSONDecodeError, ValueError):
+                        pass
+
+            # --- Write trace-level metric items ---
+            if has_token_usage:
+                for metric_key, metric_val in [
+                    ("input_tokens", total_input_tokens),
+                    ("output_tokens", total_output_tokens),
+                    ("total_tokens", total_total_tokens),
+                ]:
+                    tmetric_item: dict[str, Any] = {
+                        "PK": pk,
+                        "SK": (f"{SK_TRACE_PREFIX}{trace_id}{SK_TRACE_METRIC_PREFIX}{metric_key}"),
+                        "value": metric_val,
+                        "key": metric_key,
+                    }
+                    if ttl is not None:
+                        tmetric_item["ttl"] = ttl
+                    extra_items.append(tmetric_item)
+
+            # Write all extra items in batch
+            if extra_items:
+                self._table.batch_write(extra_items)
+
+            # --- Denormalize span attributes on META ---
+            updates: dict[str, Any] = {}
+            if span_types:
+                updates["span_types"] = span_types
+            if span_statuses:
+                updates["span_statuses"] = span_statuses
+            if span_names:
+                updates["span_names"] = span_names
+
+            if updates:
+                self._table.update_item(pk=pk, sk=sk, updates=updates)
+
+            # Write FTS items for span names
+            if span_names:
+                span_names_text = " ".join(sorted(span_names))
+                fts_items = fts_items_for_text(
+                    pk=pk,
+                    entity_type="T",
+                    entity_id=trace_id,
+                    field="spans",
+                    text=span_names_text,
+                )
+                if ttl is not None:
+                    for item in fts_items:
+                        item["ttl"] = ttl
+                self._table.batch_write(fts_items)
 
         return spans
 
