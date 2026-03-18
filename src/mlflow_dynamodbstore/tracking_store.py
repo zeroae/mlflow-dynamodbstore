@@ -2611,9 +2611,22 @@ class DynamoDBTrackingStore(AbstractStore):
             ttl = int(meta["ttl"]) if meta and "ttl" in meta else self._get_trace_ttl()
 
             span_dicts = [s.to_dict() for s in trace_spans]
+
+            # Merge with existing cached spans (log_spans may be called multiple
+            # times for the same trace — e.g., parent span first, child span second)
+            spans_sk = f"{SK_TRACE_PREFIX}{trace_id}#SPANS"
+            existing = self._table.get_item(pk=pk, sk=spans_sk)
+            if existing is not None:
+                existing_dicts = _json.loads(existing["data"])
+                # Deduplicate by span_id
+                existing_by_id = {sd.get("span_id"): sd for sd in existing_dicts}
+                for sd in span_dicts:
+                    existing_by_id[sd.get("span_id")] = sd
+                span_dicts = list(existing_by_id.values())
+
             spans_item: dict[str, Any] = {
                 "PK": pk,
-                "SK": f"{SK_TRACE_PREFIX}{trace_id}#SPANS",
+                "SK": spans_sk,
                 "data": _json.dumps(span_dicts),
             }
             if ttl is not None:
