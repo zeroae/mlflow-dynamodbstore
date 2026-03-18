@@ -3521,6 +3521,50 @@ class DynamoDBTrackingStore(AbstractStore):
         if fts_items:
             self._table.batch_write(fts_items)
 
+    @staticmethod
+    def _parse_assessment_numeric_value(assess_dict: dict[str, Any]) -> Decimal | None:
+        """Parse numeric value from assessment dict for denormalization."""
+        fb = assess_dict.get("feedback", {})
+        ex = assess_dict.get("expectation", {})
+        raw = fb.get("value") if fb else ex.get("value")
+        if raw is None:
+            return None
+        val_str = str(raw)
+        if val_str in ("True", "true", "yes"):
+            return Decimal("1")
+        if val_str in ("False", "false", "no"):
+            return Decimal("0")
+        try:
+            return Decimal(val_str)
+        except Exception:
+            return None
+
+    def _denormalize_assessment_item(
+        self, item: dict[str, Any], assess_dict: dict[str, Any]
+    ) -> None:
+        """Add denormalized top-level attributes to an assessment item."""
+        item["name"] = assess_dict.get("assessment_name", "")
+        item["assessment_type"] = "feedback" if "feedback" in assess_dict else "expectation"
+        numeric_val = self._parse_assessment_numeric_value(assess_dict)
+        if numeric_val is not None:
+            item["numeric_value"] = numeric_val
+        # Parse created_timestamp from proto timestamp or ISO string
+        create_time = assess_dict.get("create_time", {})
+        if isinstance(create_time, dict):
+            seconds = int(create_time.get("seconds", 0))
+            nanos = int(create_time.get("nanos", 0))
+            item["created_timestamp"] = seconds * 1000 + nanos // 1_000_000
+        elif isinstance(create_time, int | float):
+            item["created_timestamp"] = int(create_time)
+        elif isinstance(create_time, str) and create_time:
+            import datetime as _dt
+
+            try:
+                dt = _dt.datetime.fromisoformat(create_time.replace("Z", "+00:00"))
+                item["created_timestamp"] = int(dt.timestamp() * 1000)
+            except ValueError:
+                pass
+
     def create_assessment(self, assessment: Assessment) -> Assessment:
         """Create a new assessment for a trace."""
         trace_id = assessment.trace_id
@@ -3563,6 +3607,7 @@ class DynamoDBTrackingStore(AbstractStore):
         }
         if ttl is not None:
             item["ttl"] = ttl
+        self._denormalize_assessment_item(item, assess_dict)
         self._table.put_item(item)
 
         # Write FTS items for the assessment value text
@@ -3637,6 +3682,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
         # Write updated item
         item["data"] = assess_dict
+        self._denormalize_assessment_item(item, assess_dict)
         self._table.put_item(item)
 
         # FTS diff
