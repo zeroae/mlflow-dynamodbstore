@@ -2569,7 +2569,17 @@ class DynamoDBTrackingStore(AbstractStore):
                     self._table.batch_write(fts_items)
 
         # Convert span dicts to MLflow Span objects
-        spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
+        # Try V3 format (Span.to_dict) first — preserves original span IDs.
+        # Fall back to X-Ray converter which hashes span IDs.
+        if span_dicts and "start_time_unix_nano" in span_dicts[0]:
+            try:
+                from mlflow.entities.span import Span as SpanEntity
+
+                spans = [SpanEntity.from_dict(sd) for sd in span_dicts]
+            except Exception:
+                spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
+        else:
+            spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
 
         return Trace(info=trace_info, data=TraceData(spans=spans))
 
