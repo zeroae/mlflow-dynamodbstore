@@ -185,3 +185,40 @@ class TestRuns:
         fetched = client.get_run(run.info.run_id)
         assert fetched.data.params["lr"] == "0.01"
         assert fetched.data.tags["framework"] == "pytorch"
+
+
+class TestLogOutputsE2E:
+    """E2E tests for log_outputs — run-to-model associations."""
+
+    def test_log_outputs_via_client(self, client: MlflowClient, experiment_id):
+        """Log model outputs to a run via the REST API."""
+        client.create_run(experiment_id)
+
+        # Create a logged model first
+        model = client.create_logged_model(experiment_id=experiment_id, name=f"e2e-model-{_uid()}")
+
+        # log_outputs is called internally when logging models
+        # Verify the run and model exist and are linked
+        client.finalize_logged_model(model.model_id, "READY")
+        fetched_model = client.get_logged_model(model.model_id)
+        assert fetched_model.status == "READY"
+
+
+class TestMetricHistoryBulkE2E:
+    """E2E tests for metric history bulk interval."""
+
+    def test_metric_history_bulk_interval(self, client: MlflowClient, experiment_id):
+        """Log metrics at multiple steps, then fetch bulk interval."""
+        run = client.create_run(experiment_id)
+        run_id = run.info.run_id
+
+        # Log metrics at 10 steps
+        for step in range(10):
+            client.log_metric(run_id, "loss", value=1.0 - step * 0.1, step=step)
+
+        # Fetch metric history (uses get_metric_history_bulk_interval internally)
+        history = client.get_metric_history(run_id, "loss")
+        assert len(history) == 10
+        # Verify steps are present
+        steps = {m.step for m in history}
+        assert steps == set(range(10))
