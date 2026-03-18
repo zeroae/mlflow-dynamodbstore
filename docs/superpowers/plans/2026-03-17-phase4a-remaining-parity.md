@@ -19,7 +19,7 @@
 - Modify: `src/mlflow_dynamodbstore/tracking_store.py`
 - Test: `tests/unit/test_tracking_store.py`
 
-- [ ] **Step 1: Add schema constant**
+- [x] **Step 1: Add schema constant**
 
 Add to `src/mlflow_dynamodbstore/dynamodb/schema.py` after `SK_LOGGED_MODEL_PREFIX`:
 
@@ -27,7 +27,7 @@ Add to `src/mlflow_dynamodbstore/dynamodb/schema.py` after `SK_LOGGED_MODEL_PREF
 SK_OUTPUT_PREFIX = "#OUTPUT#"
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 Add a new test class at the end of `tests/unit/test_tracking_store.py`:
 
@@ -105,12 +105,12 @@ class TestLogOutputs:
         tracking_store.log_outputs(run.info.run_id, [])
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_tracking_store.py::TestLogOutputs -v`
 Expected: FAIL — `log_outputs` raises `NotImplementedError` from `AbstractStore`.
 
-- [ ] **Step 4: Implement `log_outputs`**
+- [x] **Step 4: Implement `log_outputs`**
 
 Add two imports to `tracking_store.py`:
 
@@ -164,12 +164,12 @@ Add method to `DynamoDBTrackingStore` (near `log_batch`, around line 1879):
         self._table.batch_write(items)
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_tracking_store.py::TestLogOutputs -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/dynamodb/schema.py src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_store.py
@@ -184,7 +184,7 @@ git commit -m "feat: implement log_outputs for run-to-model associations"
 - Modify: `src/mlflow_dynamodbstore/tracking_store.py`
 - Test: `tests/unit/test_tracking_traces.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/unit/test_tracking_traces.py`:
 
@@ -216,12 +216,12 @@ class TestLogSpansAsync:
         assert cached is not None
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestLogSpansAsync -v`
 Expected: FAIL — `log_spans_async` raises `NotImplementedError`.
 
-- [ ] **Step 3: Implement `log_spans_async`**
+- [x] **Step 3: Implement `log_spans_async`**
 
 Add to `DynamoDBTrackingStore` (near `log_spans`):
 
@@ -231,12 +231,12 @@ Add to `DynamoDBTrackingStore` (near `log_spans`):
         return self.log_spans(location, spans)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/unit/test_tracking_traces.py::TestLogSpansAsync -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_traces.py
@@ -251,7 +251,7 @@ git commit -m "feat: implement log_spans_async (delegates to log_spans)"
 - Modify: `src/mlflow_dynamodbstore/tracking_store.py`
 - Test: `tests/unit/test_tracking_store.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `tests/unit/test_tracking_store.py`:
 
@@ -350,14 +350,14 @@ class TestGetMetricHistoryBulkIntervalFromSteps:
         assert result[0].key == "val"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_tracking_store.py::TestGetMetricHistoryBulkIntervalFromSteps -v`
 Expected: Tests pass using the inherited default implementation (which loads full history + filters). The override is a performance optimization — the tests verify correctness, not speed.
 
 Note: If the default implementation already passes all tests, that's expected. The override avoids constructing unnecessary `Metric` objects for runs with large histories. We still implement it for efficiency.
 
-- [ ] **Step 3: Implement `get_metric_history_bulk_interval_from_steps`**
+- [x] **Step 3: Implement `get_metric_history_bulk_interval_from_steps`**
 
 Add to `DynamoDBTrackingStore` (near `get_metric_history`):
 
@@ -395,12 +395,12 @@ Add to `DynamoDBTrackingStore` (near `get_metric_history`):
         return [MetricWithRunId(run_id=run_id, metric=m) for m in metrics]
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_tracking_store.py::TestGetMetricHistoryBulkIntervalFromSteps -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mlflow_dynamodbstore/tracking_store.py tests/unit/test_tracking_store.py
@@ -415,7 +415,7 @@ git commit -m "feat: implement get_metric_history_bulk_interval_from_steps"
 - Modify: `tests/integration/test_traces.py`
 - Modify: `tests/e2e/test_traces.py`
 
-- [ ] **Step 1: Add integration test for log_outputs**
+- [x] **Step 1: Add integration test for log_outputs**
 
 Add to `tests/integration/test_traces.py` (or create new `tests/integration/test_runs.py` if more appropriate — check which file has run tests):
 
@@ -437,27 +437,27 @@ class TestLogOutputsIntegration:
         assert len(items) == 1
 ```
 
-- [ ] **Step 2: Run integration tests**
+- [x] **Step 2: Run integration tests**
 
 Run: `uv run pytest tests/integration/ -v --tb=short`
 Expected: All pass.
 
-- [ ] **Step 3: Run full unit test suite**
+- [x] **Step 3: Run full unit test suite**
 
 Run: `uv run pytest tests/unit/ -v --tb=short -q`
 Expected: All pass.
 
-- [ ] **Step 4: Run e2e tests**
+- [x] **Step 4: Run e2e tests**
 
 Run: `uv run pytest tests/e2e/ -v --tb=short`
 Expected: All pass.
 
-- [ ] **Step 5: Verify patch coverage**
+- [x] **Step 5: Verify patch coverage**
 
 Run: `uv run pytest tests/unit/ --cov=mlflow_dynamodbstore.tracking_store --cov-report=term-missing`
 Verify: All new lines covered.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add tests/
