@@ -4719,16 +4719,18 @@ class DynamoDBTrackingStore(AbstractStore):
             exclusive_start_key=exclusive_start_key,
         )
 
+        from mlflow_dynamodbstore.dynamodb.table import convert_decimals
+
         record_list = [
             DatasetRecord(
                 dataset_id=dataset_id,
                 dataset_record_id=item["dataset_record_id"],
-                inputs=item.get("inputs", {}),
+                inputs=convert_decimals(item.get("inputs", {})),
                 created_time=int(item["created_time"]),
                 last_update_time=int(item["last_update_time"]),
-                outputs=item.get("outputs"),
-                expectations=item.get("expectations"),
-                tags=item.get("tags"),
+                outputs=convert_decimals(item.get("outputs")),
+                expectations=convert_decimals(item.get("expectations")),
+                tags=convert_decimals(item.get("tags")),
             )
             for item in items
         ]
