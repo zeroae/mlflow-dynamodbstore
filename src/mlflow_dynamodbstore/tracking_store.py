@@ -2773,7 +2773,11 @@ class DynamoDBTrackingStore(AbstractStore):
             if span_names:
                 updates["span_names"] = span_names
 
-            if updates:
+            if updates and meta:
+                # Only denormalize if META item exists (log_spans may be called
+                # before start_trace in the V3 async path; update_item would
+                # create a partial META item, causing start_trace's
+                # condition=attribute_not_exists(PK) to fail).
                 self._table.update_item(pk=pk, sk=sk, updates=updates)
 
             # Write FTS items for span names
