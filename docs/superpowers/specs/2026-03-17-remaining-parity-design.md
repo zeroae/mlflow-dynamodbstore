@@ -1,22 +1,32 @@
-# Phase 4: Remaining Store Parity — DynamoDB Implementation
+# Phase 4a: Remaining Store Parity — DynamoDB Implementation
 
 ## Context
 
-Phases 1–3 implemented datasets, logged models, scorers, core gaps, and advanced traces. Phase 4 closes the remaining gap between the DynamoDB tracking store and the SQLAlchemy store, achieving full `AbstractStore` parity.
+Phases 1–3 implemented datasets, logged models, scorers, core gaps, and advanced traces. Phase 4a closes the remaining simple gaps. Phase 4b (separate spec) will tackle `query_trace_metrics` — the in-memory trace analytics engine.
 
-**Scope revision from original plan**: The original Phase 4 ("Async/batch") and Phase 5 ("Metric history + remaining") are merged into a single phase. Investigation revealed that async methods (`log_batch_async`, `log_metric_async`, `log_param_async`, `set_tag_async`, `end_async_logging`, `flush_async_logging`, `shut_down_async_logging`) work correctly via inheritance — `AbstractStore.__init__` creates `_async_logging_queue` which wraps the synchronous `log_batch()` in a thread pool. No override needed.
+**Scope revision from original plan**: The original Phase 4 ("Async/batch") and Phase 5 ("Metric history + remaining") are merged. Investigation revealed that async methods (`log_batch_async`, `log_metric_async`, `log_param_async`, `set_tag_async`, `end_async_logging`, `flush_async_logging`, `shut_down_async_logging`) work correctly via inheritance — `AbstractStore.__init__` creates `_async_logging_queue` which wraps the synchronous `log_batch()` in a thread pool. No override needed.
 
 ## Scope
 
-5 store methods:
+3 store methods:
 
 | Method | Category | Priority |
 |--------|----------|----------|
 | `log_outputs` | Run association | Required — raises `NotImplementedError` |
 | `log_spans_async` | Async trace | Required — raises `NotImplementedError` |
-| `query_trace_metrics` | Trace analytics | Required — raises `MlflowNotImplementedException` |
 | `get_metric_history_bulk_interval_from_steps` | Performance override | Recommended — default loads full history then filters in-memory |
-| `get_metric_history_bulk_interval` | Performance override | Recommended — delegates to above |
+
+### Deferred to Phase 4b (separate spec)
+
+| Method | Reason |
+|--------|--------|
+| `query_trace_metrics` | Complex in-memory analytics engine — requires dedicated spec for trace/span/assessment metric extraction, time bucketing, aggregations (COUNT/AVG/MIN/MAX/SUM/percentiles), dimension grouping, and filter application |
+
+### No Override Needed
+
+| Method | Mechanism |
+|--------|-----------|
+| `get_metric_history_bulk_interval` | Default delegates to `_from_steps` (overridden above) + `get_metric_history` (already implemented) |
 
 ### Methods Confirmed Working via Inheritance (No Override Needed)
 
@@ -68,13 +78,11 @@ Every store method maps to Query, GetItem, or UpdateItem — never Scan.
 |---|---------------|--------|-----------|-------------|---------------|-------|
 | AP1 | Write run output association | `log_outputs` | BatchWriteItem | Table | `PK=EXP#<exp_id>, SK=R#<run_ulid>#OUTPUT#<output_uuid>` per model | O(N) where N = models count |
 | AP2 | Async span write | `log_spans_async` | (delegates to `log_spans`) | — | — | Same as Phase 3 AP7 |
-| AP3 | Aggregate trace metrics by time | `query_trace_metrics` | Paginated Query | Table + LSI1 | `PK=EXP#<exp_id>`, LSI1 range on timestamp | Single pass over trace META items within time range |
-| AP4 | Get metric history for specific steps | `get_metric_history_bulk_interval_from_steps` | Query | Table | `PK=EXP#<exp_id>, SK begins_with R#<run_ulid>#MHIST#<metric_key>#` | One query per run; in-memory step filter (bounded by metric history size) |
-| AP5 | Get metric history across runs (sampled) | `get_metric_history_bulk_interval` | (delegates to AP4) | — | — | Collects steps from AP4, samples, then re-queries AP4 per run |
+| AP3 | Get metric history for specific steps | `get_metric_history_bulk_interval_from_steps` | Query | Table | `PK=EXP#<exp_id>, SK begins_with R#<run_ulid>#MHIST#<metric_key>#` | One query per run; in-memory step filter (bounded by metric history size) |
 
 ### Scan Risk Assessment
 
-**All 5 access patterns are efficient.** No table scans. AP1 is batch writes with known keys. AP2 delegates to Phase 3. AP3 uses LSI1 for time-range queries within experiment partitions. AP4 queries within a run's metric history partition (bounded by step count). AP5 delegates to AP4.
+**All 3 access patterns are efficient.** No table scans. AP1 is batch writes with known keys. AP2 delegates to Phase 3. AP3 queries within a run's metric history partition (bounded by step count).
 
 ## Store Methods
 
@@ -102,51 +110,6 @@ async def log_spans_async(self, location: str, spans: list[Span]) -> list[Span]:
 ```
 
 This matches the SQLAlchemy store's implementation, which also delegates to the synchronous version. True async DynamoDB support (via `aioboto3`) is a future optimization, not a parity requirement.
-
-### `query_trace_metrics(experiment_ids, view_type, metric_name, aggregations, dimensions, filters, time_interval_seconds, start_time_ms, end_time_ms, max_results, page_token)`
-
-Computes aggregated trace metrics (e.g., average latency over time windows) for the experiment overview dashboard.
-
-1. Validate parameters using MLflow's `validate_query_trace_metrics_params(view_type, metric_name, aggregations, dimensions)`.
-2. If `time_interval_seconds` is set: require `start_time_ms` and `end_time_ms`, raise `MlflowException` if missing.
-3. For each `experiment_id` in `experiment_ids`:
-   a. Query trace META items within time range using LSI1 (`lsi1sk` = timestamp for traces).
-      - Key condition: `PK=EXP#<exp_id>`, `SK begins_with T#`, filter for META items only.
-      - Time filter: `lsi1sk BETWEEN start_time_ms AND end_time_ms` (if specified).
-   b. Collect trace META items with their denormalized attributes (request metadata, tags).
-4. Build in-memory trace data structures matching what `query_metrics()` expects.
-5. Extract metric values from trace attributes:
-   - `view_type=TRACE`: metric comes from trace-level attributes (latency, token count, etc.).
-   - Standard trace metrics: `latency` (execution_time_ms), `token_count` (from metadata), etc.
-6. Apply `filters` as predicate functions against trace attributes.
-7. Group by `dimensions` (e.g., by tag value) and `time_interval_seconds` (time buckets).
-8. Compute `aggregations` (COUNT, AVG, MIN, MAX, SUM, P50, P90, P95, P99) per group.
-9. Return `PagedList[list[MetricDataPoint]]` with up to `max_results` data points.
-
-**Implementation approach**: Rather than reimplementing the full SQL `query_metrics()` aggregation engine, use a single-pass streaming approach:
-
-```python
-# Pseudocode for aggregation
-buckets = defaultdict(lambda: defaultdict(list))  # {time_bucket: {dimension_key: [values]}}
-
-for trace_meta in all_trace_metas:
-    value = extract_metric(trace_meta, metric_name)
-    if value is None:
-        continue
-    if not passes_filters(trace_meta, filters):
-        continue
-
-    time_bucket = compute_bucket(trace_meta.timestamp_ms, time_interval_seconds, start_time_ms)
-    dim_key = extract_dimensions(trace_meta, dimensions)
-    buckets[time_bucket][dim_key].append(value)
-
-data_points = []
-for time_bucket, dim_groups in sorted(buckets.items()):
-    for dim_key, values in dim_groups.items():
-        data_points.append(compute_aggregations(values, aggregations, time_bucket, dim_key))
-```
-
-**Pagination**: Cursor-based, encoding the last time bucket processed. Not strictly needed for initial implementation since trace metric queries are typically bounded by time range.
 
 ### `get_metric_history_bulk_interval_from_steps(run_id, metric_key, steps, max_results)`
 
@@ -192,10 +155,6 @@ def get_metric_history_bulk_interval_from_steps(
     return [MetricWithRunId(run_id=run_id, metric=m) for m in metrics]
 ```
 
-### `get_metric_history_bulk_interval(run_ids, metric_key, max_results, start_step, end_step)`
-
-No override needed — the `AbstractStore` default implementation delegates to `get_metric_history_bulk_interval_from_steps()` (which we override above) and `get_metric_history()` (already implemented). The default's step-sampling algorithm works correctly with our overridden `_from_steps` method.
-
 ## Schema Constants
 
 New constant to add to `dynamodb/schema.py`:
@@ -223,17 +182,6 @@ No new partition keys, GSIs, or LSIs needed.
 - Verify return type is `list[Span]`
 - Verify spans are retrievable after async write
 
-**query_trace_metrics:**
-- COUNT aggregation over traces in time range
-- AVG latency across traces with time_interval_seconds bucketing
-- Multiple aggregations (COUNT + AVG) in single call
-- Dimension grouping (e.g., by tag value)
-- Filter application reduces trace count
-- Empty experiment returns empty result
-- Missing start_time_ms/end_time_ms with time_interval_seconds raises error
-- max_results limits output
-- Multiple experiment_ids — results aggregated across experiments
-
 **get_metric_history_bulk_interval_from_steps:**
 - Returns metrics only for requested steps
 - Steps not present in history are silently skipped
@@ -241,22 +189,18 @@ No new partition keys, GSIs, or LSIs needed.
 - max_results limits output
 - Empty steps list returns empty result
 
-**get_metric_history_bulk_interval:**
-- Returns sampled metrics across multiple runs
+**get_metric_history_bulk_interval (via inheritance):**
+- Returns sampled metrics across multiple runs (exercises our `_from_steps` override)
 - start_step/end_step bounds the range
 - max_results controls sampling density
-- Single run with dense history — sampling reduces output
-- Preserves min/max steps per run
 
 ### Integration Tests (moto server, REST)
 
 - `MlflowClient` round-trip for `log_outputs`
-- Trace metric query via REST endpoint
 - Metric history bulk interval via REST endpoint
 
 ### E2E Tests (full server)
 
-- Experiment overview dashboard loads trace metrics without errors
 - Metric chart bulk loading returns sampled data
 
 ### Coverage
@@ -265,6 +209,7 @@ No new partition keys, GSIs, or LSIs needed.
 
 ## Out of Scope
 
+- `query_trace_metrics` — Phase 4b (separate spec for trace analytics engine)
 - Gateway endpoint management (11 methods) — separate system, not tracking store
 - `get_online_trace_details` — Databricks-only
 - True async DynamoDB I/O via `aioboto3` — future optimization
