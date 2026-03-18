@@ -25,7 +25,7 @@
     
     
       
-        <title>Phase 4: Remaining Store Parity — DynamoDB Implementation - mlflow-dynamodbstore</title>
+        <title>Phase 4a: Remaining Store Parity — DynamoDB Implementation - mlflow-dynamodbstore</title>
       
     
     
@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#phase-4-remaining-store-parity-dynamodb-implementation" class="md-skip">
+        <a href="#phase-4a-remaining-store-parity-dynamodb-implementation" class="md-skip">
           Skip to content
         </a>
       
@@ -120,7 +120,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Phase 4: Remaining Store Parity — DynamoDB Implementation
+              Phase 4a: Remaining Store Parity — DynamoDB Implementation
             
           </span>
         </div>
@@ -972,6 +972,28 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#deferred-to-phase-4b-separate-spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deferred to Phase 4b (separate spec)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#no-override-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        No Override Needed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#methods-confirmed-working-via-inheritance-no-override-needed" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1100,32 +1122,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#query_trace_metricsexperiment_ids-view_type-metric_name-aggregations-dimensions-filters-time_interval_seconds-start_time_ms-end_time_ms-max_results-page_token" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        query_trace_metrics(experiment_ids, view_type, metric_name, aggregations, dimensions, filters, time_interval_seconds, start_time_ms, end_time_ms, max_results, page_token)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#get_metric_history_bulk_interval_from_stepsrun_id-metric_key-steps-max_results" class="md-nav__link">
     <span class="md-ellipsis">
       
         get_metric_history_bulk_interval_from_steps(run_id, metric_key, steps, max_results)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get_metric_history_bulk_intervalrun_ids-metric_key-max_results-start_step-end_step" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get_metric_history_bulk_interval(run_ids, metric_key, max_results, start_step, end_step)
       
     </span>
   </a>
@@ -1245,12 +1245,12 @@
   
 
 
-<h1 id="phase-4-remaining-store-parity-dynamodb-implementation">Phase 4: Remaining Store Parity — DynamoDB Implementation<a class="headerlink" href="#phase-4-remaining-store-parity-dynamodb-implementation" title="Permanent link">&para;</a></h1>
+<h1 id="phase-4a-remaining-store-parity-dynamodb-implementation">Phase 4a: Remaining Store Parity — DynamoDB Implementation<a class="headerlink" href="#phase-4a-remaining-store-parity-dynamodb-implementation" title="Permanent link">&para;</a></h1>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>Phases 1–3 implemented datasets, logged models, scorers, core gaps, and advanced traces. Phase 4 closes the remaining gap between the DynamoDB tracking store and the SQLAlchemy store, achieving full <code>AbstractStore</code> parity.</p>
-<p><strong>Scope revision from original plan</strong>: The original Phase 4 ("Async/batch") and Phase 5 ("Metric history + remaining") are merged into a single phase. Investigation revealed that async methods (<code>log_batch_async</code>, <code>log_metric_async</code>, <code>log_param_async</code>, <code>set_tag_async</code>, <code>end_async_logging</code>, <code>flush_async_logging</code>, <code>shut_down_async_logging</code>) work correctly via inheritance — <code>AbstractStore.__init__</code> creates <code>_async_logging_queue</code> which wraps the synchronous <code>log_batch()</code> in a thread pool. No override needed.</p>
+<p>Phases 1–3 implemented datasets, logged models, scorers, core gaps, and advanced traces. Phase 4a closes the remaining simple gaps. Phase 4b (separate spec) will tackle <code>query_trace_metrics</code> — the in-memory trace analytics engine.</p>
+<p><strong>Scope revision from original plan</strong>: The original Phase 4 ("Async/batch") and Phase 5 ("Metric history + remaining") are merged. Investigation revealed that async methods (<code>log_batch_async</code>, <code>log_metric_async</code>, <code>log_param_async</code>, <code>set_tag_async</code>, <code>end_async_logging</code>, <code>flush_async_logging</code>, <code>shut_down_async_logging</code>) work correctly via inheritance — <code>AbstractStore.__init__</code> creates <code>_async_logging_queue</code> which wraps the synchronous <code>log_batch()</code> in a thread pool. No override needed.</p>
 <h2 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h2>
-<p>5 store methods:</p>
+<p>3 store methods:</p>
 <table>
 <thead>
 <tr>
@@ -1271,19 +1271,39 @@
 <td>Required — raises <code>NotImplementedError</code></td>
 </tr>
 <tr>
-<td><code>query_trace_metrics</code></td>
-<td>Trace analytics</td>
-<td>Required — raises <code>MlflowNotImplementedException</code></td>
-</tr>
-<tr>
 <td><code>get_metric_history_bulk_interval_from_steps</code></td>
 <td>Performance override</td>
 <td>Recommended — default loads full history then filters in-memory</td>
 </tr>
+</tbody>
+</table>
+<h3 id="deferred-to-phase-4b-separate-spec">Deferred to Phase 4b (separate spec)<a class="headerlink" href="#deferred-to-phase-4b-separate-spec" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>query_trace_metrics</code></td>
+<td>Complex in-memory analytics engine — requires dedicated spec for trace/span/assessment metric extraction, time bucketing, aggregations (COUNT/AVG/MIN/MAX/SUM/percentiles), dimension grouping, and filter application</td>
+</tr>
+</tbody>
+</table>
+<h3 id="no-override-needed">No Override Needed<a class="headerlink" href="#no-override-needed" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Mechanism</th>
+</tr>
+</thead>
+<tbody>
 <tr>
 <td><code>get_metric_history_bulk_interval</code></td>
-<td>Performance override</td>
-<td>Recommended — delegates to above</td>
+<td>Default delegates to <code>_from_steps</code> (overridden above) + <code>get_metric_history</code> (already implemented)</td>
 </tr>
 </tbody>
 </table>
@@ -1427,15 +1447,6 @@
 </tr>
 <tr>
 <td>AP3</td>
-<td>Aggregate trace metrics by time</td>
-<td><code>query_trace_metrics</code></td>
-<td>Paginated Query</td>
-<td>Table + LSI1</td>
-<td><code>PK=EXP#&lt;exp_id&gt;</code>, LSI1 range on timestamp</td>
-<td>Single pass over trace META items within time range</td>
-</tr>
-<tr>
-<td>AP4</td>
 <td>Get metric history for specific steps</td>
 <td><code>get_metric_history_bulk_interval_from_steps</code></td>
 <td>Query</td>
@@ -1443,19 +1454,10 @@
 <td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with R#&lt;run_ulid&gt;#MHIST#&lt;metric_key&gt;#</code></td>
 <td>One query per run; in-memory step filter (bounded by metric history size)</td>
 </tr>
-<tr>
-<td>AP5</td>
-<td>Get metric history across runs (sampled)</td>
-<td><code>get_metric_history_bulk_interval</code></td>
-<td>(delegates to AP4)</td>
-<td>—</td>
-<td>—</td>
-<td>Collects steps from AP4, samples, then re-queries AP4 per run</td>
-</tr>
 </tbody>
 </table>
 <h3 id="scan-risk-assessment">Scan Risk Assessment<a class="headerlink" href="#scan-risk-assessment" title="Permanent link">&para;</a></h3>
-<p><strong>All 5 access patterns are efficient.</strong> No table scans. AP1 is batch writes with known keys. AP2 delegates to Phase 3. AP3 uses LSI1 for time-range queries within experiment partitions. AP4 queries within a run's metric history partition (bounded by step count). AP5 delegates to AP4.</p>
+<p><strong>All 3 access patterns are efficient.</strong> No table scans. AP1 is batch writes with known keys. AP2 delegates to Phase 3. AP3 queries within a run's metric history partition (bounded by step count).</p>
 <h2 id="store-methods">Store Methods<a class="headerlink" href="#store-methods" title="Permanent link">&para;</a></h2>
 <h3 id="log_outputsrun_id-models"><code>log_outputs(run_id, models)</code><a class="headerlink" href="#log_outputsrun_id-models" title="Permanent link">&para;</a></h3>
 <p>Associates logged model outputs with a run, creating input/output tracking items.</p>
@@ -1475,48 +1477,6 @@
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">log_spans</span><span class="p">(</span><span class="n">location</span><span class="p">,</span> <span class="n">spans</span><span class="p">)</span>
 </span></code></pre></div>
 <p>This matches the SQLAlchemy store's implementation, which also delegates to the synchronous version. True async DynamoDB support (via <code>aioboto3</code>) is a future optimization, not a parity requirement.</p>
-<h3 id="query_trace_metricsexperiment_ids-view_type-metric_name-aggregations-dimensions-filters-time_interval_seconds-start_time_ms-end_time_ms-max_results-page_token"><code>query_trace_metrics(experiment_ids, view_type, metric_name, aggregations, dimensions, filters, time_interval_seconds, start_time_ms, end_time_ms, max_results, page_token)</code><a class="headerlink" href="#query_trace_metricsexperiment_ids-view_type-metric_name-aggregations-dimensions-filters-time_interval_seconds-start_time_ms-end_time_ms-max_results-page_token" title="Permanent link">&para;</a></h3>
-<p>Computes aggregated trace metrics (e.g., average latency over time windows) for the experiment overview dashboard.</p>
-<ol>
-<li>Validate parameters using MLflow's <code>validate_query_trace_metrics_params(view_type, metric_name, aggregations, dimensions)</code>.</li>
-<li>If <code>time_interval_seconds</code> is set: require <code>start_time_ms</code> and <code>end_time_ms</code>, raise <code>MlflowException</code> if missing.</li>
-<li>For each <code>experiment_id</code> in <code>experiment_ids</code>:
-   a. Query trace META items within time range using LSI1 (<code>lsi1sk</code> = timestamp for traces).<ul>
-<li>Key condition: <code>PK=EXP#&lt;exp_id&gt;</code>, <code>SK begins_with T#</code>, filter for META items only.</li>
-<li>Time filter: <code>lsi1sk BETWEEN start_time_ms AND end_time_ms</code> (if specified).
-   b. Collect trace META items with their denormalized attributes (request metadata, tags).</li>
-</ul>
-</li>
-<li>Build in-memory trace data structures matching what <code>query_metrics()</code> expects.</li>
-<li>Extract metric values from trace attributes:</li>
-<li><code>view_type=TRACE</code>: metric comes from trace-level attributes (latency, token count, etc.).</li>
-<li>Standard trace metrics: <code>latency</code> (execution_time_ms), <code>token_count</code> (from metadata), etc.</li>
-<li>Apply <code>filters</code> as predicate functions against trace attributes.</li>
-<li>Group by <code>dimensions</code> (e.g., by tag value) and <code>time_interval_seconds</code> (time buckets).</li>
-<li>Compute <code>aggregations</code> (COUNT, AVG, MIN, MAX, SUM, P50, P90, P95, P99) per group.</li>
-<li>Return <code>PagedList[list[MetricDataPoint]]</code> with up to <code>max_results</code> data points.</li>
-</ol>
-<p><strong>Implementation approach</strong>: Rather than reimplementing the full SQL <code>query_metrics()</code> aggregation engine, use a single-pass streaming approach:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Pseudocode for aggregation</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">buckets</span> <span class="o">=</span> <span class="n">defaultdict</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="n">defaultdict</span><span class="p">(</span><span class="nb">list</span><span class="p">))</span>  <span class="c1"># {time_bucket: {dimension_key: [values]}}</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="k">for</span> <span class="n">trace_meta</span> <span class="ow">in</span> <span class="n">all_trace_metas</span><span class="p">:</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">value</span> <span class="o">=</span> <span class="n">extract_metric</span><span class="p">(</span><span class="n">trace_meta</span><span class="p">,</span> <span class="n">metric_name</span><span class="p">)</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>        <span class="k">continue</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">passes_filters</span><span class="p">(</span><span class="n">trace_meta</span><span class="p">,</span> <span class="n">filters</span><span class="p">):</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>        <span class="k">continue</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>    <span class="n">time_bucket</span> <span class="o">=</span> <span class="n">compute_bucket</span><span class="p">(</span><span class="n">trace_meta</span><span class="o">.</span><span class="n">timestamp_ms</span><span class="p">,</span> <span class="n">time_interval_seconds</span><span class="p">,</span> <span class="n">start_time_ms</span><span class="p">)</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>    <span class="n">dim_key</span> <span class="o">=</span> <span class="n">extract_dimensions</span><span class="p">(</span><span class="n">trace_meta</span><span class="p">,</span> <span class="n">dimensions</span><span class="p">)</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>    <span class="n">buckets</span><span class="p">[</span><span class="n">time_bucket</span><span class="p">][</span><span class="n">dim_key</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="n">data_points</span> <span class="o">=</span> <span class="p">[]</span>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="k">for</span> <span class="n">time_bucket</span><span class="p">,</span> <span class="n">dim_groups</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">buckets</span><span class="o">.</span><span class="n">items</span><span class="p">()):</span>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>    <span class="k">for</span> <span class="n">dim_key</span><span class="p">,</span> <span class="n">values</span> <span class="ow">in</span> <span class="n">dim_groups</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>        <span class="n">data_points</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">compute_aggregations</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">aggregations</span><span class="p">,</span> <span class="n">time_bucket</span><span class="p">,</span> <span class="n">dim_key</span><span class="p">))</span>
-</span></code></pre></div>
-<p><strong>Pagination</strong>: Cursor-based, encoding the last time bucket processed. Not strictly needed for initial implementation since trace metric queries are typically bounded by time range.</p>
 <h3 id="get_metric_history_bulk_interval_from_stepsrun_id-metric_key-steps-max_results"><code>get_metric_history_bulk_interval_from_steps(run_id, metric_key, steps, max_results)</code><a class="headerlink" href="#get_metric_history_bulk_interval_from_stepsrun_id-metric_key-steps-max_results" title="Permanent link">&para;</a></h3>
 <p>Performance-optimized override of the <code>AbstractStore</code> default, which loads the entire metric history then filters in-memory.</p>
 <ol>
@@ -1530,38 +1490,36 @@
 </ol>
 <p><strong>Optimization vs default</strong>: The default implementation calls <code>get_metric_history()</code> which loads ALL history items, then filters by step. This override queries the same prefix but applies the step filter during iteration rather than loading into a PagedList first. For runs with thousands of metric history entries but only a few requested steps, this avoids constructing unnecessary <code>Metric</code> objects.</p>
 <p><strong>Future optimization</strong>: If metric history items used step in the SK (they do: <code>#MHIST#&lt;key&gt;#&lt;padded_step&gt;#&lt;timestamp&gt;</code>), a more aggressive optimization could issue one Query per step with an exact SK prefix. However, the number of requested steps in <code>get_metric_history_bulk_interval</code> is bounded by <code>max_results</code> (typically 200-1000), and the single-prefix-query + filter approach is simpler and sufficient.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">get_metric_history_bulk_interval_from_steps</span><span class="p">(</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="bp">self</span><span class="p">,</span> <span class="n">run_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">metric_key</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">steps</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span> <span class="n">max_results</span><span class="p">:</span> <span class="nb">int</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">MetricWithRunId</span><span class="p">]:</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">experiment_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resolve_run_experiment</span><span class="p">(</span><span class="n">run_id</span><span class="p">)</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">pk</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">PK_EXPERIMENT_PREFIX</span><span class="si">}{</span><span class="n">experiment_id</span><span class="si">}</span><span class="s2">&quot;</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="n">prefix</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">SK_RUN_PREFIX</span><span class="si">}{</span><span class="n">run_id</span><span class="si">}{</span><span class="n">SK_METRIC_HISTORY_PREFIX</span><span class="si">}{</span><span class="n">metric_key</span><span class="si">}</span><span class="s2">#&quot;</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="n">steps_set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">steps</span><span class="p">)</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">items</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_table</span><span class="o">.</span><span class="n">query</span><span class="p">(</span><span class="n">pk</span><span class="o">=</span><span class="n">pk</span><span class="p">,</span> <span class="n">sk_prefix</span><span class="o">=</span><span class="n">prefix</span><span class="p">)</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="n">metrics</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>        <span class="p">[</span>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>            <span class="n">Metric</span><span class="p">(</span>
-</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>                <span class="n">key</span><span class="o">=</span><span class="n">item</span><span class="p">[</span><span class="s2">&quot;key&quot;</span><span class="p">],</span>
-</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>                <span class="n">value</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">item</span><span class="p">[</span><span class="s2">&quot;value&quot;</span><span class="p">]),</span>
-</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>                <span class="n">timestamp</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;timestamp&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)),</span>
-</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>                <span class="n">step</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;step&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)),</span>
-</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>            <span class="p">)</span>
-</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>            <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">items</span>
-</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>            <span class="k">if</span> <span class="nb">int</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;step&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span> <span class="ow">in</span> <span class="n">steps_set</span>
-</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>        <span class="p">],</span>
-</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>        <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">m</span><span class="p">:</span> <span class="p">(</span><span class="n">m</span><span class="o">.</span><span class="n">step</span><span class="p">,</span> <span class="n">m</span><span class="o">.</span><span class="n">timestamp</span><span class="p">),</span>
-</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>    <span class="p">)[:</span><span class="n">max_results</span><span class="p">]</span>
-</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>
-</span><span id="__span-2-25"><a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>    <span class="k">return</span> <span class="p">[</span><span class="n">MetricWithRunId</span><span class="p">(</span><span class="n">run_id</span><span class="o">=</span><span class="n">run_id</span><span class="p">,</span> <span class="n">metric</span><span class="o">=</span><span class="n">m</span><span class="p">)</span> <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">metrics</span><span class="p">]</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">get_metric_history_bulk_interval_from_steps</span><span class="p">(</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="bp">self</span><span class="p">,</span> <span class="n">run_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">metric_key</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">steps</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span> <span class="n">max_results</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">MetricWithRunId</span><span class="p">]:</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">experiment_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resolve_run_experiment</span><span class="p">(</span><span class="n">run_id</span><span class="p">)</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">pk</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">PK_EXPERIMENT_PREFIX</span><span class="si">}{</span><span class="n">experiment_id</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">prefix</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">SK_RUN_PREFIX</span><span class="si">}{</span><span class="n">run_id</span><span class="si">}{</span><span class="n">SK_METRIC_HISTORY_PREFIX</span><span class="si">}{</span><span class="n">metric_key</span><span class="si">}</span><span class="s2">#&quot;</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="n">steps_set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">steps</span><span class="p">)</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    <span class="n">items</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_table</span><span class="o">.</span><span class="n">query</span><span class="p">(</span><span class="n">pk</span><span class="o">=</span><span class="n">pk</span><span class="p">,</span> <span class="n">sk_prefix</span><span class="o">=</span><span class="n">prefix</span><span class="p">)</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>    <span class="n">metrics</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>        <span class="p">[</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>            <span class="n">Metric</span><span class="p">(</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>                <span class="n">key</span><span class="o">=</span><span class="n">item</span><span class="p">[</span><span class="s2">&quot;key&quot;</span><span class="p">],</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>                <span class="n">value</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">item</span><span class="p">[</span><span class="s2">&quot;value&quot;</span><span class="p">]),</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>                <span class="n">timestamp</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;timestamp&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)),</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>                <span class="n">step</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;step&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)),</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>            <span class="p">)</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>            <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">items</span>
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>            <span class="k">if</span> <span class="nb">int</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;step&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span> <span class="ow">in</span> <span class="n">steps_set</span>
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>        <span class="p">],</span>
+</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>        <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">m</span><span class="p">:</span> <span class="p">(</span><span class="n">m</span><span class="o">.</span><span class="n">step</span><span class="p">,</span> <span class="n">m</span><span class="o">.</span><span class="n">timestamp</span><span class="p">),</span>
+</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>    <span class="p">)[:</span><span class="n">max_results</span><span class="p">]</span>
+</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>
+</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>    <span class="k">return</span> <span class="p">[</span><span class="n">MetricWithRunId</span><span class="p">(</span><span class="n">run_id</span><span class="o">=</span><span class="n">run_id</span><span class="p">,</span> <span class="n">metric</span><span class="o">=</span><span class="n">m</span><span class="p">)</span> <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">metrics</span><span class="p">]</span>
 </span></code></pre></div>
-<h3 id="get_metric_history_bulk_intervalrun_ids-metric_key-max_results-start_step-end_step"><code>get_metric_history_bulk_interval(run_ids, metric_key, max_results, start_step, end_step)</code><a class="headerlink" href="#get_metric_history_bulk_intervalrun_ids-metric_key-max_results-start_step-end_step" title="Permanent link">&para;</a></h3>
-<p>No override needed — the <code>AbstractStore</code> default implementation delegates to <code>get_metric_history_bulk_interval_from_steps()</code> (which we override above) and <code>get_metric_history()</code> (already implemented). The default's step-sampling algorithm works correctly with our overridden <code>_from_steps</code> method.</p>
 <h2 id="schema-constants">Schema Constants<a class="headerlink" href="#schema-constants" title="Permanent link">&para;</a></h2>
 <p>New constant to add to <code>dynamodb/schema.py</code>:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Run output association (within EXP# partition, under R# prefix)</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">SK_OUTPUT_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;#OUTPUT#&quot;</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Run output association (within EXP# partition, under R# prefix)</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">SK_OUTPUT_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;#OUTPUT#&quot;</span>
 </span></code></pre></div>
 <p>No new partition keys, GSIs, or LSIs needed.</p>
 <h2 id="testing-strategy">Testing Strategy<a class="headerlink" href="#testing-strategy" title="Permanent link">&para;</a></h2>
@@ -1576,43 +1534,30 @@
 - Async call delegates to sync <code>log_spans</code> — verify spans are written
 - Verify return type is <code>list[Span]</code>
 - Verify spans are retrievable after async write</p>
-<p><strong>query_trace_metrics:</strong>
-- COUNT aggregation over traces in time range
-- AVG latency across traces with time_interval_seconds bucketing
-- Multiple aggregations (COUNT + AVG) in single call
-- Dimension grouping (e.g., by tag value)
-- Filter application reduces trace count
-- Empty experiment returns empty result
-- Missing start_time_ms/end_time_ms with time_interval_seconds raises error
-- max_results limits output
-- Multiple experiment_ids — results aggregated across experiments</p>
 <p><strong>get_metric_history_bulk_interval_from_steps:</strong>
 - Returns metrics only for requested steps
 - Steps not present in history are silently skipped
 - Results sorted by (step, timestamp)
 - max_results limits output
 - Empty steps list returns empty result</p>
-<p><strong>get_metric_history_bulk_interval:</strong>
-- Returns sampled metrics across multiple runs
+<p><strong>get_metric_history_bulk_interval (via inheritance):</strong>
+- Returns sampled metrics across multiple runs (exercises our <code>_from_steps</code> override)
 - start_step/end_step bounds the range
-- max_results controls sampling density
-- Single run with dense history — sampling reduces output
-- Preserves min/max steps per run</p>
+- max_results controls sampling density</p>
 <h3 id="integration-tests-moto-server-rest">Integration Tests (moto server, REST)<a class="headerlink" href="#integration-tests-moto-server-rest" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>MlflowClient</code> round-trip for <code>log_outputs</code></li>
-<li>Trace metric query via REST endpoint</li>
 <li>Metric history bulk interval via REST endpoint</li>
 </ul>
 <h3 id="e2e-tests-full-server">E2E Tests (full server)<a class="headerlink" href="#e2e-tests-full-server" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Experiment overview dashboard loads trace metrics without errors</li>
 <li>Metric chart bulk loading returns sampled data</li>
 </ul>
 <h3 id="coverage">Coverage<a class="headerlink" href="#coverage" title="Permanent link">&para;</a></h3>
 <p>100% patch coverage on new code.</p>
 <h2 id="out-of-scope">Out of Scope<a class="headerlink" href="#out-of-scope" title="Permanent link">&para;</a></h2>
 <ul>
+<li><code>query_trace_metrics</code> — Phase 4b (separate spec for trace analytics engine)</li>
 <li>Gateway endpoint management (11 methods) — separate system, not tracking store</li>
 <li><code>get_online_trace_details</code> — Databricks-only</li>
 <li>True async DynamoDB I/O via <code>aioboto3</code> — future optimization</li>
