@@ -582,9 +582,11 @@ class DynamoDBRegistryStore(AbstractStore):
         """Filter models by tag predicates."""
         filtered: list[RegisteredModel] = []
         for model in models:
-            # Get tags as a dict
+            # Use _tags (includes mlflow.* prefixed tags) not .tags (which filters them out)
             tag_dict: dict[str, str] = {}
-            if isinstance(model.tags, dict):
+            if hasattr(model, "_tags") and isinstance(model._tags, dict):
+                tag_dict = model._tags
+            elif isinstance(model.tags, dict):
                 tag_dict = model.tags
             else:
                 for t in model.tags:
