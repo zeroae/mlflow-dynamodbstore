@@ -23,6 +23,7 @@ from mlflow.entities import (
     ExperimentTag,
     InputTag,
     LoggedModel,
+    LoggedModelOutput,
     LoggedModelParameter,
     LoggedModelTag,
     Metric,
@@ -116,6 +117,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_LM_TAG_PREFIX,
     SK_METRIC_HISTORY_PREFIX,
     SK_METRIC_PREFIX,
+    SK_OUTPUT_PREFIX,
     SK_PARAM_PREFIX,
     SK_RANK_LM_PREFIX,
     SK_RANK_LMD_PREFIX,
@@ -1985,6 +1987,44 @@ class DynamoDBTrackingStore(AbstractStore):
         # Write tags individually (uses put_item)
         for tag in tags:
             self._write_run_tag(experiment_id, run_id, tag)
+
+    def log_outputs(self, run_id: str, models: list[LoggedModelOutput]) -> None:
+        """Associate logged model outputs with a run."""
+        if not models:
+            return
+
+        experiment_id = self._resolve_run_experiment(run_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        # Verify run is active (not deleted)
+        meta = self._table.get_item(pk=pk, sk=f"{SK_RUN_PREFIX}{run_id}")
+        if meta is None:
+            raise MlflowException(
+                f"Run '{run_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        if meta.get("lifecycle_stage") == "deleted":
+            raise MlflowException(
+                f"Run '{run_id}' is deleted.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        items: list[dict[str, Any]] = []
+        for model in models:
+            output_id = generate_ulid()
+            items.append(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_RUN_PREFIX}{run_id}{SK_OUTPUT_PREFIX}{output_id}",
+                    "source_type": "RUN_OUTPUT",
+                    "source_id": run_id,
+                    "destination_type": "MODEL_OUTPUT",
+                    "destination_id": model.model_id,
+                    "step": model.step,
+                }
+            )
+
+        self._table.batch_write(items)
 
     def get_metric_history(
         self,

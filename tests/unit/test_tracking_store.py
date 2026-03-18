@@ -455,3 +455,92 @@ class TestDatasetsInputs:
         )
         assert len(dlink_items) == 1
         assert "training" in str(dlink_items[0].get("context", ""))
+
+
+class TestLogOutputs:
+    """Tests for log_outputs — run-to-model associations."""
+
+    def test_log_single_output(self, tracking_store):
+        from mlflow.entities import LoggedModelOutput
+
+        exp_id = tracking_store.create_experiment("test-outputs", artifact_location="s3://b")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1000,
+            tags=[],
+            run_name="r1",
+        )
+        run_id = run.info.run_id
+
+        tracking_store.log_outputs(run_id, [LoggedModelOutput(model_id="m-abc", step=1)])
+
+        pk = f"EXP#{exp_id}"
+        items = tracking_store._table.query(pk=pk, sk_prefix=f"R#{run_id}#OUTPUT#")
+        assert len(items) == 1
+        assert items[0]["destination_id"] == "m-abc"
+        assert items[0]["step"] == 1
+
+    def test_log_multiple_outputs(self, tracking_store):
+        from mlflow.entities import LoggedModelOutput
+
+        exp_id = tracking_store.create_experiment("test-outputs-multi", artifact_location="s3://b")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1000,
+            tags=[],
+            run_name="r2",
+        )
+        run_id = run.info.run_id
+
+        models = [
+            LoggedModelOutput(model_id="m-1", step=1),
+            LoggedModelOutput(model_id="m-2", step=2),
+            LoggedModelOutput(model_id="m-3", step=3),
+        ]
+        tracking_store.log_outputs(run_id, models)
+
+        pk = f"EXP#{exp_id}"
+        items = tracking_store._table.query(pk=pk, sk_prefix=f"R#{run_id}#OUTPUT#")
+        assert len(items) == 3
+        model_ids = {item["destination_id"] for item in items}
+        assert model_ids == {"m-1", "m-2", "m-3"}
+
+    def test_log_output_nonexistent_run_raises(self, tracking_store):
+        from mlflow.entities import LoggedModelOutput
+        from mlflow.exceptions import MlflowException
+
+        with pytest.raises(MlflowException, match="does not exist"):
+            tracking_store.log_outputs(
+                "nonexistent-run", [LoggedModelOutput(model_id="m-x", step=0)]
+            )
+
+    def test_log_output_deleted_run_raises(self, tracking_store):
+        from mlflow.entities import LoggedModelOutput
+        from mlflow.exceptions import MlflowException
+
+        exp_id = tracking_store.create_experiment("test-outputs-del", artifact_location="s3://b")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1000,
+            tags=[],
+            run_name="r-del",
+        )
+        run_id = run.info.run_id
+        tracking_store.delete_run(run_id)
+
+        with pytest.raises(MlflowException):
+            tracking_store.log_outputs(run_id, [LoggedModelOutput(model_id="m-x", step=0)])
+
+    def test_log_output_empty_list_is_noop(self, tracking_store):
+        exp_id = tracking_store.create_experiment("test-outputs-empty", artifact_location="s3://b")
+        run = tracking_store.create_run(
+            experiment_id=exp_id,
+            user_id="user",
+            start_time=1000,
+            tags=[],
+            run_name="r3",
+        )
+        tracking_store.log_outputs(run.info.run_id, [])
