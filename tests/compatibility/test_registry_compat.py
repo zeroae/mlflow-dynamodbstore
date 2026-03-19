@@ -95,12 +95,12 @@ def _sync_time_mock(fn):
     return wrapper
 
 
-# --- Category 13: search ordering and pagination incomplete ---
+# --- Category 13: registered model order_by needs time mock sync ---
+test_search_registered_model_order_by = _sync_time_mock(test_search_registered_model_order_by)
+
+# --- Category 13: model version search ordering incomplete ---
 _xfail_search_order = pytest.mark.xfail(
-    reason="DynamoDB store search ordering and pagination incomplete"
-)
-test_search_registered_model_order_by = _xfail_search_order(
-    _sync_time_mock(test_search_registered_model_order_by)
+    reason="DynamoDB store model version search ordering incomplete"
 )
 test_search_model_versions_by_tag = _xfail_search_order(test_search_model_versions_by_tag)
 test_search_model_versions_order_by_simple = _xfail_search_order(

@@ -61,10 +61,35 @@ from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
 from mlflow_dynamodbstore.ids import generate_ulid
 
+_PREFETCH_TTL_SECONDS = 60
+
 
 def _rev(s: str) -> str:
     """Return reversed string."""
     return s[::-1]
+
+
+class _Negate:
+    """Wrapper that reverses comparison order for sorted() with mixed ASC/DESC."""
+
+    __slots__ = ("val",)
+
+    def __init__(self, val: Any) -> None:
+        self.val = val
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, _Negate):
+            return NotImplemented
+        return bool(self.val > other.val)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _Negate):
+            return NotImplemented
+        return bool(self.val == other.val)
+
+
+def _negate(val: Any) -> _Negate:
+    return _Negate(val)
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -86,6 +111,31 @@ def _item_to_registered_model(
         latest_versions=[],
         tags=tags or [],
         aliases=aliases or {},
+    )
+
+
+def _serialize_registered_model(rm: RegisteredModel) -> dict[str, Any]:
+    """Serialize a RegisteredModel for overflow cache storage."""
+    return {
+        "name": rm.name,
+        "creation_timestamp": rm.creation_timestamp,
+        "last_updated_timestamp": rm.last_updated_timestamp,
+        "description": rm.description,
+        "tags": [{"key": t.key, "value": t.value} for t in (rm.tags or [])],
+        "aliases": [{"alias": a.alias, "version": a.version} for a in (rm.aliases or [])],
+    }
+
+
+def _deserialize_registered_model(data: dict[str, Any]) -> RegisteredModel:
+    """Deserialize a RegisteredModel from overflow cache data."""
+    return RegisteredModel(
+        name=data["name"],
+        creation_timestamp=_int_or_none(data.get("creation_timestamp")),
+        last_updated_timestamp=_int_or_none(data.get("last_updated_timestamp")),
+        description=data.get("description"),
+        latest_versions=[],
+        tags=[RegisteredModelTag(t["key"], t["value"]) for t in data.get("tags", [])],
+        aliases=[RegisteredModelAlias(a["alias"], a["version"]) for a in data.get("aliases", [])],
     )
 
 
@@ -132,6 +182,7 @@ class DynamoDBRegistryStore(AbstractStore):
             ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
         self._cache = ResolutionCache(workspace=lambda: self._workspace)
+        self._prefetch: dict[str, tuple[float, list[dict[str, Any]], dict[str, Any] | None]] = {}
         self._config = ConfigReader(self._table)
         self._config.reconcile()
 
@@ -551,6 +602,7 @@ class DynamoDBRegistryStore(AbstractStore):
             max_results=max_results,
             page_token=page_token,
             filter_fn=filter_fn,
+            order_by=order_by,
         )
         return PagedList(models, next_token)
 
@@ -836,26 +888,74 @@ class DynamoDBRegistryStore(AbstractStore):
         max_results: int = 100,
         page_token: str | None = None,
         filter_fn: Any | None = None,
+        order_by: list[str] | None = None,
     ) -> tuple[list[RegisteredModel], str | None]:
-        """Query an index page-by-page, apply filter_fn, return (models, next_token)."""
-        exclusive_start_key = self._decode_page_token(page_token)
-        results: list[RegisteredModel] = []
-        # Track the raw DynamoDB item for the last *kept* result (for cursor construction)
-        kept_items: list[dict[str, Any]] = []
+        """Query an index page-by-page, apply filter_fn, return (models, next_token).
 
-        while len(results) < max_results + 1:
-            needed = max_results + 1 - len(results)
-            batch_size = needed * 2 if filter_fn else needed
-            items, lek = self._table.query_page(
-                pk=pk,
-                sk_prefix=sk_prefix,
-                index_name=index_name,
-                limit=batch_size,
-                scan_forward=scan_forward,
-                exclusive_start_key=exclusive_start_key,
+        When *order_by* includes a secondary sort (e.g. timestamp + name tiebreak),
+        tie groups (consecutive items sharing the same primary sort value) are kept
+        intact across page boundaries.  Overflow is cached in DynamoDB.
+        """
+        from mlflow_dynamodbstore.dynamodb.overflow_cache import (
+            cache_put_overflow,
+            compute_cache_hash,
+            encode_overflow_token,
+            is_overflow_token,
+        )
+
+        needs_tiebreak = self._needs_secondary_sort(order_by)
+
+        # --- Handle overflow token from a previous page ---
+        decoded = self._decode_page_token(page_token)
+        if decoded is not None and is_overflow_token(decoded):
+            return self._consume_overflow_page(
+                decoded,
+                pk,
+                index_name,
+                sk_prefix,
+                scan_forward,
+                max_results,
+                filter_fn,
+                order_by,
             )
+
+        exclusive_start_key = decoded
+        results: list[RegisteredModel] = []
+        kept_items: list[dict[str, Any]] = []
+        exhausted = False
+
+        # --- Check prefetch cache for previously fetched items ---
+        prefetch_key = (
+            json.dumps(exclusive_start_key, sort_keys=True) if exclusive_start_key else ""
+        )
+        cached = self._prefetch.pop(prefetch_key, None)
+        if cached is not None:
+            cached_ts, cached_items, cached_lek = cached
+            if time.time() - cached_ts < _PREFETCH_TTL_SECONDS:
+                items = cached_items
+                lek = cached_lek
+            else:
+                items = None  # expired
+        else:
+            items = None
+
+        # --- Fetch max_results + 1 items from DynamoDB ---
+        while len(results) < max_results + 1:
+            if items is None:
+                needed = max_results + 1 - len(results)
+                batch_size = needed * 2 if filter_fn else needed
+                items, lek = self._table.query_page(
+                    pk=pk,
+                    sk_prefix=sk_prefix,
+                    index_name=index_name,
+                    limit=batch_size,
+                    scan_forward=scan_forward,
+                    exclusive_start_key=exclusive_start_key,
+                )
+
+            consumed = 0
             for item in items:
-                # Skip NAME_REV items in GSI5
+                consumed += 1
                 if item.get(GSI5_SK, "").startswith("REV#"):
                     continue
                 model_name = item.get("name")
@@ -869,52 +969,225 @@ class DynamoDBRegistryStore(AbstractStore):
                     continue
                 results.append(rm)
                 kept_items.append(item)
-                if len(results) > max_results:
+                if not needs_tiebreak and len(results) > max_results:
                     break
 
-            if lek is None or len(results) > max_results:
+            # Cache any unprocessed items from this batch
+            remainder = items[consumed:]
+            if remainder and len(results) > max_results:
+                cursor_key = json.dumps(
+                    self._build_exclusive_start_key(kept_items[-1], index_name),
+                    sort_keys=True,
+                )
+                self._prefetch[cursor_key] = (time.time(), remainder, lek)
+
+            items = None  # clear so next iteration fetches from DDB
+
+            if lek is None:
+                exhausted = True
                 break
             exclusive_start_key = lek
+            if len(results) > max_results:
+                break
 
-        if len(results) > max_results:
+        # --- No tiebreak needed: simple cursor pagination ---
+        if not needs_tiebreak:
+            if len(results) > max_results:
+                results = results[:max_results]
+                kept_items = kept_items[:max_results]
+                last_kept = kept_items[-1]
+                next_token = self._encode_page_token(
+                    self._build_exclusive_start_key(last_kept, index_name)
+                )
+            else:
+                next_token = None
+            return results, next_token
+
+        # --- Tiebreak path ---
+
+        # If we have exactly max_results or fewer, just sort and return
+        if len(results) <= max_results:
+            results = self._sort_models(results, order_by)
+            return results, None
+
+        # We have > max_results items. Check if item at the boundary ties.
+        boundary_ts = results[max_results - 1].last_updated_timestamp
+        overflow_ts = results[max_results].last_updated_timestamp
+
+        if boundary_ts != overflow_ts:
+            # Clean cut — no tie at boundary. Sort and paginate normally.
             results = results[:max_results]
             kept_items = kept_items[:max_results]
+            results = self._sort_models(results, order_by)
             last_kept = kept_items[-1]
             next_token = self._encode_page_token(
                 self._build_exclusive_start_key(last_kept, index_name)
             )
+            return results, next_token
+
+        # Tie at boundary — complete the tie group by over-fetching
+        while not exhausted and results[-1].last_updated_timestamp == boundary_ts:
+            items, lek = self._table.query_page(
+                pk=pk,
+                sk_prefix=sk_prefix,
+                index_name=index_name,
+                limit=max_results,
+                scan_forward=scan_forward,
+                exclusive_start_key=exclusive_start_key,
+            )
+            if lek is None:
+                exhausted = True
+            else:
+                exclusive_start_key = lek
+
+            for item in items:
+                if item.get(GSI5_SK, "").startswith("REV#"):
+                    continue
+                model_name = item.get("name")
+                if not model_name:
+                    continue
+                model_ulid = item["PK"].replace(PK_MODEL_PREFIX, "")
+                ts = _int_or_none(item.get("last_updated_timestamp")) or 0
+                if ts != boundary_ts:
+                    # Past the tie group — but we fetched this item, save it
+                    tags = self._get_model_tags(model_ulid)
+                    aliases = self._aliases_for_registered_model(model_ulid)
+                    rm = _item_to_registered_model(item, tags, aliases)
+                    if not filter_fn or filter_fn(rm):
+                        results.append(rm)
+                        kept_items.append(item)
+                    break
+                tags = self._get_model_tags(model_ulid)
+                aliases = self._aliases_for_registered_model(model_ulid)
+                rm = _item_to_registered_model(item, tags, aliases)
+                if filter_fn and not filter_fn(rm):
+                    continue
+                results.append(rm)
+                kept_items.append(item)
+
+        # Sort the full buffer within tie groups
+        results = self._sort_models(results, order_by)
+
+        # Return first max_results, cache the rest
+        page = results[:max_results]
+        overflow = results[max_results:]
+
+        if not overflow and exhausted:
+            return page, None
+        if not overflow:
+            # Exactly max_results after sorting, but more data in DDB
+            last_kept = kept_items[max_results - 1]
+            next_token = self._encode_page_token(
+                self._build_exclusive_start_key(last_kept, index_name)
+            )
+            return page, next_token
+
+        # Cache overflow + DDB continuation pointer
+        ddb_lek = exclusive_start_key if not exhausted else None
+        cache_hash = compute_cache_hash(pk, index_name, order_by, ddb_lek)
+        overflow_data = [_serialize_registered_model(rm) for rm in overflow]
+        cache_put_overflow(self._table, cache_hash, overflow_data, ddb_lek, max_results)
+        next_token = encode_overflow_token(cache_hash, 0)
+
+        return page, next_token
+
+    def _consume_overflow_page(
+        self,
+        decoded_token: dict[str, Any],
+        pk: str,
+        index_name: str,
+        sk_prefix: str | None,
+        scan_forward: bool,
+        max_results: int,
+        filter_fn: Any | None,
+        order_by: list[str] | None,
+    ) -> tuple[list[RegisteredModel], str | None]:
+        """Read a page from the overflow cache and return models + next token."""
+        from mlflow_dynamodbstore.dynamodb.overflow_cache import (
+            cache_get_overflow_page,
+            encode_overflow_token,
+        )
+
+        cache_hash = decoded_token["overflow"]
+        page_idx = decoded_token["page"]
+
+        models_data, ddb_lek, is_last = cache_get_overflow_page(self._table, cache_hash, page_idx)
+
+        if models_data is None:
+            raise MlflowException(
+                "Pagination overflow cache expired. Please restart your search.",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        results = [_deserialize_registered_model(d) for d in models_data]
+
+        if not is_last:
+            # More overflow pages
+            next_token = encode_overflow_token(cache_hash, page_idx + 1)
+        elif ddb_lek is not None:
+            # Overflow exhausted, resume DDB pagination
+            next_token = self._encode_page_token(ddb_lek)
         else:
+            # Everything exhausted
             next_token = None
 
         return results, next_token
 
+    @staticmethod
+    def _needs_secondary_sort(order_by: list[str] | None) -> bool:
+        """Return True if order_by requires Python tiebreak sorting."""
+        if not order_by:
+            return False
+        if len(order_by) > 1:
+            return True
+        key = order_by[0].split()[0].lower()
+        return key in ("last_updated_timestamp", "timestamp")
+
+    @staticmethod
+    def _parse_order_clause(token: str) -> tuple[str, bool]:
+        """Parse an order_by token into (key, reverse)."""
+        parts = token.split()
+        key = parts[0].lower()
+        reverse = len(parts) >= 2 and parts[-1].upper() == "DESC"
+        return key, reverse
+
     def _sort_models(
         self, models: list[RegisteredModel], order_by: list[str] | None
     ) -> list[RegisteredModel]:
-        """Sort models by order_by tokens."""
+        """Sort models by order_by tokens with multi-column tiebreaking.
+
+        Supports up to two columns.  When only a timestamp column is given
+        the implicit tiebreaker is ``name ASC``.  When only ``name`` is given
+        no tiebreaker is needed (names are unique).
+        """
         if not order_by:
             return models
 
-        # Parse the first order_by token
-        token = order_by[0].strip()
-        parts = token.rsplit(None, 1)
-        if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
-            key = parts[0].lower()
-            reverse = parts[1].upper() == "DESC"
-        else:
-            key = token.lower()
-            reverse = False
+        clauses: list[tuple[str, bool]] = [self._parse_order_clause(t) for t in order_by]
 
-        if key == "name":
-            models = sorted(models, key=lambda m: m.name, reverse=reverse)
-        elif key in ("last_updated_timestamp", "timestamp"):
-            models = sorted(
-                models,
-                key=lambda m: m.last_updated_timestamp or 0,
-                reverse=reverse,
-            )
+        # Normalise timestamp synonyms
+        _ts_keys = {"last_updated_timestamp", "timestamp"}
 
-        return models
+        # Add implicit name ASC tiebreaker when primary sort is by timestamp
+        if len(clauses) == 1 and clauses[0][0] in _ts_keys:
+            clauses.append(("name", False))
+
+        def _sort_key(m: RegisteredModel) -> tuple[Any, ...]:
+            parts: list[Any] = []
+            for key, reverse in clauses:
+                if key == "name":
+                    val = m.name
+                elif key in _ts_keys:
+                    val = m.last_updated_timestamp or 0
+                else:
+                    val = ""
+                # Negate for DESC columns so a single sorted() works
+                if reverse:
+                    val = _negate(val)
+                parts.append(val)
+            return tuple(parts)
+
+        return sorted(models, key=_sort_key)
 
     # ------------------------------------------------------------------
     # Registered Model Tags
