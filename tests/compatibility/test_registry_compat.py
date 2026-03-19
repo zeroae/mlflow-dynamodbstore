@@ -58,11 +58,25 @@ from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402, F4
     test_update_registered_model,
 )
 
-# --- Category 11: test mocks sqlalchemy_store.MlflowClient, not our module ---
-_xfail_model_id = pytest.mark.xfail(
-    reason="Test mocks sqlalchemy_store.MlflowClient — mock path incompatible with DynamoDB store"
-)
-test_create_model_version_with_model_id_and_no_run_id = _xfail_model_id(
+
+# --- Category 11: redirect MlflowClient mock to our module path ---
+# The vendored test mocks sqlalchemy_store.MlflowClient, but our store imports
+# MlflowClient at module level. Delegate our copy to the sa_store's (possibly mocked) copy.
+def _sync_mlflow_client_mock(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        import mlflow.store.model_registry.sqlalchemy_store as sa_store
+
+        with mock.patch(
+            "mlflow_dynamodbstore.registry_store.MlflowClient",
+            side_effect=lambda: sa_store.MlflowClient(),
+        ):
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+test_create_model_version_with_model_id_and_no_run_id = _sync_mlflow_client_mock(
     test_create_model_version_with_model_id_and_no_run_id
 )
 

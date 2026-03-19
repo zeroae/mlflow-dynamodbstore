@@ -7,6 +7,7 @@ import json
 import time
 from typing import Any
 
+from mlflow import MlflowClient
 from mlflow.entities.model_registry import RegisteredModel, RegisteredModelTag
 from mlflow.entities.model_registry.model_version import ModelVersion
 from mlflow.entities.model_registry.model_version_stages import STAGE_DELETED_INTERNAL
@@ -988,8 +989,6 @@ class DynamoDBRegistryStore(AbstractStore):
     ) -> ModelVersion:
         """Create a new model version under the given registered model."""
         if not run_id and model_id:
-            from mlflow import MlflowClient
-
             model = MlflowClient().get_logged_model(model_id)
             run_id = model.source_run_id
 
