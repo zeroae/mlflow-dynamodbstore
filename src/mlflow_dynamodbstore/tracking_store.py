@@ -325,13 +325,19 @@ class DynamoDBTrackingStore(AbstractStore):
             ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
         self._uri = uri
-        self._cache = ResolutionCache()
+        self._cache = ResolutionCache(workspace=lambda: self._workspace)
         self._artifact_uri = artifact_uri or "./mlartifacts"
         self.artifact_root_uri = self._artifact_uri
-        self._workspace = "default"
         self._config = ConfigReader(self._table)
         self._config.reconcile()
         super().__init__()
+
+    @property
+    def _workspace(self) -> str:
+        """Return the active workspace from context, defaulting to 'default'."""
+        from mlflow.utils.workspace_context import get_request_workspace
+
+        return get_request_workspace() or "default"
 
     @property
     def supports_workspaces(self) -> bool:
@@ -342,6 +348,38 @@ class DynamoDBTrackingStore(AbstractStore):
         controls whether workspace features are active at runtime.
         """
         return True
+
+    # ------------------------------------------------------------------
+    # Workspace helpers
+    # ------------------------------------------------------------------
+
+    def _check_experiment_workspace(self, experiment_id: str) -> None:
+        """Raise if the experiment does not belong to the current workspace."""
+        item = self._table.get_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=SK_EXPERIMENT_META,
+        )
+        if item is None:
+            raise MlflowException(
+                f"No Experiment with id={experiment_id} exists",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        item_workspace = item.get("workspace", "default")
+        if item_workspace != self._workspace:
+            raise MlflowException(
+                f"No Experiment with id={experiment_id} exists",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+    def _experiment_in_workspace(self, experiment_id: str) -> bool:
+        """Return True if the experiment belongs to the current workspace."""
+        item = self._table.get_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=SK_EXPERIMENT_META,
+        )
+        if item is None:
+            return False
+        return str(item.get("workspace", "default")) == self._workspace
 
     # ------------------------------------------------------------------
     # Experiment CRUD
@@ -434,7 +472,14 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         if item is None:
             raise MlflowException(
-                f"Experiment '{experiment_id}' does not exist.",
+                f"No Experiment with id={experiment_id} exists",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        item_workspace = item.get("workspace", "default")
+        if item_workspace != self._workspace:
+            raise MlflowException(
+                f"No Experiment with id={experiment_id} exists",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -539,6 +584,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def delete_experiment(self, experiment_id: str) -> None:
         """Soft-delete an experiment and set TTL on META only."""
+        self._check_experiment_workspace(experiment_id)
         now_ms = int(time.time() * 1000)
 
         updates: dict[str, Any] = {
@@ -562,6 +608,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def restore_experiment(self, experiment_id: str) -> None:
         """Restore a soft-deleted experiment and remove TTL from META."""
+        self._check_experiment_workspace(experiment_id)
         now_ms = int(time.time() * 1000)
 
         self._table.update_item(
@@ -1617,6 +1664,9 @@ class DynamoDBTrackingStore(AbstractStore):
             plan_run_query,
         )
 
+        # 0. Filter experiment_ids to current workspace
+        experiment_ids = [eid for eid in experiment_ids if self._experiment_in_workspace(eid)]
+
         # 1. Parse filter
         predicates = parse_run_filter(filter_string)
 
@@ -1731,9 +1781,18 @@ class DynamoDBTrackingStore(AbstractStore):
     # ------------------------------------------------------------------
 
     def _resolve_run_experiment(self, run_id: str) -> str:
-        """Resolve run_id to experiment_id, using cache then GSI1."""
+        """Resolve run_id to experiment_id, enforcing workspace isolation.
+
+        Uses cache then GSI1. Verifies the parent experiment belongs to the
+        current workspace, raising with a run-specific message if not.
+        """
         cached = self._cache.get("run_exp", run_id)
         if cached:
+            if not self._experiment_in_workspace(cached):
+                raise MlflowException(
+                    f"Run with id={run_id} not found",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
             return cached
 
         # Look up via GSI1
@@ -1744,11 +1803,16 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         if not results:
             raise MlflowException(
-                f"Run '{run_id}' does not exist.",
+                f"Run with id={run_id} not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
         experiment_id: str = results[0]["experiment_id"]
+        if not self._experiment_in_workspace(experiment_id):
+            raise MlflowException(
+                f"Run with id={run_id} not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
         self._cache.put("run_exp", run_id, experiment_id)
         return experiment_id
 
@@ -2228,6 +2292,9 @@ class DynamoDBTrackingStore(AbstractStore):
         Returns:
             List of DatasetSummary protobuf objects.
         """
+        # Filter experiment_ids to current workspace
+        experiment_ids = [eid for eid in experiment_ids if self._experiment_in_workspace(eid)]
+
         dataset_map: dict[tuple[str, str], dict[str, Any]] = {}
 
         for experiment_id in experiment_ids:

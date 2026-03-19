@@ -83,10 +83,10 @@ class _FakeSession:
     def execute(self, statement, params=None):
         sql = statement.text if hasattr(statement, "text") else str(statement)
         if "INSERT INTO experiments" in sql:
-            orig = self._ts._workspace
-            self._ts._workspace = params["ws"]
-            self._ts.create_experiment(params["name"])
-            self._ts._workspace = orig
+            from mlflow.utils.workspace_context import WorkspaceContext
+
+            with WorkspaceContext(params["ws"]):
+                self._ts.create_experiment(params["name"])
             return None
         if "SELECT workspace FROM experiments WHERE name" in sql:
             # Search all workspaces for the experiment by name

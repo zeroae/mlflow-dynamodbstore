@@ -455,8 +455,6 @@ test_finalize_logged_model = _xfail_error_msg(test_finalize_logged_model)
 test_get_experiment_invalid_id = _xfail_error_msg(test_get_experiment_invalid_id)
 test_get_logged_model = _xfail_error_msg(test_get_logged_model)
 test_get_trace_not_found = _xfail_error_msg(test_get_trace_not_found)
-test_log_batch_nonexistent_run = _xfail_error_msg(test_log_batch_nonexistent_run)
-test_raise_experiment_dont_exist = _xfail_error_msg(test_raise_experiment_dont_exist)
 test_search_logged_models_invalid_filter_string = _xfail_error_msg(
     test_search_logged_models_invalid_filter_string
 )
