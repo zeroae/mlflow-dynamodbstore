@@ -94,6 +94,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI3_PK,
     GSI3_SCOR_NAME_PREFIX,
     GSI3_SK,
+    GSI4_GW_MODELDEF_SECRET_PREFIX,
     GSI5_EXP_NAMES_PREFIX,
     GSI5_PK,
     GSI5_SK,
@@ -5424,3 +5425,44 @@ class DynamoDBTrackingStore(AbstractStore):
         updated_item = self._get_secret_item(secret_id)
         self._invalidate_secret_cache()
         return self._secret_item_to_entity(updated_item)  # type: ignore[arg-type]
+
+    def delete_gateway_secret(self, secret_id: str) -> None:
+        item = self._get_secret_item(secret_id)
+        if item is None:
+            raise MlflowException(
+                f"Secret '{secret_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Orphan model definitions that reference this secret (SET NULL behavior)
+        model_defs = self._table.query(
+            pk=f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}",
+            index_name="gsi4",
+        )
+        for md_item in model_defs:
+            self._table.update_item(
+                pk=md_item["PK"],
+                sk=md_item["SK"],
+                removes=["secret_id", "gsi4pk", "gsi4sk"],
+            )
+
+        self._table.delete_item(
+            pk=f"{PK_GW_SECRET_PREFIX}{secret_id}",
+            sk=SK_GW_META,
+        )
+        self._invalidate_secret_cache()
+
+    def list_secret_infos(self, provider: str | None = None) -> list[GatewaySecretInfo]:
+        from boto3.dynamodb.conditions import Attr
+
+        filter_expr = Attr("provider").eq(provider) if provider else None
+
+        items = self._table.query(
+            pk=f"{GSI2_GW_SECRETS_PREFIX}{self._workspace}",
+            index_name="gsi2",
+            filter_expression=filter_expr,
+        )
+
+        # GSI2 has ALL projection — items include all base table attributes
+        # (PK, SK, secret_name, masked_value, etc.), no re-fetch needed.
+        return [self._secret_item_to_entity(item) for item in items]
