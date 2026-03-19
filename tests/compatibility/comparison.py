@@ -2,6 +2,9 @@
 
 from tests.compatibility.field_policy import DEFAULT_POLICY, FieldPolicy
 
+# Attributes that are methods/classmethods, not data fields
+_NON_DATA_ATTRS = frozenset({"from_proto", "to_proto", "from_dictionary", "from_dict", "to_dict"})
+
 
 class ComparisonError(AssertionError):
     """Raised when entity comparison finds mismatches."""
@@ -11,11 +14,21 @@ class ComparisonError(AssertionError):
         super().__init__("\n".join(diffs))
 
 
-def _get_fields(obj) -> set[str]:
-    """Get comparable fields from an entity object."""
-    if hasattr(obj, "__dict__"):
-        return {k for k in obj.__dict__ if not k.startswith("_")}
-    return set()
+def _get_public_fields(obj) -> set[str]:
+    """Get public data fields from an entity via properties and plain attributes."""
+    cls = type(obj)
+    fields = set()
+    # Properties defined on the class
+    for name in dir(cls):
+        if name.startswith("_") or name in _NON_DATA_ATTRS:
+            continue
+        if isinstance(getattr(cls, name, None), property):
+            fields.add(name)
+    # Plain public attributes set on the instance
+    for name in getattr(obj, "__dict__", {}):
+        if not name.startswith("_") and name not in _NON_DATA_ATTRS:
+            fields.add(name)
+    return fields
 
 
 def assert_entities_match(
@@ -25,10 +38,14 @@ def assert_entities_match(
     label_a: str = "sql",
     label_b: str = "ddb",
 ) -> None:
-    """Compare two entity objects field-by-field using the given policy."""
-    fields_a = _get_fields(entity_a)
-    fields_b = _get_fields(entity_b)
-    all_fields = fields_a | fields_b
+    """Compare two entity objects field-by-field using the given policy.
+
+    Fields are driven by the policy dict, but any public data field present
+    on either entity that is NOT in the policy triggers an error so that
+    new fields are never silently ignored.
+    """
+    discovered = _get_public_fields(entity_a) | _get_public_fields(entity_b)
+    all_fields = set(policy.keys()) | discovered
 
     diffs: list[str] = []
 
@@ -40,6 +57,10 @@ def assert_entities_match(
 
         has_a = hasattr(entity_a, field)
         has_b = hasattr(entity_b, field)
+
+        if field not in policy:
+            diffs.append(f"  {field}: not in policy (found on entity, add to field_policy)")
+            continue
 
         if has_a and not has_b:
             diffs.append(f"  {field}: present in {label_a} but missing in {label_b}")
