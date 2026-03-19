@@ -363,6 +363,182 @@ class TestSearchRegisteredModels:
         assert len(models) == 0
 
 
+class TestSearchRegisteredModelOrderBy:
+    """Test order_by with tiebreaking and pagination edge cases."""
+
+    def _create_models_with_timestamps(self, store, models_and_timestamps):
+        """Create models with specific timestamps using mocks.
+
+        Args:
+            models_and_timestamps: list of (name, timestamp_ms) tuples
+        """
+        from unittest import mock
+
+        for name, ts in models_and_timestamps:
+            with mock.patch(
+                "mlflow_dynamodbstore.registry_store.get_current_time_millis",
+                return_value=ts,
+            ):
+                store.create_registered_model(name)
+
+    def test_order_by_timestamp_asc_with_name_desc_tiebreak(self, registry_store):
+        """When timestamps tie, secondary sort by name DESC should break ties."""
+        self._create_models_with_timestamps(
+            registry_store,
+            [("MR1", 1), ("MR2", 1), ("MR3", 2), ("MR4", 2)],
+        )
+        models = registry_store.search_registered_models(
+            order_by=["last_updated_timestamp ASC", "name DESC"]
+        )
+        names = [m.name for m in models]
+        assert names == ["MR2", "MR1", "MR4", "MR3"]
+
+    def test_order_by_timestamp_desc_implicit_name_asc_tiebreak(self, registry_store):
+        """When only timestamp DESC is specified, ties break by name ASC (default)."""
+        self._create_models_with_timestamps(
+            registry_store,
+            [("MR1", 1), ("MR2", 1), ("MR3", 2), ("MR4", 2)],
+        )
+        models = registry_store.search_registered_models(order_by=["last_updated_timestamp DESC"])
+        names = [m.name for m in models]
+        assert names == ["MR3", "MR4", "MR1", "MR2"]
+
+    def test_empty_order_by_defaults_to_name_asc(self, registry_store):
+        """Empty order_by defaults to name ASC regardless of timestamps."""
+        self._create_models_with_timestamps(
+            registry_store,
+            [("MR3", 2), ("MR1", 1), ("MR4", 2), ("MR2", 1)],
+        )
+        models = registry_store.search_registered_models(order_by=[])
+        names = [m.name for m in models]
+        assert names == ["MR1", "MR2", "MR3", "MR4"]
+
+    def test_pagination_with_tiebreaking_no_duplicates(self, registry_store):
+        """Paginating through tied-timestamp results must not skip or duplicate items."""
+        # Create 6 models: 3 pairs with same timestamp
+        self._create_models_with_timestamps(
+            registry_store,
+            [
+                ("A1", 10),
+                ("A2", 10),
+                ("B1", 20),
+                ("B2", 20),
+                ("C1", 30),
+                ("C2", 30),
+            ],
+        )
+        # Fetch page by page with max_results=2
+        all_names: list[str] = []
+        token = None
+        for _ in range(10):  # safety limit
+            result = registry_store.search_registered_models(
+                order_by=["last_updated_timestamp ASC", "name ASC"],
+                max_results=2,
+                page_token=token,
+            )
+            all_names.extend(m.name for m in result)
+            token = result.token
+            if not token:
+                break
+
+        # All 6 models returned exactly once, in correct order
+        assert all_names == ["A1", "A2", "B1", "B2", "C1", "C2"]
+
+    def test_pagination_tiebreak_at_page_boundary(self, registry_store):
+        """When a page boundary falls in the middle of tied items, ordering is preserved."""
+        # 4 models all with the same timestamp — tiebreak is purely by name
+        self._create_models_with_timestamps(
+            registry_store,
+            [("D", 100), ("B", 100), ("C", 100), ("A", 100)],
+        )
+        # Page size 2: should get [A, B] then [C, D]
+        all_names: list[str] = []
+        token = None
+        for _ in range(10):
+            result = registry_store.search_registered_models(
+                order_by=["last_updated_timestamp ASC", "name ASC"],
+                max_results=2,
+                page_token=token,
+            )
+            all_names.extend(m.name for m in result)
+            token = result.token
+            if not token:
+                break
+
+        assert all_names == ["A", "B", "C", "D"]
+
+    def test_pagination_timestamp_desc_name_desc(self, registry_store):
+        """Both directions reversed: timestamp DESC, name DESC."""
+        self._create_models_with_timestamps(
+            registry_store,
+            [("A", 1), ("B", 1), ("C", 2), ("D", 2)],
+        )
+        all_names: list[str] = []
+        token = None
+        for _ in range(10):
+            result = registry_store.search_registered_models(
+                order_by=["last_updated_timestamp DESC", "name DESC"],
+                max_results=2,
+                page_token=token,
+            )
+            all_names.extend(m.name for m in result)
+            token = result.token
+            if not token:
+                break
+
+        assert all_names == ["D", "C", "B", "A"]
+
+    def test_pagination_tie_group_exceeds_page_size(self, registry_store):
+        """When a tie group is larger than max_results, overflow cache is used."""
+        self._create_models_with_timestamps(
+            registry_store,
+            [("E", 1), ("D", 1), ("C", 1), ("B", 1), ("A", 1)],
+        )
+        all_names: list[str] = []
+        token = None
+        for _ in range(10):
+            result = registry_store.search_registered_models(
+                order_by=["last_updated_timestamp ASC", "name ASC"],
+                max_results=2,
+                page_token=token,
+            )
+            all_names.extend(m.name for m in result)
+            token = result.token
+            if not token:
+                break
+
+        assert all_names == ["A", "B", "C", "D", "E"]
+
+    def test_pagination_mixed_tie_groups(self, registry_store):
+        """Mix of tie groups and unique timestamps paginate correctly."""
+        self._create_models_with_timestamps(
+            registry_store,
+            [
+                ("A1", 10),
+                ("A2", 10),
+                ("A3", 10),  # tie group of 3
+                ("B1", 20),  # singleton
+                ("C1", 30),
+                ("C2", 30),  # tie group of 2
+            ],
+        )
+        all_names: list[str] = []
+        token = None
+        for _ in range(10):
+            result = registry_store.search_registered_models(
+                order_by=["last_updated_timestamp ASC", "name DESC"],
+                max_results=2,
+                page_token=token,
+            )
+            all_names.extend(m.name for m in result)
+            token = result.token
+            if not token:
+                break
+
+        # ts=10 group sorted name DESC: A3, A2, A1; ts=20: B1; ts=30 name DESC: C2, C1
+        assert all_names == ["A3", "A2", "A1", "B1", "C2", "C1"]
+
+
 class TestSearchModelVersions:
     """Test search_model_versions with filter support."""
 
