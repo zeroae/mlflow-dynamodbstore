@@ -12,6 +12,7 @@ from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
+    ErrorCode,
 )
 from mlflow.store.model_registry.abstract_store import AbstractStore
 
@@ -111,8 +112,7 @@ class DynamoDBRegistryStore(AbstractStore):
         if uri.deploy:
             ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
-        self._cache = ResolutionCache()
-        self._workspace = "default"
+        self._cache = ResolutionCache(workspace=lambda: self._workspace)
         self._config = ConfigReader(self._table)
         self._config.reconcile()
 
@@ -120,6 +120,13 @@ class DynamoDBRegistryStore(AbstractStore):
     def supports_workspaces(self) -> bool:
         """DynamoDB registry store always supports workspaces."""
         return True
+
+    @property
+    def _workspace(self) -> str:
+        """Return the active workspace from context, defaulting to 'default'."""
+        from mlflow.utils.workspace_context import get_request_workspace
+
+        return get_request_workspace() or "default"
 
     # ------------------------------------------------------------------
     # Name -> ULID resolution
@@ -758,7 +765,15 @@ class DynamoDBRegistryStore(AbstractStore):
 
     def get_model_version(self, name: str, version: str) -> ModelVersion:
         """Fetch a model version by name and version number."""
-        model_ulid = self._resolve_model_ulid(name)
+        try:
+            model_ulid = self._resolve_model_ulid(name)
+        except MlflowException as e:
+            if e.error_code == ErrorCode.Name(RESOURCE_DOES_NOT_EXIST):
+                raise MlflowException(
+                    f"Model Version (name={name}, version={version}) not found",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                ) from None
+            raise
         padded = _pad_version(version)
 
         item = self._table.get_item(

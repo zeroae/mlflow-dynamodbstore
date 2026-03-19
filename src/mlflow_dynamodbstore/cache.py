@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 
 
 class ResolutionCache:
@@ -14,12 +15,20 @@ class ResolutionCache:
     - experiment_name → experiment_id
     """
 
-    def __init__(self, max_size: int = 1000) -> None:
+    def __init__(
+        self,
+        max_size: int = 1000,
+        workspace: Callable[[], str | None] | None = None,
+    ) -> None:
         self._max_size = max_size
-        self._cache: OrderedDict[str, str] = OrderedDict()
+        self._workspace = workspace
+        self._cache: OrderedDict[tuple[str, ...], str] = OrderedDict()
 
-    def _key(self, namespace: str, key: str) -> str:
-        return f"{namespace}:{key}"
+    def _key(self, namespace: str, key: str) -> tuple[str, ...]:
+        ws = self._workspace() if self._workspace is not None else None
+        if ws is not None:
+            return (namespace, ws, key)
+        return (namespace, key)
 
     def get(self, namespace: str, key: str) -> str | None:
         """Get a cached value, or None if not found."""

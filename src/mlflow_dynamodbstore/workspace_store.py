@@ -16,6 +16,8 @@ from mlflow.store.workspace.abstract_store import AbstractStore
 
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
+    GSI2_EXPERIMENTS_PREFIX,
+    GSI2_MODELS_PREFIX,
     GSI2_PK,
     GSI2_SK,
     GSI2_WORKSPACES,
@@ -96,6 +98,36 @@ class DynamoDBWorkspaceStore(AbstractStore):
             default_artifact_root=item.get("default_artifact_root") or None,
         )
 
+    def _check_workspace_empty(self, workspace_name: str) -> None:
+        """Raise if the workspace still contains experiments or models."""
+        # Check for active or deleted experiments
+        for lifecycle in ("active", "deleted"):
+            items = self._table.query(
+                pk=f"{GSI2_EXPERIMENTS_PREFIX}{workspace_name}#{lifecycle}",
+                index_name="gsi2",
+                limit=1,
+            )
+            if items:
+                raise MlflowException(
+                    f"Cannot delete workspace '{workspace_name}': "
+                    f"'experiments' still contains resource(s). "
+                    "Remove or reassign them before deleting the workspace.",
+                    error_code=INVALID_STATE,
+                )
+        # Check for registered models
+        items = self._table.query(
+            pk=f"{GSI2_MODELS_PREFIX}{workspace_name}",
+            index_name="gsi2",
+            limit=1,
+        )
+        if items:
+            raise MlflowException(
+                f"Cannot delete workspace '{workspace_name}': "
+                f"'registered_models' still contains resource(s). "
+                "Remove or reassign them before deleting the workspace.",
+                error_code=INVALID_STATE,
+            )
+
     # ------------------------------------------------------------------
     # AbstractStore interface
     # ------------------------------------------------------------------
@@ -107,7 +139,9 @@ class DynamoDBWorkspaceStore(AbstractStore):
             MlflowException: If a workspace with the given name already exists.
         """
         from botocore.exceptions import ClientError
+        from mlflow.store.workspace.abstract_store import WorkspaceNameValidator
 
+        WorkspaceNameValidator.validate(workspace.name)
         try:
             self._put_workspace(
                 workspace.name,
@@ -184,6 +218,8 @@ class DynamoDBWorkspaceStore(AbstractStore):
                 f"Cannot delete the reserved '{workspace_name}' workspace",
                 error_code=INVALID_STATE,
             )
+        if mode == WorkspaceDeletionMode.RESTRICT:
+            self._check_workspace_empty(workspace_name)
         self._table.delete_item(
             pk=f"{PK_WORKSPACE_PREFIX}{workspace_name}",
             sk=SK_WORKSPACE_META,
