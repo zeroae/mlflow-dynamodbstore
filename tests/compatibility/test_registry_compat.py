@@ -98,7 +98,6 @@ _xfail_search_order = pytest.mark.xfail(
 test_search_registered_model_order_by = _xfail_search_order(
     _sync_time_mock(test_search_registered_model_order_by)
 )
-test_search_model_versions = _xfail_search_order(test_search_model_versions)
 test_search_model_versions_by_tag = _xfail_search_order(test_search_model_versions_by_tag)
 test_search_model_versions_order_by_simple = _xfail_search_order(
     test_search_model_versions_order_by_simple

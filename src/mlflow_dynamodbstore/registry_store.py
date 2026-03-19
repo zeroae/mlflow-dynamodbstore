@@ -91,6 +91,13 @@ def _pad_version(version: str | int) -> str:
     return f"{int(version):08d}"
 
 
+# MLflow attribute name → DynamoDB item field name for model versions
+_MV_ATTRIBUTE_MAP: dict[str, str] = {
+    "source_path": "source",
+    "version_number": "version",
+}
+
+
 def _item_to_model_version(
     item: dict[str, Any],
     tags: list[ModelVersionTag] | None = None,
@@ -1218,6 +1225,72 @@ class DynamoDBRegistryStore(AbstractStore):
 
         run_id_filter = run_id_pred.value if run_id_pred and run_id_pred.op == "=" else None
 
+        # Build DynamoDB-native filters from attribute predicates
+        from boto3.dynamodb.conditions import Attr
+
+        # SK constraints from version_number (used by main-table queries)
+        version_pred = next(
+            (p for p in predicates if p.field_type == "attribute" and p.key == "version_number"),
+            None,
+        )
+        sk_prefix: str | None = SK_VERSION_PREFIX
+        sk_gte: str | None = None
+        sk_lte: str | None = None
+        if version_pred:
+            padded_val = _pad_version(version_pred.value)
+            if version_pred.op == "=":
+                sk_prefix = f"{SK_VERSION_PREFIX}{padded_val}"
+            elif version_pred.op == "<=":
+                sk_gte = SK_VERSION_PREFIX
+                sk_lte = f"{SK_VERSION_PREFIX}{padded_val}"
+                sk_prefix = None
+            elif version_pred.op == ">=":
+                sk_gte = f"{SK_VERSION_PREFIX}{padded_val}"
+                sk_lte = f"{SK_VERSION_PREFIX}99999999"
+                sk_prefix = None
+            elif version_pred.op == "<":
+                sk_gte = SK_VERSION_PREFIX
+                sk_lte = f"{SK_VERSION_PREFIX}{_pad_version(int(version_pred.value) - 1)}"
+                sk_prefix = None
+            elif version_pred.op == ">":
+                sk_gte = f"{SK_VERSION_PREFIX}{_pad_version(int(version_pred.value) + 1)}"
+                sk_lte = f"{SK_VERSION_PREFIX}99999999"
+                sk_prefix = None
+
+        # FilterExpression for source_path, run_id, and version_number (used by LSI2 queries)
+        filter_expr: Any = None
+        for p in predicates:
+            if p.field_type != "attribute" or p.key == "name":
+                continue
+            # run_id exact match handled by GSI1 path when no model_name
+            if p.key == "run_id" and p.op == "=" and not model_name:
+                continue
+            dynamo_field = _MV_ATTRIBUTE_MAP.get(p.key, p.key)
+            val = _pad_version(p.value) if p.key == "version_number" else p.value
+            condition: Any = None
+            if p.op == "=":
+                condition = Attr(dynamo_field).eq(val)
+            elif p.op == "!=":
+                condition = Attr(dynamo_field).ne(val)
+            elif p.op == "<=":
+                condition = Attr(dynamo_field).lte(val)
+            elif p.op == ">=":
+                condition = Attr(dynamo_field).gte(val)
+            elif p.op == "<":
+                condition = Attr(dynamo_field).lt(val)
+            elif p.op == ">":
+                condition = Attr(dynamo_field).gt(val)
+            elif p.op == "IN":
+                condition = Attr(dynamo_field).is_in(val)
+            elif p.op in ("LIKE", "ILIKE"):
+                pattern = val if isinstance(val, str) else str(val)
+                if p.op == "ILIKE":
+                    pattern = pattern.lower()
+                if pattern.endswith("%") and "%" not in pattern[:-1]:
+                    condition = Attr(dynamo_field).begins_with(pattern[:-1])
+            if condition is not None:
+                filter_expr = filter_expr & condition if filter_expr else condition
+
         # Build filter_fn for tag and prompt filtering
         def version_filter_fn(mv: ModelVersion) -> bool:
             if tag_preds:
@@ -1235,6 +1308,7 @@ class DynamoDBRegistryStore(AbstractStore):
 
         if model_name:
             # Single model: use LSI2 for native timestamp DESC ordering + pagination
+            # LSI2 can't use SK constraints, so use FilterExpression for all attributes
             try:
                 model_ulid = self._resolve_model_ulid(model_name)
             except MlflowException:
@@ -1245,6 +1319,7 @@ class DynamoDBRegistryStore(AbstractStore):
                 max_results=max_results,
                 page_token=page_token,
                 filter_fn=version_filter_fn,
+                filter_expression=filter_expr,
             )
             # Apply run_id post-filter if also specified
             if run_id_filter:
@@ -1263,6 +1338,7 @@ class DynamoDBRegistryStore(AbstractStore):
                     ulid,
                     mn,
                     filter_fn=version_filter_fn,
+                    filter_expression=filter_expr,
                 )
                 multi_versions.extend(mvs)
             if run_id_filter:
@@ -1271,11 +1347,16 @@ class DynamoDBRegistryStore(AbstractStore):
                 multi_versions = multi_versions[:max_results]
             return PagedList(multi_versions, token=None)
 
-        # Non-single-model paths: no native ordering, no pagination
+        # Non-single-model paths: use SK constraints + FilterExpression on main table
         if run_id_filter:
             versions = self._search_versions_by_run_id(run_id_filter)
         else:
-            versions = self._list_all_versions()
+            versions = self._list_all_versions(
+                sk_prefix=sk_prefix,
+                sk_gte=sk_gte,
+                sk_lte=sk_lte,
+                filter_expression=filter_expr,
+            )
 
         # Apply run_id post-filter if name was also specified
         if run_id_filter and model_name:
@@ -1303,6 +1384,7 @@ class DynamoDBRegistryStore(AbstractStore):
         max_results: int | None = None,
         page_token: str | None = None,
         filter_fn: Any | None = None,
+        filter_expression: Any | None = None,
     ) -> tuple[list[ModelVersion], str | None]:
         """Get versions for a model, ordered by last_updated_timestamp DESC via LSI2."""
         pk = f"{PK_MODEL_PREFIX}{model_ulid}"
@@ -1317,13 +1399,15 @@ class DynamoDBRegistryStore(AbstractStore):
 
         while len(results) < max_results + 1:
             needed = max_results + 1 - len(results)
-            batch_size = needed * 2 if filter_fn else needed
+            has_filters = filter_fn or filter_expression
+            batch_size = needed * 2 if has_filters else needed
             items, lek = self._table.query_page(
                 pk=pk,
                 index_name=index_name,
                 limit=batch_size,
                 scan_forward=False,
                 exclusive_start_key=exclusive_start_key,
+                filter_expression=filter_expression,
             )
             for item in items:
                 # Skip tag items and non-version items
@@ -1381,17 +1465,31 @@ class DynamoDBRegistryStore(AbstractStore):
                     versions.append(_item_to_model_version(vi, tags))
         return versions
 
-    def _list_all_versions(self) -> list[ModelVersion]:
+    def _list_all_versions(
+        self,
+        sk_prefix: str | None = None,
+        sk_gte: str | None = None,
+        sk_lte: str | None = None,
+        filter_expression: Any | None = None,
+    ) -> list[ModelVersion]:
         """List all model versions across all models."""
         model_items = self._table.query(
             pk=f"{GSI2_MODELS_PREFIX}{self._workspace}",
             index_name="gsi2",
         )
+        if sk_prefix is None and sk_gte is None:
+            sk_prefix = SK_VERSION_PREFIX
         versions: list[ModelVersion] = []
         for model_item in model_items:
             model_ulid = model_item["PK"].replace(PK_MODEL_PREFIX, "")
             pk = f"{PK_MODEL_PREFIX}{model_ulid}"
-            ver_items = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
+            ver_items = self._table.query(
+                pk=pk,
+                sk_prefix=sk_prefix,
+                sk_gte=sk_gte,
+                sk_lte=sk_lte,
+                filter_expression=filter_expression,
+            )
             for vi in ver_items:
                 if SK_VERSION_TAG_SUFFIX in vi["SK"]:
                     continue
