@@ -7,7 +7,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, 'release/v*', 'release/[0-9]*']
-    paths: ['src/**', 'tests/**', 'pyproject.toml', 'uv.lock']
+    paths: ['src/**', 'tests/**', 'vendor/**', 'pyproject.toml', 'uv.lock']
   workflow_dispatch:
 
 permissions:
@@ -25,6 +25,8 @@ jobs:
         python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.11", "3.12"]') }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: true
       - uses: astral-sh/setup-uv@v7
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
@@ -54,6 +56,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: true
       - uses: astral-sh/setup-uv@v7
       - name: Set up Python
         run: uv python install 3.12
@@ -82,6 +86,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: true
       - uses: astral-sh/setup-uv@v7
       - name: Set up Python
         run: uv python install 3.12
@@ -102,6 +108,30 @@ jobs:
         with:
           files: junit.xml
           flags: e2e
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          fail_ci_if_error: false
+
+  compatibility:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: astral-sh/setup-uv@v7
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Run compatibility tests
+        run: uv run pytest tests/compatibility/ -m compatibility -n auto --junitxml=junit.xml -o junit_family=legacy -v
+      - name: Upload compatibility test results to Codecov
+        if: "!cancelled()"
+        uses: codecov/codecov-action@v5
+        with:
+          files: junit.xml
+          flags: compatibility
           token: ${{ secrets.CODECOV_TOKEN }}
           report_type: test_results
           fail_ci_if_error: false
