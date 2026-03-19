@@ -5309,3 +5309,64 @@ class DynamoDBTrackingStore(AbstractStore):
             created_by=created_by,
             last_updated_by=created_by,
         )
+
+    def _get_secret_item(self, secret_id: str) -> dict[str, Any] | None:
+        """Fetch raw DynamoDB item for a secret by ID. Returns None if not found."""
+        return self._table.get_item(
+            pk=f"{PK_GW_SECRET_PREFIX}{secret_id}",
+            sk=SK_GW_META,
+        )
+
+    def _secret_item_to_entity(self, item: dict[str, Any]) -> GatewaySecretInfo:
+        """Convert a raw DynamoDB secret item to a GatewaySecretInfo entity."""
+        secret_id = item["PK"].removeprefix(PK_GW_SECRET_PREFIX)
+        return GatewaySecretInfo(
+            secret_id=secret_id,
+            secret_name=item["secret_name"],
+            masked_values=item["masked_value"],
+            created_at=int(item["created_at"]),
+            last_updated_at=int(item["last_updated_at"]),
+            provider=item.get("provider"),
+            auth_config=item.get("auth_config"),
+            workspace=item.get("workspace"),
+            created_by=item.get("created_by"),
+            last_updated_by=item.get("last_updated_by"),
+        )
+
+    def get_secret_info(
+        self,
+        secret_id: str | None = None,
+        secret_name: str | None = None,
+    ) -> GatewaySecretInfo:
+        # Validate exactly one of secret_id or secret_name
+        if (secret_id is None) == (secret_name is None):
+            raise MlflowException(
+                "Exactly one of `secret_id` or `secret_name` must be specified",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        if secret_id:
+            item = self._get_secret_item(secret_id)
+        else:
+            # Look up by name via GSI1
+            results = self._table.query(
+                pk=f"{GSI1_GW_SECRET_NAME_PREFIX}{self._workspace}#{secret_name}",
+                index_name="gsi1",
+                limit=1,
+            )
+            if not results:
+                raise MlflowException(
+                    f"Secret with name '{secret_name}' not found",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            found_secret_id = results[0]["gsi1sk"]
+            item = self._get_secret_item(found_secret_id)
+
+        if item is None:
+            identifier = secret_id if secret_id else secret_name
+            raise MlflowException(
+                f"Secret '{identifier}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        return self._secret_item_to_entity(item)
