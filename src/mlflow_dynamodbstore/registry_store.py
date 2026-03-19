@@ -12,6 +12,7 @@ from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
+    ErrorCode,
 )
 from mlflow.store.model_registry.abstract_store import AbstractStore
 
@@ -764,7 +765,15 @@ class DynamoDBRegistryStore(AbstractStore):
 
     def get_model_version(self, name: str, version: str) -> ModelVersion:
         """Fetch a model version by name and version number."""
-        model_ulid = self._resolve_model_ulid(name)
+        try:
+            model_ulid = self._resolve_model_ulid(name)
+        except MlflowException as e:
+            if e.error_code == ErrorCode.Name(RESOURCE_DOES_NOT_EXIST):
+                raise MlflowException(
+                    f"Model Version (name={name}, version={version}) not found",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                ) from None
+            raise
         padded = _pad_version(version)
 
         item = self._table.get_item(

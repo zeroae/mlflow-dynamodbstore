@@ -26,10 +26,6 @@ test_model_version_operations_are_workspace_scoped = pytest.mark.xfail(
     reason="DynamoDB store does not return aliases in get_registered_model"
 )(test_model_version_operations_are_workspace_scoped)
 
-# --- get_model_version raises model-not-found instead of version-not-found ---
-test_model_version_read_helpers_are_workspace_scoped = pytest.mark.xfail(
-    reason="get_model_version raises model-not-found error for cross-workspace lookup"
-)(test_model_version_read_helpers_are_workspace_scoped)
 
 # --- Webhooks not implemented ---
 test_webhook_operations_are_workspace_scoped = pytest.mark.xfail(

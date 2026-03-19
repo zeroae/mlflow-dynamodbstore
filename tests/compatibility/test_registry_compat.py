@@ -74,7 +74,6 @@ _xfail_error_msg = pytest.mark.xfail(
 test_create_registered_model_handle_prompt_properly = _xfail_error_msg(
     test_create_registered_model_handle_prompt_properly
 )
-test_delete_registered_model = _xfail_error_msg(test_delete_registered_model)
 
 # --- Category 5: update_model_version on deleted version crashes ---
 _xfail_deleted_update = pytest.mark.xfail(
