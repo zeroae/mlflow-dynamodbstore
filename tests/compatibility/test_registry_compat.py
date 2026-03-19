@@ -10,8 +10,10 @@ Excluded tests:
 - Tests with cached_db/db_uri/workspaces_enabled fixture dependencies
 """
 
+import functools
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -70,20 +72,37 @@ test_create_model_version_with_model_id_and_no_run_id = _xfail_model_id(
     test_create_model_version_with_model_id_and_no_run_id
 )
 
-# --- Category 13: search ordering and pagination broken ---
+
+# --- Sync DynamoDB store timestamps with sqlalchemy_store mock ---
+# The vendored tests mock sqlalchemy_store.get_current_time_millis to force identical
+# timestamps. Our store imports get_current_time_millis separately, so we delegate to
+# the sqlalchemy store's (possibly mocked) copy to stay in sync.
+def _sync_time_mock(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        import mlflow.store.model_registry.sqlalchemy_store as sa_store
+
+        with mock.patch(
+            "mlflow_dynamodbstore.registry_store.get_current_time_millis",
+            side_effect=lambda: sa_store.get_current_time_millis(),
+        ):
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+# --- Category 13: search ordering and pagination incomplete ---
 _xfail_search_order = pytest.mark.xfail(
     reason="DynamoDB store search ordering and pagination incomplete"
+)
+test_search_registered_model_order_by = _xfail_search_order(
+    _sync_time_mock(test_search_registered_model_order_by)
 )
 test_search_model_versions = _xfail_search_order(test_search_model_versions)
 test_search_model_versions_by_tag = _xfail_search_order(test_search_model_versions_by_tag)
 test_search_model_versions_order_by_simple = _xfail_search_order(
     test_search_model_versions_order_by_simple
 )
-test_search_model_versions_pagination = _xfail_search_order(test_search_model_versions_pagination)
-test_search_registered_model_pagination = _xfail_search_order(
-    test_search_registered_model_pagination
-)
-test_search_registered_model_order_by = _xfail_search_order(test_search_registered_model_order_by)
 
 # --- Category 14: infix LIKE patterns not supported ---
 _xfail_like = pytest.mark.xfail(

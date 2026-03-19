@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import time
+import base64
+import json
 from typing import Any
 
 from mlflow.entities.model_registry import RegisteredModel, RegisteredModelTag
@@ -18,6 +19,7 @@ from mlflow.protos.databricks_pb2 import (
     ErrorCode,
 )
 from mlflow.store.model_registry.abstract_store import AbstractStore
+from mlflow.utils.time import get_current_time_millis
 
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
@@ -189,7 +191,7 @@ class DynamoDBRegistryStore(AbstractStore):
                 name, has_prompt_tag(existing_tags), has_prompt_tag(tags)
             )
 
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
         model_ulid = generate_ulid()
 
         item: dict[str, Any] = {
@@ -207,7 +209,7 @@ class DynamoDBRegistryStore(AbstractStore):
             LSI4_SK: _rev(name),
             # GSI2: list models by workspace
             GSI2_PK: f"{GSI2_MODELS_PREFIX}{self._workspace}",
-            GSI2_SK: f"{now_ms}#{name}",
+            GSI2_SK: f"{now_ms:020d}#{name}",
             # GSI3: unique name lookup
             GSI3_PK: f"{GSI3_MODEL_NAME_PREFIX}{self._workspace}#{name}",
             GSI3_SK: model_ulid,
@@ -288,7 +290,7 @@ class DynamoDBRegistryStore(AbstractStore):
                 error_code=RESOURCE_ALREADY_EXISTS,
             )
 
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         self._table.update_item(
             pk=f"{PK_MODEL_PREFIX}{model_ulid}",
@@ -299,7 +301,7 @@ class DynamoDBRegistryStore(AbstractStore):
                 LSI2_SK: now_ms,
                 LSI3_SK: new_name,
                 LSI4_SK: _rev(new_name),
-                GSI2_SK: f"{now_ms}#{new_name}",
+                GSI2_SK: f"{now_ms:020d}#{new_name}",
                 GSI3_PK: f"{GSI3_MODEL_NAME_PREFIX}{self._workspace}#{new_name}",
                 GSI5_SK: f"{new_name}#{model_ulid}",
             },
@@ -366,7 +368,7 @@ class DynamoDBRegistryStore(AbstractStore):
     ) -> RegisteredModel:
         """Update a registered model's description."""
         model_ulid = self._resolve_model_ulid(name)
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         updated_item = self._table.update_item(
             pk=f"{PK_MODEL_PREFIX}{model_ulid}",
@@ -375,6 +377,7 @@ class DynamoDBRegistryStore(AbstractStore):
                 "description": description,
                 "last_updated_timestamp": now_ms,
                 LSI2_SK: now_ms,
+                GSI2_SK: f"{now_ms:020d}#{name}",
             },
         )
 
@@ -401,20 +404,40 @@ class DynamoDBRegistryStore(AbstractStore):
         order_by: list[str] | None = None,
         page_token: str | None = None,
     ) -> list[RegisteredModel]:
-        """Search registered models with filter and order_by support."""
-        from mlflow.utils.search_utils import SearchModelUtils, SearchUtils
+        """Search registered models with filter, ordering, and pagination."""
 
-        # Validate order_by clauses (raises on invalid columns/syntax)
-        for clause in order_by or []:
-            SearchUtils.parse_order_by_for_search_registered_models(clause)
+        from mlflow.store.entities import PagedList
+        from mlflow.store.model_registry import (
+            SEARCH_REGISTERED_MODEL_MAX_RESULTS_DEFAULT,
+            SEARCH_REGISTERED_MODEL_MAX_RESULTS_THRESHOLD,
+        )
+        from mlflow.utils.search_utils import SearchModelUtils, SearchUtils
 
         from mlflow_dynamodbstore.dynamodb.search import (
             FilterPredicate,
             _compare,
         )
 
-        # Use SearchModelUtils (not parse_experiment_filter) — handles
-        # backtick-quoted tag names and model registry filter syntax.
+        if max_results is None:
+            max_results = SEARCH_REGISTERED_MODEL_MAX_RESULTS_DEFAULT
+        if not isinstance(max_results, int) or max_results < 1:
+            raise MlflowException(
+                "Invalid value for request parameter max_results. It must be at most "
+                f"{SEARCH_REGISTERED_MODEL_MAX_RESULTS_THRESHOLD}, but got value {max_results}",
+                INVALID_PARAMETER_VALUE,
+            )
+        if max_results > SEARCH_REGISTERED_MODEL_MAX_RESULTS_THRESHOLD:
+            raise MlflowException(
+                "Invalid value for request parameter max_results. It must be at most "
+                f"{SEARCH_REGISTERED_MODEL_MAX_RESULTS_THRESHOLD}, but got value {max_results}",
+                INVALID_PARAMETER_VALUE,
+            )
+
+        # Validate order_by clauses
+        for clause in order_by or []:
+            SearchUtils.parse_order_by_for_search_registered_models(clause)
+
+        # Parse filters
         if filter_string:
             parsed = SearchModelUtils.parse_search_filter(filter_string)
             predicates = [
@@ -433,35 +456,88 @@ class DynamoDBRegistryStore(AbstractStore):
             (p for p in predicates if p.field_type == "attribute" and p.key == "name"),
             None,
         )
-        # Separate prompt tag from other tag predicates — prompt filtering is handled separately
         tag_preds = [p for p in predicates if p.field_type == "tag" and p.key != IS_PROMPT_TAG_KEY]
 
+        # Post-filter for tags and prompts (used by non-paginated paths)
+        def _post_filter(models: list[RegisteredModel]) -> list[RegisteredModel]:
+            if tag_preds:
+                models = self._filter_models_by_tags(models, tag_preds, _compare)
+            if self._is_querying_prompt(predicates):
+                models = [m for m in models if m._is_prompt()]
+            else:
+                models = [m for m in models if not m._is_prompt()]
+            return models
+
+        # Filter for paginated path (tags + prompts, applied per-item)
+        def _paginated_filter(model: RegisteredModel) -> bool:
+            if tag_preds:
+                tag_dict: dict[str, str] = {}
+                if hasattr(model, "_tags") and isinstance(model._tags, dict):
+                    tag_dict = model._tags
+                elif isinstance(model.tags, dict):
+                    tag_dict = model.tags
+                else:
+                    for t in model.tags:
+                        tag_dict[t.key] = t.value
+                for pred in tag_preds:
+                    if not _compare(tag_dict.get(pred.key), pred.op, pred.value):
+                        return False
+            if self._is_querying_prompt(predicates):
+                if not model._is_prompt():
+                    return False
+            elif model._is_prompt():
+                return False
+            return True
+
         if name_pred and name_pred.op == "=":
-            models = self._search_models_by_name_exact(name_pred.value)
-        elif name_pred and name_pred.op in ("LIKE", "ILIKE"):
-            models = self._search_models_by_name_like(name_pred.value, name_pred.op)
+            # Exact name — no pagination needed
+            models = _post_filter(self._search_models_by_name_exact(name_pred.value))
+            return PagedList(models[:max_results], token=None)
+
+        if name_pred and name_pred.op in ("LIKE", "ILIKE"):
+            is_prefix = name_pred.value.endswith("%") and "%" not in name_pred.value[:-1]
+            if not is_prefix:
+                # Non-prefix LIKE — FTS / general fallback, no pagination
+                models = _post_filter(
+                    self._search_models_by_name_like(name_pred.value, name_pred.op)
+                )
+                models = self._sort_models(models, order_by)
+                return PagedList(models[:max_results], token=None)
+            # Prefix LIKE falls through to paginated path below
+
+        # Paginated path: no name filter, or prefix LIKE
+        name_prefix = name_pred.value[:-1] if name_pred else None
+        index_name, scan_forward = self._resolve_registered_model_order(order_by)
+        if index_name == "gsi5":
+            pk = f"{GSI5_MODEL_NAMES_PREFIX}{self._workspace}"
+            sk_prefix = name_prefix
         else:
-            models = self._search_models_by_gsi2()
+            pk = f"{GSI2_MODELS_PREFIX}{self._workspace}"
+            sk_prefix = None
 
-        # Apply tag filters (excluding prompt tag)
-        if tag_preds:
-            models = self._filter_models_by_tags(models, tag_preds, _compare)
+        # When using GSI2 with a prefix LIKE, add name filtering
+        if name_prefix and index_name != "gsi5":
+            _inner = _paginated_filter
 
-        # Filter by prompt status: include only prompts or only non-prompts
-        if self._is_querying_prompt(predicates):
-            models = [m for m in models if m._is_prompt()]
+            def _name_and_paginated_filter(model: RegisteredModel) -> bool:
+                if not model.name.startswith(name_prefix):
+                    return False
+                return _inner(model)
+
+            filter_fn = _name_and_paginated_filter
         else:
-            models = [m for m in models if not m._is_prompt()]
+            filter_fn = _paginated_filter
 
-        # Apply order_by
-        if order_by:
-            models = self._sort_models(models, order_by)
-
-        from mlflow.store.entities import PagedList
-
-        if max_results:
-            models = models[:max_results]
-        return PagedList(models, token=None)
+        models, next_token = self._search_models_paginated(
+            pk=pk,
+            index_name=index_name,
+            sk_prefix=sk_prefix,
+            scan_forward=scan_forward,
+            max_results=max_results,
+            page_token=page_token,
+            filter_fn=filter_fn,
+        )
+        return PagedList(models, next_token)
 
     def _search_models_by_name_exact(self, name: str) -> list[RegisteredModel]:
         """Look up a single model by exact name via GSI3."""
@@ -685,8 +761,130 @@ class DynamoDBRegistryStore(AbstractStore):
                 filtered.append(version)
         return filtered
 
+    @staticmethod
+    def _encode_page_token(last_evaluated_key: dict[str, Any]) -> str:
+        """Encode a DynamoDB LastEvaluatedKey as an opaque page token."""
+        from mlflow_dynamodbstore.dynamodb.table import convert_decimals
+
+        return base64.b64encode(
+            json.dumps(convert_decimals(last_evaluated_key)).encode("utf-8")
+        ).decode("ascii")
+
+    @staticmethod
+    def _decode_page_token(page_token: str | None) -> dict[str, Any] | None:
+        """Decode an opaque page token back to a DynamoDB ExclusiveStartKey."""
+        if not page_token:
+            return None
+        try:
+            decoded = base64.b64decode(page_token)
+        except Exception:
+            raise MlflowException(
+                "Invalid page token, could not base64-decode",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        try:
+            result: dict[str, Any] = json.loads(decoded)
+            return result
+        except Exception:
+            raise MlflowException(
+                f"Invalid page token, decoded value={decoded!r}",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+    @staticmethod
+    def _build_exclusive_start_key(item: dict[str, Any], index_name: str | None) -> dict[str, Any]:
+        """Build an ExclusiveStartKey from an item for the given index."""
+        from mlflow_dynamodbstore.dynamodb.table import _INDEX_KEY_ATTRS
+
+        key: dict[str, Any] = {"PK": item["PK"], "SK": item["SK"]}
+        if index_name is None:
+            return key
+        idx_pk, idx_sk = _INDEX_KEY_ATTRS[index_name]
+        if idx_pk != "PK":
+            key[idx_pk] = item[idx_pk]
+        key[idx_sk] = item[idx_sk]
+        return key
+
+    @staticmethod
+    def _resolve_registered_model_order(
+        order_by: list[str] | None,
+    ) -> tuple[str, bool]:
+        """Determine (index_name, scan_forward) from order_by clauses."""
+        from mlflow.utils.search_utils import SearchUtils
+
+        if not order_by:
+            return "gsi5", True  # default: name ASC
+
+        attribute, ascending = SearchUtils.parse_order_by_for_search_registered_models(order_by[0])
+        if attribute == "name":
+            return "gsi5", ascending
+        if attribute in SearchUtils.VALID_TIMESTAMP_ORDER_BY_KEYS:
+            return "gsi2", ascending
+        return "gsi5", True
+
+    def _search_models_paginated(
+        self,
+        pk: str,
+        index_name: str,
+        sk_prefix: str | None = None,
+        scan_forward: bool = True,
+        max_results: int = 100,
+        page_token: str | None = None,
+        filter_fn: Any | None = None,
+    ) -> tuple[list[RegisteredModel], str | None]:
+        """Query an index page-by-page, apply filter_fn, return (models, next_token)."""
+        exclusive_start_key = self._decode_page_token(page_token)
+        results: list[RegisteredModel] = []
+        # Track the raw DynamoDB item for the last *kept* result (for cursor construction)
+        kept_items: list[dict[str, Any]] = []
+
+        while len(results) < max_results + 1:
+            needed = max_results + 1 - len(results)
+            batch_size = needed * 2 if filter_fn else needed
+            items, lek = self._table.query_page(
+                pk=pk,
+                sk_prefix=sk_prefix,
+                index_name=index_name,
+                limit=batch_size,
+                scan_forward=scan_forward,
+                exclusive_start_key=exclusive_start_key,
+            )
+            for item in items:
+                # Skip NAME_REV items in GSI5
+                if item.get(GSI5_SK, "").startswith("REV#"):
+                    continue
+                model_name = item.get("name")
+                if not model_name:
+                    continue
+                model_ulid = item["PK"].replace(PK_MODEL_PREFIX, "")
+                tags = self._get_model_tags(model_ulid)
+                aliases = self._aliases_for_registered_model(model_ulid)
+                rm = _item_to_registered_model(item, tags, aliases)
+                if filter_fn and not filter_fn(rm):
+                    continue
+                results.append(rm)
+                kept_items.append(item)
+                if len(results) > max_results:
+                    break
+
+            if lek is None or len(results) > max_results:
+                break
+            exclusive_start_key = lek
+
+        if len(results) > max_results:
+            results = results[:max_results]
+            kept_items = kept_items[:max_results]
+            last_kept = kept_items[-1]
+            next_token = self._encode_page_token(
+                self._build_exclusive_start_key(last_kept, index_name)
+            )
+        else:
+            next_token = None
+
+        return results, next_token
+
     def _sort_models(
-        self, models: list[RegisteredModel], order_by: list[str]
+        self, models: list[RegisteredModel], order_by: list[str] | None
     ) -> list[RegisteredModel]:
         """Sort models by order_by tokens."""
         if not order_by:
@@ -801,7 +999,7 @@ class DynamoDBRegistryStore(AbstractStore):
         next_ver = len(version_items) + 1
         padded = _pad_version(next_ver)
 
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         item: dict[str, Any] = {
             "PK": pk,
@@ -885,7 +1083,7 @@ class DynamoDBRegistryStore(AbstractStore):
         self.get_model_version(name, version)
         model_ulid = self._resolve_model_ulid(name)
         padded = _pad_version(version)
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         updated_item = self._table.update_item(
             pk=f"{PK_MODEL_PREFIX}{model_ulid}",
@@ -972,21 +1170,111 @@ class DynamoDBRegistryStore(AbstractStore):
         # Separate prompt tag from other tag predicates — prompt filtering is handled separately
         tag_preds = [p for p in predicates if p.field_type == "tag" and p.key != IS_PROMPT_TAG_KEY]
 
-        model_name = name_pred.value if name_pred and name_pred.op == "=" else None
+        from mlflow.store.entities import PagedList
+        from mlflow.store.model_registry import (
+            SEARCH_MODEL_VERSION_MAX_RESULTS_DEFAULT,
+            SEARCH_MODEL_VERSION_MAX_RESULTS_THRESHOLD,
+        )
+
+        if max_results is None:
+            max_results = SEARCH_MODEL_VERSION_MAX_RESULTS_DEFAULT
+        if not isinstance(max_results, int) or max_results < 1:
+            raise MlflowException(
+                f"Invalid value for max_results. It must be a positive integer,"
+                f" but got {max_results}",
+                INVALID_PARAMETER_VALUE,
+            )
+        if max_results > SEARCH_MODEL_VERSION_MAX_RESULTS_THRESHOLD:
+            raise MlflowException(
+                "Invalid value for request parameter max_results. It must be at most "
+                f"{SEARCH_MODEL_VERSION_MAX_RESULTS_THRESHOLD}, but got value {max_results}",
+                INVALID_PARAMETER_VALUE,
+            )
+
+        # Resolve model name(s) from filter
+        model_name: str | None = None
+        model_names: list[str] | None = None
+        if name_pred and name_pred.op == "=":
+            model_name = name_pred.value
+        elif name_pred and name_pred.op in ("LIKE", "ILIKE"):
+            # For prefix LIKE, find all matching models via GSI5
+            pattern = name_pred.value
+            if pattern.endswith("%") and "%" not in pattern[:-1]:
+                prefix = pattern[:-1]
+                items = self._table.query(
+                    pk=f"{GSI5_MODEL_NAMES_PREFIX}{self._workspace}",
+                    sk_prefix=prefix,
+                    index_name="gsi5",
+                )
+                model_names = [
+                    item["name"]
+                    for item in items
+                    if item.get("name") and not item.get(GSI5_SK, "").startswith("REV#")
+                ]
+                # Optimize: single match → use single-model path
+                if len(model_names) == 1:
+                    model_name = model_names[0]
+                    model_names = None
+
         run_id_filter = run_id_pred.value if run_id_pred and run_id_pred.op == "=" else None
 
+        # Build filter_fn for tag and prompt filtering
+        def version_filter_fn(mv: ModelVersion) -> bool:
+            if tag_preds:
+                tag_dict = mv.tags or {}
+                for pred in tag_preds:
+                    actual = tag_dict.get(pred.key)
+                    if not _compare(actual, pred.op, pred.value):
+                        return False
+            if self._is_querying_prompt(predicates):
+                if not self._version_is_prompt(mv):
+                    return False
+            elif self._version_is_prompt(mv):
+                return False
+            return True
+
         if model_name:
-            # Targeted: get versions for a specific model
+            # Single model: use LSI2 for native timestamp DESC ordering + pagination
             try:
                 model_ulid = self._resolve_model_ulid(model_name)
             except MlflowException:
-                return []
-            versions = self._get_versions_for_model(model_ulid, model_name)
-        elif run_id_filter:
-            # Search by run_id via GSI1
+                return PagedList([], token=None)
+            versions, next_token = self._get_versions_for_model(
+                model_ulid,
+                model_name,
+                max_results=max_results,
+                page_token=page_token,
+                filter_fn=version_filter_fn,
+            )
+            # Apply run_id post-filter if also specified
+            if run_id_filter:
+                versions = [v for v in versions if v.run_id == run_id_filter]
+            return PagedList(versions, next_token)
+
+        if model_names:
+            # Multiple models from LIKE prefix: query each, no pagination
+            multi_versions: list[ModelVersion] = []
+            for mn in model_names:
+                try:
+                    ulid = self._resolve_model_ulid(mn)
+                except MlflowException:
+                    continue
+                mvs, _ = self._get_versions_for_model(
+                    ulid,
+                    mn,
+                    filter_fn=version_filter_fn,
+                )
+                multi_versions.extend(mvs)
+            if run_id_filter:
+                multi_versions = [v for v in multi_versions if v.run_id == run_id_filter]
+            if max_results is not None:
+                multi_versions = multi_versions[:max_results]
+            return PagedList(multi_versions, token=None)
+
+        # Non-single-model paths: no native ordering, no pagination
+        if run_id_filter:
             versions = self._search_versions_by_run_id(run_id_filter)
         else:
-            # Default: list all versions across all models
             versions = self._list_all_versions()
 
         # Apply run_id post-filter if name was also specified
@@ -997,30 +1285,77 @@ class DynamoDBRegistryStore(AbstractStore):
         if tag_preds:
             versions = self._filter_versions_by_tags(versions, tag_preds, _compare)
 
-        # Filter by prompt status: include only prompt versions or only non-prompt versions
+        # Filter by prompt status
         if self._is_querying_prompt(predicates):
             versions = [v for v in versions if self._version_is_prompt(v)]
         else:
             versions = [v for v in versions if not self._version_is_prompt(v)]
 
-        if max_results:
+        if max_results is not None:
             versions = versions[:max_results]
-        from mlflow.store.entities import PagedList
 
         return PagedList(versions, token=None)
 
-    def _get_versions_for_model(self, model_ulid: str, model_name: str) -> list[ModelVersion]:
-        """Get all versions for a specific model."""
+    def _get_versions_for_model(
+        self,
+        model_ulid: str,
+        model_name: str,
+        max_results: int | None = None,
+        page_token: str | None = None,
+        filter_fn: Any | None = None,
+    ) -> tuple[list[ModelVersion], str | None]:
+        """Get versions for a model, ordered by last_updated_timestamp DESC via LSI2."""
         pk = f"{PK_MODEL_PREFIX}{model_ulid}"
-        ver_items = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
-        versions: list[ModelVersion] = []
-        for vi in ver_items:
-            if SK_VERSION_TAG_SUFFIX in vi["SK"]:
-                continue
-            padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
-            tags = self._get_version_tags(model_ulid, padded)
-            versions.append(_item_to_model_version(vi, tags))
-        return versions
+        exclusive_start_key = self._decode_page_token(page_token)
+        index_name = "lsi2"
+
+        if max_results is None:
+            max_results = 200_000  # MLflow default threshold
+
+        results: list[ModelVersion] = []
+        kept_items: list[dict[str, Any]] = []
+
+        while len(results) < max_results + 1:
+            needed = max_results + 1 - len(results)
+            batch_size = needed * 2 if filter_fn else needed
+            items, lek = self._table.query_page(
+                pk=pk,
+                index_name=index_name,
+                limit=batch_size,
+                scan_forward=False,
+                exclusive_start_key=exclusive_start_key,
+            )
+            for item in items:
+                # Skip tag items and non-version items
+                sk = item.get("SK", "")
+                if not sk.startswith(SK_VERSION_PREFIX) or SK_VERSION_TAG_SUFFIX in sk:
+                    continue
+                padded = sk.replace(SK_VERSION_PREFIX, "")
+                tags = self._get_version_tags(model_ulid, padded)
+                aliases = self._aliases_for_model_version(model_ulid, int(padded))
+                mv = _item_to_model_version(item, tags, aliases)
+                if filter_fn and not filter_fn(mv):
+                    continue
+                results.append(mv)
+                kept_items.append(item)
+                if len(results) > max_results:
+                    break
+
+            if lek is None or len(results) > max_results:
+                break
+            exclusive_start_key = lek
+
+        if len(results) > max_results:
+            results = results[:max_results]
+            kept_items = kept_items[:max_results]
+            last_kept = kept_items[-1]
+            next_token = self._encode_page_token(
+                self._build_exclusive_start_key(last_kept, index_name)
+            )
+        else:
+            next_token = None
+
+        return results, next_token
 
     def _search_versions_by_run_id(self, run_id: str) -> list[ModelVersion]:
         """Search model versions by run_id via GSI1."""
@@ -1186,7 +1521,7 @@ class DynamoDBRegistryStore(AbstractStore):
         self.get_model_version(name, version)
         model_ulid = self._resolve_model_ulid(name)
         padded = _pad_version(version)
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
         pk = f"{PK_MODEL_PREFIX}{model_ulid}"
 
         # Archive other versions in active stages if requested
