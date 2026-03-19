@@ -390,7 +390,11 @@ class DynamoDBRegistryStore(AbstractStore):
         page_token: str | None = None,
     ) -> list[RegisteredModel]:
         """Search registered models with filter and order_by support."""
-        from mlflow.utils.search_utils import SearchModelUtils
+        from mlflow.utils.search_utils import SearchModelUtils, SearchUtils
+
+        # Validate order_by clauses (raises on invalid columns/syntax)
+        for clause in order_by or []:
+            SearchUtils.parse_order_by_for_search_registered_models(clause)
 
         from mlflow_dynamodbstore.dynamodb.search import (
             FilterPredicate,
@@ -839,6 +843,8 @@ class DynamoDBRegistryStore(AbstractStore):
 
     def delete_model_version(self, name: str, version: str) -> None:
         """Delete a model version and its tags."""
+        # Verify version exists (raises on deleted/missing versions)
+        self.get_model_version(name, version)
         model_ulid = self._resolve_model_ulid(name)
         padded = _pad_version(version)
         pk = f"{PK_MODEL_PREFIX}{model_ulid}"
@@ -865,6 +871,12 @@ class DynamoDBRegistryStore(AbstractStore):
     ) -> list[ModelVersion]:
         """Search model versions with filter support."""
         import re as _re
+
+        from mlflow.utils.search_utils import SearchModelVersionUtils
+
+        # Validate order_by clauses (raises on invalid columns/syntax)
+        for clause in order_by or []:
+            SearchModelVersionUtils.parse_order_by_for_search_model_versions(clause)
 
         model_name: str | None = None
         run_id_filter: str | None = None

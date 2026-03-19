@@ -56,12 +56,6 @@ from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402, F4
     test_update_registered_model,
 )
 
-# --- Category 5: update_model_version on deleted version crashes ---
-_xfail_deleted_update = pytest.mark.xfail(
-    reason="DynamoDB store crashes with KeyError on update of deleted model version"
-)
-test_delete_model_version = _xfail_deleted_update(test_delete_model_version)
-
 # --- Category 6: missing SqlAlchemy-internal method ---
 _xfail_sql_internal = pytest.mark.xfail(
     reason="Test uses _get_sql_model_version_including_deleted (SqlAlchemy-specific)"
@@ -115,14 +109,3 @@ _xfail_like = pytest.mark.xfail(
     reason="DynamoDB store only supports prefix LIKE patterns, not infix '%X%'"
 )
 test_search_registered_models = _xfail_like(test_search_registered_models)
-
-# --- Category 15: order_by validation missing ---
-_xfail_orderby_validation = pytest.mark.xfail(
-    reason="DynamoDB store does not validate order_by column names"
-)
-test_search_model_versions_order_by_errors = _xfail_orderby_validation(
-    test_search_model_versions_order_by_errors
-)
-test_search_registered_model_order_by_errors = _xfail_orderby_validation(
-    test_search_registered_model_order_by_errors
-)
