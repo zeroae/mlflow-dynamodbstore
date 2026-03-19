@@ -257,7 +257,7 @@ def fts_items_for_text(
 
     Key patterns
     ~~~~~~~~~~~~
-    Forward SK : ``FTS#<level>#<token>#<entity_type>#<entity_id>[#<field>]``
+    Forward SK : ``FTS#<level>#<entity_type>#<token>#<entity_id>[#<field>]``
     Reverse SK : ``FTS_REV#<entity_type>#<entity_id>[#<field>]#<level>#<token>``
 
     For experiment (``entity_type="E"``) and model (``entity_type="M"``)
