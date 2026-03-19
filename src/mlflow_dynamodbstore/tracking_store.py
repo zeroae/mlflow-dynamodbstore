@@ -22,6 +22,7 @@ from mlflow.entities import (
     EvaluationDataset,
     Experiment,
     ExperimentTag,
+    GatewaySecretInfo,
     InputTag,
     LoggedModel,
     LoggedModelOutput,
@@ -54,8 +55,10 @@ from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow.tracing.analysis import TraceFilterCorrelationResult
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
+from mlflow.utils.crypto import KEKManager, _encrypt_secret, _mask_secret_value
 from mlflow.utils.mlflow_tags import MLFLOW_ARTIFACT_LOCATION
 from mlflow.utils.proto_json_utils import milliseconds_to_proto_timestamp
+from mlflow.utils.time import get_current_time_millis
 from mlflow.utils.uri import append_to_uri_path
 
 from mlflow_dynamodbstore.cache import ResolutionCache
@@ -71,6 +74,7 @@ from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_CLIENT_PREFIX,
     GSI1_DS_EXP_PREFIX,
+    GSI1_GW_SECRET_NAME_PREFIX,
     GSI1_LM_PREFIX,
     GSI1_PK,
     GSI1_RUN_PREFIX,
@@ -81,6 +85,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_DS_LIST_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
+    GSI2_GW_SECRETS_PREFIX,
     GSI2_PK,
     GSI2_SESSIONS_PREFIX,
     GSI2_SK,
@@ -99,6 +104,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI5_SK,
     PK_DATASET_PREFIX,
     PK_EXPERIMENT_PREFIX,
+    PK_GW_SECRET_PREFIX,
     SK_DATASET_EXP_PREFIX,
     SK_DATASET_META,
     SK_DATASET_PREFIX,
@@ -110,6 +116,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_EXPERIMENT_TAG_PREFIX,
     SK_FTS_PREFIX,
     SK_FTS_REV_PREFIX,
+    SK_GW_META,
     SK_INPUT_PREFIX,
     SK_INPUT_TAG_SUFFIX,
     SK_LM_METRIC_PREFIX,
@@ -5222,3 +5229,83 @@ class DynamoDBTrackingStore(AbstractStore):
             else None
         )
         return PagedList(page, next_token)  # type: ignore[arg-type]
+
+    # -----------------------------------------------------------------------
+    # Gateway Secrets
+    # -----------------------------------------------------------------------
+
+    def _invalidate_secret_cache(self) -> None:
+        """Invalidate the gateway secret cache. No-op until cache is implemented."""
+        pass
+
+    def create_gateway_secret(
+        self,
+        secret_name: str,
+        secret_value: dict[str, str],
+        provider: str | None = None,
+        auth_config: dict[str, str] | None = None,
+        created_by: str | None = None,
+    ) -> GatewaySecretInfo:
+        import json as _json
+
+        # Check name uniqueness via GSI1
+        existing = self._table.query(
+            pk=f"{GSI1_GW_SECRET_NAME_PREFIX}{self._workspace}#{secret_name}",
+            index_name="gsi1",
+            limit=1,
+        )
+        if existing:
+            raise MlflowException(
+                f"Secret with name '{secret_name}' already exists",
+                error_code=RESOURCE_ALREADY_EXISTS,
+            )
+
+        secret_id = f"s-{generate_ulid()}"
+        now = get_current_time_millis()
+
+        # Encrypt
+        kek_manager = KEKManager()
+        value_to_encrypt = _json.dumps(secret_value)
+        encrypted = _encrypt_secret(value_to_encrypt, kek_manager, secret_id, secret_name)
+        masked_value = _mask_secret_value(secret_value)
+
+        item = {
+            "PK": f"{PK_GW_SECRET_PREFIX}{secret_id}",
+            "SK": SK_GW_META,
+            "secret_name": secret_name,
+            "encrypted_value": encrypted.encrypted_value,
+            "wrapped_dek": encrypted.wrapped_dek,
+            "kek_version": encrypted.kek_version,
+            "masked_value": masked_value,
+            "created_at": now,
+            "last_updated_at": now,
+            "workspace": self._workspace,
+            # GSI projections
+            "gsi1pk": f"{GSI1_GW_SECRET_NAME_PREFIX}{self._workspace}#{secret_name}",
+            "gsi1sk": secret_id,
+            "gsi2pk": f"{GSI2_GW_SECRETS_PREFIX}{self._workspace}",
+            "gsi2sk": secret_id,
+        }
+        if provider is not None:
+            item["provider"] = provider
+        if auth_config is not None:
+            item["auth_config"] = auth_config
+        if created_by is not None:
+            item["created_by"] = created_by
+            item["last_updated_by"] = created_by
+
+        self._table.put_item(item)
+        self._invalidate_secret_cache()
+
+        return GatewaySecretInfo(
+            secret_id=secret_id,
+            secret_name=secret_name,
+            masked_values=masked_value,
+            created_at=now,
+            last_updated_at=now,
+            provider=provider,
+            auth_config=auth_config,
+            workspace=self._workspace,
+            created_by=created_by,
+            last_updated_by=created_by,
+        )
