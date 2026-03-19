@@ -138,7 +138,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if not results:
             raise MlflowException(
-                f"Registered Model with name={name} not found.",
+                f"Registered Model with name={name} not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -166,7 +166,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if existing:
             raise MlflowException(
-                f"Registered Model '{name}' already exists.",
+                f"Registered Model (name={name}) already exists.",
                 error_code=RESOURCE_ALREADY_EXISTS,
             )
 
@@ -240,7 +240,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if item is None:
             raise MlflowException(
-                f"Registered Model with name={name} not found.",
+                f"Registered Model with name={name} not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -259,7 +259,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if existing:
             raise MlflowException(
-                f"Registered Model '{new_name}' already exists.",
+                f"Registered Model (name={new_name}) already exists.",
                 error_code=RESOURCE_ALREADY_EXISTS,
             )
 
@@ -767,7 +767,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if item is None:
             raise MlflowException(
-                f"Model Version (name={name}, version={version}) not found.",
+                f"Model Version (name={name}, version={version}) not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -792,7 +792,7 @@ class DynamoDBRegistryStore(AbstractStore):
 
         if updated_item is None:
             raise MlflowException(
-                f"Model Version (name={name}, version={version}) not found.",
+                f"Model Version (name={name}, version={version}) not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -1009,7 +1009,7 @@ class DynamoDBRegistryStore(AbstractStore):
 
         if updated_item is None:
             raise MlflowException(
-                f"Model Version (name={name}, version={version}) not found.",
+                f"Model Version (name={name}, version={version}) not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
