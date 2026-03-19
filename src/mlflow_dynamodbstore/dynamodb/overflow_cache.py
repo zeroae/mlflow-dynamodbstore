@@ -30,7 +30,7 @@ MAX_ITEM_BYTES = 390_000  # safety margin under DynamoDB's 400 KB limit
 def compute_cache_hash(
     pk: str,
     index_name: str,
-    order_by: str,
+    order_by: list[str] | None,
     lek: dict[str, Any] | None,
 ) -> str:
     """Return a 16-char hex digest uniquely identifying the query context."""
@@ -181,20 +181,12 @@ def is_overflow_token(decoded_dict: dict[str, Any]) -> bool:
 
 def cache_cleanup(table: Any, cache_hash: str) -> None:
     """Delete all overflow pages for *cache_hash*."""
-    from boto3.dynamodb.conditions import Key
-
     from mlflow_dynamodbstore.dynamodb.schema import (
         PK_OVERFLOW_PREFIX,
         SK_OVERFLOW_PAGE_PREFIX,
     )
 
     pk = f"{PK_OVERFLOW_PREFIX}{cache_hash}"
-
-    # Query all PAGE# items for this hash
-    items = table.query(
-        pk=pk,
-        sk_condition=Key("SK").begins_with(SK_OVERFLOW_PAGE_PREFIX),
-    )
-
+    items = table.query(pk=pk, sk_prefix=SK_OVERFLOW_PAGE_PREFIX)
     for item in items:
         table.delete_item(pk=pk, sk=item["SK"])
