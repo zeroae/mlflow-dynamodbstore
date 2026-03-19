@@ -8,6 +8,7 @@ from typing import Any
 from mlflow.entities.model_registry import RegisteredModel, RegisteredModelTag
 from mlflow.entities.model_registry.model_version import ModelVersion
 from mlflow.entities.model_registry.model_version_tag import ModelVersionTag
+from mlflow.entities.model_registry.registered_model_alias import RegisteredModelAlias
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
@@ -67,6 +68,7 @@ def _int_or_none(value: Any) -> int | None:
 def _item_to_registered_model(
     item: dict[str, Any],
     tags: list[RegisteredModelTag] | None = None,
+    aliases: list[RegisteredModelAlias] | None = None,
 ) -> RegisteredModel:
     """Convert a DynamoDB item to an MLflow RegisteredModel entity."""
     return RegisteredModel(
@@ -76,6 +78,7 @@ def _item_to_registered_model(
         description=item.get("description") or None,
         latest_versions=[],
         tags=tags or [],
+        aliases=aliases or {},
     )
 
 
@@ -87,6 +90,7 @@ def _pad_version(version: str | int) -> str:
 def _item_to_model_version(
     item: dict[str, Any],
     tags: list[ModelVersionTag] | None = None,
+    aliases: list[str] | None = None,
 ) -> ModelVersion:
     """Convert a DynamoDB item to an MLflow ModelVersion entity."""
     return ModelVersion(
@@ -101,6 +105,7 @@ def _item_to_model_version(
         current_stage=item.get("current_stage", "None"),
         tags=tags or [],
         run_link=item.get("run_link") or None,
+        aliases=aliases or [],
     )
 
 
@@ -165,6 +170,9 @@ class DynamoDBRegistryStore(AbstractStore):
         deployment_job_id: str | None = None,
     ) -> RegisteredModel:
         """Create a new registered model."""
+        from mlflow.utils.validation import _validate_model_name
+
+        _validate_model_name(name)
         # Check uniqueness via GSI3
         existing = self._table.query(
             pk=f"{GSI3_MODEL_NAME_PREFIX}{self._workspace}#{name}",
@@ -252,7 +260,8 @@ class DynamoDBRegistryStore(AbstractStore):
             )
 
         tags = self._get_model_tags(model_ulid)
-        return _item_to_registered_model(item, tags)
+        aliases = self._aliases_for_registered_model(model_ulid)
+        return _item_to_registered_model(item, tags, aliases)
 
     def rename_registered_model(self, name: str, new_name: str) -> RegisteredModel:
         """Rename a registered model."""
@@ -787,7 +796,8 @@ class DynamoDBRegistryStore(AbstractStore):
             )
 
         tags = self._get_version_tags(model_ulid, padded)
-        return _item_to_model_version(item, tags)
+        aliases = self._aliases_for_model_version(model_ulid, int(version))
+        return _item_to_model_version(item, tags, aliases)
 
     def update_model_version(self, name: str, version: str, description: str) -> ModelVersion:
         """Update a model version's description."""
@@ -828,6 +838,10 @@ class DynamoDBRegistryStore(AbstractStore):
         tag_items = self._table.query(pk=pk, sk_prefix=tag_prefix)
         for tag_item in tag_items:
             self._table.delete_item(pk=pk, sk=tag_item["SK"])
+
+        # Delete aliases pointing to this version
+        for alias_name in self._aliases_for_model_version(model_ulid, int(version)):
+            self._table.delete_item(pk=pk, sk=f"{SK_MODEL_ALIAS_PREFIX}{alias_name}")
 
     def search_model_versions(
         self,
@@ -1089,6 +1103,23 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         return [ModelVersionTag(item["key"], item["value"]) for item in items]
 
+    def _get_model_aliases(self, model_ulid: str) -> list[dict[str, Any]]:
+        """Query all alias items for a model. Returns raw DynamoDB items."""
+        return self._table.query(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk_prefix=SK_MODEL_ALIAS_PREFIX,
+        )
+
+    def _aliases_for_registered_model(self, model_ulid: str) -> list[RegisteredModelAlias]:
+        """Return aliases as RegisteredModelAlias objects for a RegisteredModel."""
+        items = self._get_model_aliases(model_ulid)
+        return [RegisteredModelAlias(item["alias"], int(item["version"])) for item in items]
+
+    def _aliases_for_model_version(self, model_ulid: str, version: int) -> list[str]:
+        """Return alias names pointing to a specific version."""
+        items = self._get_model_aliases(model_ulid)
+        return [item["alias"] for item in items if int(item["version"]) == version]
+
     # ------------------------------------------------------------------
     # Alias operations (Task 19)
     # ------------------------------------------------------------------
@@ -1123,7 +1154,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if item is None:
             raise MlflowException(
-                f"Alias '{alias}' not found for model '{name}'.",
+                f"Registered model alias {alias} not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         version: str = item["version"]
