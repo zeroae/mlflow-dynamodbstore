@@ -19,10 +19,65 @@ if _VENDOR_MLFLOW not in sys.path:
 # sys.modules before conftest runs, so `from tests.store.*` fails because our
 # `tests` package has no `store` subpackage. Fix: extend `tests.__path__` to
 # include vendor/mlflow/tests so that `tests.store.*` resolves to the vendor copy.
+#
+# We also extend any `tests.*` sub-packages that are already registered but whose
+# __path__ does not yet include the vendor counterpart (e.g. tests.integration
+# exists locally but lacks the vendor tests/integration/utils.py).
 import tests as _our_tests_pkg  # noqa: E402
 
 if _VENDOR_MLFLOW_TESTS not in _our_tests_pkg.__path__:
     _our_tests_pkg.__path__.append(_VENDOR_MLFLOW_TESTS)
+
+# Pre-register vendor tests sub-packages that also exist locally so that imports
+# resolve from BOTH locations (ours first, then vendor's as fallback).
+# Without this, `from tests.integration.utils import ...` fails because our local
+# tests/integration/ has no utils.py — Python finds our package first and stops.
+import importlib.util as _ilu  # noqa: E402
+import types as _types  # noqa: E402
+
+_VENDOR_TESTS_PATH = Path(_VENDOR_MLFLOW_TESTS)
+
+
+def _ensure_vendor_subpkg(mod_name: str) -> None:
+    """Ensure mod_name's __path__ includes the vendor counterpart directory."""
+    # Convert "tests.integration" -> Path("integration"), "tests" -> Path("")
+    rel_parts = mod_name.split(".")[
+        1:
+    ]  # e.g. [] for "tests", ["integration"] for "tests.integration"
+    rel_path = Path(*rel_parts) if rel_parts else Path("")
+    vendor_sub = str(_VENDOR_TESTS_PATH / rel_path)
+    if not Path(vendor_sub).is_dir():
+        return
+    if mod_name in sys.modules:
+        mod = sys.modules[mod_name]
+        if hasattr(mod, "__path__") and vendor_sub not in mod.__path__:
+            mod.__path__.append(vendor_sub)
+    else:
+        # Pre-register as a namespace/regular package with combined __path__
+        local_root = Path(_our_tests_pkg.__file__).parent
+        local_sub = str(local_root / rel_path)
+        search_paths = []
+        if Path(local_sub).is_dir():
+            search_paths.append(local_sub)
+        search_paths.append(vendor_sub)
+        pkg_init = Path(local_sub) / "__init__.py"
+        if not pkg_init.exists():
+            pkg_init = Path(vendor_sub) / "__init__.py"
+        spec = _ilu.spec_from_file_location(
+            mod_name,
+            str(pkg_init) if pkg_init.exists() else None,
+            submodule_search_locations=search_paths,
+        )
+        mod = _types.ModuleType(mod_name)
+        mod.__path__ = search_paths  # type: ignore[assignment]
+        mod.__spec__ = spec  # type: ignore[assignment]
+        mod.__package__ = mod_name
+        sys.modules[mod_name] = mod
+
+
+# Pre-register known vendor sub-packages that conflict with our local tests.*
+for _subpkg in ["tests.integration", "tests.helper_functions"]:
+    _ensure_vendor_subpkg(_subpkg)
 
 from mlflow.environment_variables import MLFLOW_ENABLE_WORKSPACES  # noqa: E402
 from mlflow.store.model_registry.sqlalchemy_store import (  # noqa: E402
