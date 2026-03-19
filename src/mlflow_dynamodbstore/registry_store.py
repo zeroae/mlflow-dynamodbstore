@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from typing import Any
 
 from mlflow.entities.model_registry import RegisteredModel, RegisteredModelTag
@@ -57,6 +58,8 @@ from mlflow_dynamodbstore.dynamodb.schema import (
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
 from mlflow_dynamodbstore.ids import generate_ulid
+
+_PREFETCH_TTL_SECONDS = 60
 
 
 def _rev(s: str) -> str:
@@ -177,6 +180,7 @@ class DynamoDBRegistryStore(AbstractStore):
             ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
         self._cache = ResolutionCache(workspace=lambda: self._workspace)
+        self._prefetch: dict[str, tuple[float, list[dict[str, Any]], dict[str, Any] | None]] = {}
         self._config = ConfigReader(self._table)
         self._config.reconcile()
 
@@ -918,19 +922,38 @@ class DynamoDBRegistryStore(AbstractStore):
         kept_items: list[dict[str, Any]] = []
         exhausted = False
 
+        # --- Check prefetch cache for previously fetched items ---
+        prefetch_key = (
+            json.dumps(exclusive_start_key, sort_keys=True) if exclusive_start_key else ""
+        )
+        cached = self._prefetch.pop(prefetch_key, None)
+        if cached is not None:
+            cached_ts, cached_items, cached_lek = cached
+            if time.time() - cached_ts < _PREFETCH_TTL_SECONDS:
+                items = cached_items
+                lek = cached_lek
+            else:
+                items = None  # expired
+        else:
+            items = None
+
         # --- Fetch max_results + 1 items from DynamoDB ---
         while len(results) < max_results + 1:
-            needed = max_results + 1 - len(results)
-            batch_size = needed * 2 if filter_fn else needed
-            items, lek = self._table.query_page(
-                pk=pk,
-                sk_prefix=sk_prefix,
-                index_name=index_name,
-                limit=batch_size,
-                scan_forward=scan_forward,
-                exclusive_start_key=exclusive_start_key,
-            )
+            if items is None:
+                needed = max_results + 1 - len(results)
+                batch_size = needed * 2 if filter_fn else needed
+                items, lek = self._table.query_page(
+                    pk=pk,
+                    sk_prefix=sk_prefix,
+                    index_name=index_name,
+                    limit=batch_size,
+                    scan_forward=scan_forward,
+                    exclusive_start_key=exclusive_start_key,
+                )
+
+            consumed = 0
             for item in items:
+                consumed += 1
                 if item.get(GSI5_SK, "").startswith("REV#"):
                     continue
                 model_name = item.get("name")
@@ -946,6 +969,17 @@ class DynamoDBRegistryStore(AbstractStore):
                 kept_items.append(item)
                 if not needs_tiebreak and len(results) > max_results:
                     break
+
+            # Cache any unprocessed items from this batch
+            remainder = items[consumed:]
+            if remainder and len(results) > max_results:
+                cursor_key = json.dumps(
+                    self._build_exclusive_start_key(kept_items[-1], index_name),
+                    sort_keys=True,
+                )
+                self._prefetch[cursor_key] = (time.time(), remainder, lek)
+
+            items = None  # clear so next iteration fetches from DDB
 
             if lek is None:
                 exhausted = True
