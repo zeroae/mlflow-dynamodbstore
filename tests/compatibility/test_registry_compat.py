@@ -62,21 +62,9 @@ _xfail_sql_internal = pytest.mark.xfail(
 )
 test_delete_model_version_redaction = _xfail_sql_internal(test_delete_model_version_redaction)
 
-# --- Category 9: get_latest_versions not implemented ---
-_xfail_latest_versions = pytest.mark.xfail(
-    reason="DynamoDB store get_latest_versions does not filter by stage"
-)
-test_get_latest_versions = _xfail_latest_versions(test_get_latest_versions)
-
-# --- Category 10: rename doesn't propagate to model versions ---
-_xfail_rename = pytest.mark.xfail(
-    reason="DynamoDB store rename_registered_model does not update model version names"
-)
-test_rename_registered_model = _xfail_rename(test_rename_registered_model)
-
-# --- Category 11: model_id lookup not implemented ---
+# --- Category 11: test mocks sqlalchemy_store.MlflowClient, not our module ---
 _xfail_model_id = pytest.mark.xfail(
-    reason="DynamoDB store does not implement model_id lookup in create_model_version"
+    reason="Test mocks sqlalchemy_store.MlflowClient — mock path incompatible with DynamoDB store"
 )
 test_create_model_version_with_model_id_and_no_run_id = _xfail_model_id(
     test_create_model_version_with_model_id_and_no_run_id
