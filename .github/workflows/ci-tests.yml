@@ -125,7 +125,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
       - name: Run compatibility tests
-        run: uv run pytest tests/compatibility/ -m compatibility -n auto --junitxml=junit.xml -o junit_family=legacy -v
+        run: uv run pytest tests/compatibility/ -m compatibility -n auto --cov=mlflow_dynamodbstore --cov-report=xml --junitxml=junit.xml -o junit_family=legacy -v
+      - name: Upload compatibility coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: compatibility
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
       - name: Upload compatibility test results to Codecov
         if: "!cancelled()"
         uses: codecov/codecov-action@v5

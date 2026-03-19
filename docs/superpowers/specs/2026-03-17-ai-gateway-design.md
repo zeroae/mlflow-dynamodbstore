@@ -388,6 +388,73 @@ The SQLAlchemy store accepts an optional `linkage_type` to disambiguate when the
 1. DeleteItem: `SK=GW#TAG#<key>` (AP27).
 2. Remove key from denormalized tags on META, update `last_updated_at`.
 
+## Access Pattern → Schema Mapping
+
+Consolidated view showing how each access pattern resolves to a DynamoDB operation against the schema.
+
+### O(1) Lookups (GetItem on Table)
+
+| AP | Pattern | PK | SK |
+|----|---------|----|----|
+| AP1 | Get secret by ID | `GW_SECRET#<id>` | `GW#META` |
+| AP6 | Get model def by ID | `GW_MODELDEF#<id>` | `GW#META` |
+| AP20 | Attach model (conditional PutItem) | `GW_ENDPOINT#<ep_id>` | `GW#MAP#<model_def_id>#<linkage_type>` |
+| AP21 | Detach model (DeleteItem) | `GW_ENDPOINT#<ep_id>` | `GW#MAP#<model_def_id>#<linkage_type>` |
+| AP22 | Create binding (PutItem) | `GW_ENDPOINT#<ep_id>` | `GW#BIND#<type>#<res_id>` |
+| AP23 | Delete binding (DeleteItem) | `GW_ENDPOINT#<ep_id>` | `GW#BIND#<type>#<res_id>` |
+| AP26 | Set tag (PutItem + UpdateItem META) | `GW_ENDPOINT#<ep_id>` | `GW#TAG#<key>` |
+| AP27 | Delete tag (DeleteItem + UpdateItem META) | `GW_ENDPOINT#<ep_id>` | `GW#TAG#<key>` |
+
+### Name → ID Resolution (Query GSI, then GetItem)
+
+| AP | Pattern | GSI | GSI PK | GSI SK |
+|----|---------|-----|--------|--------|
+| AP2 | Secret by name | GSI1 | `GW_SECRET_NAME#<ws>#<name>` | `<secret_id>` |
+| AP7 | Model def by name | GSI3 | `GW_MODELDEF_NAME#<ws>#<name>` | `<model_def_id>` |
+| AP13 | Endpoint by name | GSI3 | `GW_ENDPOINT_NAME#<ws>#<name>` | `<endpoint_id>` |
+
+### Uniqueness Checks (Query GSI, expect 0 results)
+
+| AP | Pattern | GSI | GSI PK |
+|----|---------|-----|--------|
+| AP3 | Secret name unique | GSI1 | `GW_SECRET_NAME#<ws>#<name>` |
+| AP8 | Model def name unique | GSI3 | `GW_MODELDEF_NAME#<ws>#<name>` |
+| AP14 | Endpoint name unique | GSI3 | `GW_ENDPOINT_NAME#<ws>#<name>` |
+
+### List Operations (Query GSI2 by workspace)
+
+| AP | Pattern | GSI PK | GSI SK | Notes |
+|----|---------|--------|--------|-------|
+| AP4 | List secrets | `GW_SECRETS#<ws>` | `<secret_id>` | FilterExpression on provider |
+| AP9 | List model defs | `GW_MODELDEFS#<ws>` | `<model_def_id>` | Filter on provider, secret_id |
+| AP15 | List endpoints | `GW_ENDPOINTS#<ws>` | `<endpoint_id>` | Returns IDs, batch-get partitions |
+
+### Cross-Entity Lookups (Query dedicated GSIs)
+
+| AP | Pattern | GSI | GSI PK | GSI SK | Notes |
+|----|---------|-----|--------|--------|-------|
+| AP5 | Model defs by secret (impact check) | GSI4 | `GW_MODELDEF_SECRET#<secret_id>` | `<model_def_id>` | delete_gateway_secret orphans these |
+| AP10 | Model defs by secret (filter) | GSI4 | `GW_MODELDEF_SECRET#<secret_id>` | `<model_def_id>` | list_gateway_model_definitions |
+| AP11 | Endpoints by model def (RESTRICT) | GSI5 | `GW_ENDPOINT_MODELDEF#<model_def_id>` | `<endpoint_id>` | Must be empty to allow delete |
+| AP25 | Endpoints by bound resource | GSI2 | `GW_BIND#<type>#<res_id>` | `<endpoint_id>` | Reverse lookup for bindings |
+
+### Partition Queries (Query Table PK with SK prefix)
+
+| AP | Pattern | PK | SK Condition | Notes |
+|----|---------|----|----|-------|
+| AP12 | Get full endpoint | `GW_ENDPOINT#<id>` | (all items) | META + mappings + bindings + tags |
+| AP18 | Delete endpoint cascade | `GW_ENDPOINT#<id>` | (all items) | Query then batch delete |
+| AP19 | Replace model configs | `GW_ENDPOINT#<id>` | `begins_with GW#MAP#` | Delete old, write new |
+| AP21 | Detach all linkages | `GW_ENDPOINT#<ep_id>` | `begins_with GW#MAP#<model_def_id>#` | When linkage_type not specified |
+| AP24 | List bindings by endpoint | `GW_ENDPOINT#<ep_id>` | `begins_with GW#BIND#` | Narrow with type/id prefix |
+
+### Composite Patterns (multi-step)
+
+| AP | Pattern | Steps |
+|----|---------|-------|
+| AP16 | List endpoints by provider | AP15 → get partitions → filter by model_def provider in-memory |
+| AP17 | List endpoints by secret | AP10 (model defs by secret) → AP11 (endpoints by model def) → deduplicate |
+
 ## Schema Constants
 
 New constants to add to `dynamodb/schema.py`:
@@ -537,19 +604,107 @@ No additional cache infrastructure is needed — the inherited `_invalidate_secr
 
 ## Implementation Sub-Phases
 
-Given the size (22 methods), this phase should be implemented in 3 sub-phases:
+Given the size (22 methods), this phase should be implemented in 4 sub-phases:
+
+### Phase 5.0: Port Gateway Compatibility Tests
+
+Before implementing any gateway methods, port MLflow's gateway store test suite into the project's compatibility test infrastructure. This establishes the target contract and enables TDD for all subsequent sub-phases.
+
+**Source**: `vendor/mlflow/tests/store/tracking/test_gateway_sql_store.py` (2002 lines, 64 test functions)
+
+**Target**: `tests/compatibility/test_gateway_compat.py`
+
+**Porting approach** — follow the established pattern in `test_tracking_compat.py` and `test_workspace_compat.py`:
+
+1. **Create `test_gateway_compat.py`** with a module-level `store` fixture override that provides the DynamoDB tracking store (same pattern as `test_tracking_compat.py`):
+   ```python
+   @pytest.fixture
+   def store(tracking_store, monkeypatch):
+       monkeypatch.setenv(MLFLOW_ENABLE_WORKSPACES.name, "false")
+       return tracking_store
+   ```
+   The `tracking_store` and `mock_dynamodb` fixtures are already defined in `tests/compatibility/conftest.py`.
+
+2. **Add `set_kek_passphrase` autouse fixture** — gateway tests require `MLFLOW_CRYPTO_KEK_PASSPHRASE` to be set for envelope encryption:
+   ```python
+   @pytest.fixture(autouse=True)
+   def set_kek_passphrase(monkeypatch):
+       monkeypatch.setenv("MLFLOW_CRYPTO_KEK_PASSPHRASE", "test-passphrase")
+   ```
+
+3. **Import test functions** from the vendored file — skip tests that are purely SQLAlchemy-specific (not testing the store API contract):
+   ```python
+   from tests.store.tracking.test_gateway_sql_store import (
+       test_create_gateway_secret,
+       test_create_gateway_secret_with_auth_config,
+       # ... all store-method tests (53 total)
+       test_create_gateway_endpoint_with_traffic_split,
+   )
+   ```
+
+   **Do not import** (11 tests that are intrinsically SQLAlchemy-specific):
+   - `test_secret_id_and_name_are_immutable_at_database_level` — uses `sqlalchemy.text()` and `ManagedSessionMaker` to test SQL column triggers
+   - 10 `config_resolver` tests (`test_get_resource_gateway_endpoint_configs`, `test_get_resource_endpoint_configs_*`, `test_get_gateway_endpoint_config*`) — `config_resolver.py` does `isinstance(store, SqlAlchemyStore)` check and uses ORM queries with `ManagedSessionMaker`; these test server-side SQLAlchemy plumbing, not the store API contract
+
+4. **Handle the `workspaces_enabled` fixture** — the vendored file has an autouse parametrized fixture that switches between `SqlAlchemyStore` and `WorkspaceAwareSqlAlchemyStore`. The DynamoDB store is always workspace-aware, so add `workspaces_enabled` to `tests/compatibility/conftest.py` (not per-file) so all compatibility tests that depend on it just work:
+   ```python
+   @pytest.fixture(autouse=True, params=[False, True], ids=["workspace-disabled", "workspace-enabled"])
+   def workspaces_enabled(request, monkeypatch):
+       enabled = request.param
+       monkeypatch.setenv(MLFLOW_ENABLE_WORKSPACES.name, "true" if enabled else "false")
+       if enabled:
+           workspace_name = f"compat-test-{uuid.uuid4().hex}"
+           with WorkspaceContext(workspace_name):
+               yield enabled
+       else:
+           yield enabled
+   ```
+   This mirrors the vendored fixture exactly but the `store` fixture always returns the same DynamoDB store class — the parametrization just exercises workspace scoping via `WorkspaceContext`.
+
+5. **Handle the `_cleanup_database` helper** — the vendored file defines this to clean SQLAlchemy tables between tests. With moto's `mock_aws`, each test gets a fresh DynamoDB, so no cleanup is needed. The function is not imported as a test (no `test_` prefix) so it's not collected.
+
+6. **xfail all imported tests** — all gateway methods currently raise `NotImplementedError` from the inherited `GatewayStoreMixin` stubs:
+   ```python
+   _xfail_gateway = pytest.mark.xfail(
+       raises=NotImplementedError,
+       reason="Gateway store methods not yet implemented (Phase 5)"
+   )
+   test_create_gateway_secret = _xfail_gateway(test_create_gateway_secret)
+   # ... all 53 store-method tests
+   ```
+
+**Test inventory** (55 imported, 11 excluded):
+
+| Category | Imported | Unlocked By |
+|----------|----------|-------------|
+| Secrets | 13 | Phase 5a |
+| Model Definitions | 10 | Phase 5b |
+| Endpoints CRUD | 10 | Phase 5c |
+| Attach/Detach | 4 | Phase 5c |
+| Bindings | 3 | Phase 5c |
+| Tags | 8 | Phase 5c |
+| Scorer integration | 5 | Phase 5c |
+| Fallback/Traffic routing | 2 | Phase 5c |
+| **Not imported** | **11** | **Reason** |
+| SQL column constraints | 1 | Uses `sqlalchemy.text()` + `ManagedSessionMaker` |
+| config_resolver | 10 | `isinstance(store, SqlAlchemyStore)` + ORM queries |
+
+**Verification**: `uv run pytest tests/compatibility/test_gateway_compat.py -v` — all 110 tests (55 x 2 workspace params) should collect and xfail (not error on import or collection).
 
 ### Phase 5a: Secrets (5 methods)
 - `create_gateway_secret`, `get_secret_info`, `update_gateway_secret`, `delete_gateway_secret`, `list_secret_infos`
 - Foundation — model defs and endpoints depend on secrets
+- Remove `xfail` from secret compatibility tests; all 13 should pass
 
 ### Phase 5b: Model Definitions (5 methods)
 - `create_gateway_model_definition`, `get_gateway_model_definition`, `list_gateway_model_definitions`, `update_gateway_model_definition`, `delete_gateway_model_definition`
 - Depends on Phase 5a for secret resolution
+- Remove `xfail` from model definition compatibility tests; all 9 should pass
 
 ### Phase 5c: Endpoints, Attachments, Bindings, Tags (12 methods)
 - All endpoint CRUD, attach/detach, binding CRUD, tag operations
 - Depends on Phase 5b for model_definition resolution
+- Remove `xfail` from remaining compatibility tests; all should pass
 
 ## Out of Scope
 

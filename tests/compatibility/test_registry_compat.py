@@ -11,13 +11,9 @@ Excluded tests:
 """
 
 import functools
-import sys
-from pathlib import Path
 from unittest import mock
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parents[2] / "vendor" / "mlflow"))
 
 from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402, F401
     test_create_model_version,

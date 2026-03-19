@@ -7,13 +7,9 @@ from pathlib import Path
 import pytest
 from moto import mock_aws
 
-# Add vendor/mlflow to sys.path so MLflow test helpers are importable.
-# This enables `from tests.helper_functions import random_str`.
+# Path to vendored MLflow tests for extending tests.__path__ below.
 # IMPORTANT: vendor/mlflow/tests/ must NEVER be added to pytest's testpaths.
-_VENDOR_MLFLOW = str(Path(__file__).parents[2] / "vendor" / "mlflow")
 _VENDOR_MLFLOW_TESTS = str(Path(__file__).parents[2] / "vendor" / "mlflow" / "tests")
-if _VENDOR_MLFLOW not in sys.path:
-    sys.path.insert(0, _VENDOR_MLFLOW)
 
 # With --import-mode=importlib, pytest registers our local `tests/` package in
 # sys.modules before conftest runs, so `from tests.store.*` fails because our
