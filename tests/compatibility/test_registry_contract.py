@@ -5,16 +5,7 @@ import pytest
 from tests.compatibility.comparison import assert_entities_match
 from tests.compatibility.field_policy import MODEL_VERSION, REGISTERED_MODEL
 
-# Shared xfail reasons matching compat test categories
-_xfail_rm_fields = pytest.mark.xfail(
-    reason="DynamoDB store: description '' vs None, latest_versions None vs []"
-)
-_xfail_mv_fields = pytest.mark.xfail(
-    reason="DynamoDB store: description/run_link '' vs None, version str vs int, aliases missing"
-)
 
-
-@_xfail_rm_fields
 def test_create_and_get_registered_model(registry_stores):
     """Model returned by create/get must match between backends."""
     sql_model = registry_stores.sql.create_registered_model("test-model")
@@ -26,7 +17,6 @@ def test_create_and_get_registered_model(registry_stores):
     assert_entities_match(sql_get, ddb_get, REGISTERED_MODEL)
 
 
-@_xfail_rm_fields
 def test_update_registered_model(registry_stores):
     """Updated model fields must match."""
     registry_stores.sql.create_registered_model("upd-model")
@@ -53,7 +43,6 @@ def test_delete_registered_model(registry_stores):
         registry_stores.ddb.get_registered_model("del-model")
 
 
-@_xfail_rm_fields
 def test_search_registered_models(registry_stores):
     """Search results must return same models (ignoring order)."""
     for name in ["search-a", "search-b", "search-c"]:
@@ -70,7 +59,6 @@ def test_search_registered_models(registry_stores):
         assert_entities_match(sql_m, ddb_m, REGISTERED_MODEL)
 
 
-@_xfail_mv_fields
 def test_create_and_get_model_version(registry_stores):
     """Model version fields must match between backends."""
     registry_stores.sql.create_registered_model("mv-model")
@@ -81,7 +69,6 @@ def test_create_and_get_model_version(registry_stores):
     assert_entities_match(sql_mv, ddb_mv, MODEL_VERSION)
 
 
-@_xfail_rm_fields
 def test_set_and_get_registered_model_tag(registry_stores):
     """Tags must round-trip identically."""
     from mlflow.entities.model_registry import RegisteredModelTag
@@ -98,7 +85,7 @@ def test_set_and_get_registered_model_tag(registry_stores):
     assert_entities_match(sql_model, ddb_model, REGISTERED_MODEL)
 
 
-@_xfail_mv_fields
+@pytest.mark.xfail(reason="DynamoDB store does not return aliases in get_model_version_by_alias")
 def test_set_registered_model_alias(registry_stores):
     """Alias operations must match."""
     registry_stores.sql.create_registered_model("alias-model")

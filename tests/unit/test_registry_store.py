@@ -73,22 +73,22 @@ class TestModelVersionCRUD:
             source="s3://bucket/model",
             run_id="01JRABC",
         )
-        assert mv.version == "1"
+        assert mv.version == 1
         assert mv.name == "my-model"
 
     def test_create_sequential_versions(self, registry_store):
         registry_store.create_registered_model("my-model")
         mv1 = registry_store.create_model_version("my-model", source="s3://bucket/v1")
         mv2 = registry_store.create_model_version("my-model", source="s3://bucket/v2")
-        assert mv1.version == "1"
-        assert mv2.version == "2"
+        assert mv1.version == 1
+        assert mv2.version == 2
 
     def test_get_model_version(self, registry_store):
         registry_store.create_registered_model("my-model")
         registry_store.create_model_version("my-model", source="s3://bucket/model")
         mv = registry_store.get_model_version("my-model", "1")
         assert mv.name == "my-model"
-        assert mv.version == "1"
+        assert mv.version == 1
         assert mv.source == "s3://bucket/model"
 
     def test_update_model_version(self, registry_store):
@@ -117,7 +117,7 @@ class TestModelVersionCRUD:
         registry_store.transition_model_version_stage("my-model", "1", "Production", False)
         latest = registry_store.get_latest_versions("my-model", stages=["Production"])
         assert len(latest) == 1
-        assert latest[0].version == "1"
+        assert latest[0].version == 1
 
     def test_get_latest_versions_no_stage_filter(self, registry_store):
         registry_store.create_registered_model("my-model")
@@ -169,7 +169,7 @@ class TestModelAliases:
         registry_store.create_model_version("my-model", source="s3://bucket/model")
         registry_store.set_registered_model_alias("my-model", "champion", "1")
         mv = registry_store.get_model_version_by_alias("my-model", "champion")
-        assert mv.version == "1"
+        assert mv.version == 1
 
     def test_delete_registered_model_alias(self, registry_store):
         registry_store.create_registered_model("my-model")
@@ -186,7 +186,7 @@ class TestModelAliases:
         registry_store.set_registered_model_alias("my-model", "champion", "1")
         registry_store.set_registered_model_alias("my-model", "champion", "2")
         mv = registry_store.get_model_version_by_alias("my-model", "champion")
-        assert mv.version == "2"
+        assert mv.version == 2
 
     def test_get_alias_not_found_raises(self, registry_store):
         registry_store.create_registered_model("my-model")

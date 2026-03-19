@@ -56,27 +56,11 @@ from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402, F4
     test_update_registered_model,
 )
 
-# --- Category 1: description returns "" instead of None ---
-_xfail_description_none = pytest.mark.xfail(
-    reason="DynamoDB store returns '' instead of None for unset description"
-)
-test_create_registered_model = _xfail_description_none(test_create_registered_model)
-test_get_registered_model = _xfail_description_none(test_get_registered_model)
-test_update_model_version = _xfail_description_none(test_update_model_version)
-test_update_registered_model = _xfail_description_none(test_update_registered_model)
-
-# --- Category 2: version is str instead of int ---
-_xfail_version_type = pytest.mark.xfail(
-    reason="DynamoDB store returns version as str instead of int"
-)
-test_create_model_version = _xfail_version_type(test_create_model_version)
-test_search_model_versions = _xfail_version_type(test_search_model_versions)
-test_search_model_versions_by_tag = _xfail_version_type(test_search_model_versions_by_tag)
-
 # --- Category 3: aliases not returned by get_registered_model ---
 _xfail_aliases = pytest.mark.xfail(
     reason="DynamoDB store does not return aliases in get_registered_model"
 )
+test_create_registered_model = _xfail_aliases(test_create_registered_model)
 test_set_registered_model_alias = _xfail_aliases(test_set_registered_model_alias)
 test_delete_model_deletes_alias = _xfail_aliases(test_delete_model_deletes_alias)
 test_delete_model_version_deletes_alias = _xfail_aliases(test_delete_model_version_deletes_alias)
@@ -108,6 +92,7 @@ test_delete_model_version_redaction = _xfail_sql_internal(test_delete_model_vers
 _xfail_deleted_ops = pytest.mark.xfail(
     reason="DynamoDB store does not raise on operations against deleted entities"
 )
+test_update_model_version = _xfail_deleted_ops(test_update_model_version)
 test_set_model_version_tag = _xfail_deleted_ops(test_set_model_version_tag)
 test_delete_model_version_tag = _xfail_deleted_ops(test_delete_model_version_tag)
 test_transition_model_version_stage_when_archive_existing_versions_is_true = _xfail_deleted_ops(
@@ -121,9 +106,9 @@ _xfail_validation = pytest.mark.xfail(
 test_delete_registered_model_tag = _xfail_validation(test_delete_registered_model_tag)
 test_set_registered_model_tag = _xfail_validation(test_set_registered_model_tag)
 
-# --- Category 9: latest_versions returns None instead of [] ---
+# --- Category 9: get_latest_versions not implemented ---
 _xfail_latest_versions = pytest.mark.xfail(
-    reason="DynamoDB store returns latest_versions=None instead of []"
+    reason="DynamoDB store get_latest_versions does not filter by stage"
 )
 test_get_latest_versions = _xfail_latest_versions(test_get_latest_versions)
 
@@ -152,6 +137,8 @@ test_search_prompts_versions = _xfail_prompts(test_search_prompts_versions)
 _xfail_search_order = pytest.mark.xfail(
     reason="DynamoDB store search ordering and pagination incomplete"
 )
+test_search_model_versions = _xfail_search_order(test_search_model_versions)
+test_search_model_versions_by_tag = _xfail_search_order(test_search_model_versions_by_tag)
 test_search_model_versions_order_by_simple = _xfail_search_order(
     test_search_model_versions_order_by_simple
 )
