@@ -10,6 +10,7 @@ from mlflow.entities.model_registry.model_version import ModelVersion
 from mlflow.entities.model_registry.model_version_tag import ModelVersionTag
 from mlflow.entities.model_registry.registered_model_alias import RegisteredModelAlias
 from mlflow.exceptions import MlflowException
+from mlflow.prompt.constants import IS_PROMPT_TAG_KEY
 from mlflow.protos.databricks_pb2 import (
     INVALID_PARAMETER_VALUE,
     RESOURCE_ALREADY_EXISTS,
@@ -432,7 +433,8 @@ class DynamoDBRegistryStore(AbstractStore):
             (p for p in predicates if p.field_type == "attribute" and p.key == "name"),
             None,
         )
-        tag_preds = [p for p in predicates if p.field_type == "tag"]
+        # Separate prompt tag from other tag predicates — prompt filtering is handled separately
+        tag_preds = [p for p in predicates if p.field_type == "tag" and p.key != IS_PROMPT_TAG_KEY]
 
         if name_pred and name_pred.op == "=":
             models = self._search_models_by_name_exact(name_pred.value)
@@ -441,9 +443,15 @@ class DynamoDBRegistryStore(AbstractStore):
         else:
             models = self._search_models_by_gsi2()
 
-        # Apply tag filters
+        # Apply tag filters (excluding prompt tag)
         if tag_preds:
             models = self._filter_models_by_tags(models, tag_preds, _compare)
+
+        # Filter by prompt status: include only prompts or only non-prompts
+        if self._is_querying_prompt(predicates):
+            models = [m for m in models if m._is_prompt()]
+        else:
+            models = [m for m in models if not m._is_prompt()]
 
         # Apply order_by
         if order_by:
@@ -635,6 +643,46 @@ class DynamoDBRegistryStore(AbstractStore):
                     break
             if match:
                 filtered.append(model)
+        return filtered
+
+    @staticmethod
+    def _is_querying_prompt(predicates: list[Any]) -> bool:
+        """Check if the filter explicitly requests prompt entities."""
+
+        for p in predicates:
+            if p.field_type != "tag" or p.key != IS_PROMPT_TAG_KEY:
+                continue
+            return bool(
+                (p.op == "=" and p.value.lower() == "true")
+                or (p.op == "!=" and p.value.lower() == "false")
+            )
+        return False
+
+    @staticmethod
+    def _version_is_prompt(version: ModelVersion) -> bool:
+        """Check if a model version is a prompt version."""
+
+        tags = version.tags or {}
+        return tags.get(IS_PROMPT_TAG_KEY, "false").lower() == "true"
+
+    @staticmethod
+    def _filter_versions_by_tags(
+        versions: list[ModelVersion],
+        tag_preds: list[Any],
+        compare_fn: Any,
+    ) -> list[ModelVersion]:
+        """Filter model versions by tag predicates."""
+        filtered: list[ModelVersion] = []
+        for version in versions:
+            tag_dict = version.tags or {}
+            match = True
+            for pred in tag_preds:
+                actual = tag_dict.get(pred.key)
+                if not compare_fn(actual, pred.op, pred.value):
+                    match = False
+                    break
+            if match:
+                filtered.append(version)
         return filtered
 
     def _sort_models(
@@ -887,27 +935,45 @@ class DynamoDBRegistryStore(AbstractStore):
         page_token: str | None = None,
     ) -> list[ModelVersion]:
         """Search model versions with filter support."""
-        import re as _re
-
         from mlflow.utils.search_utils import SearchModelVersionUtils
+
+        from mlflow_dynamodbstore.dynamodb.search import (
+            FilterPredicate,
+            _compare,
+        )
 
         # Validate order_by clauses (raises on invalid columns/syntax)
         for clause in order_by or []:
             SearchModelVersionUtils.parse_order_by_for_search_model_versions(clause)
 
-        model_name: str | None = None
-        run_id_filter: str | None = None
-
         if filter_string:
-            # Parse name = 'value'
-            name_match = _re.search(r"name\s*=\s*'([^']+)'", filter_string)
-            if name_match:
-                model_name = name_match.group(1)
+            parsed = SearchModelVersionUtils.parse_search_filter(filter_string)
+            predicates = [
+                FilterPredicate(
+                    field_type=p["type"],
+                    key=p["key"],
+                    op=p["comparator"],
+                    value=p.get("value"),
+                )
+                for p in parsed
+            ]
+        else:
+            predicates = []
 
-            # Parse run_id = 'value'
-            run_id_match = _re.search(r"run_id\s*=\s*'([^']+)'", filter_string)
-            if run_id_match:
-                run_id_filter = run_id_match.group(1)
+        name_pred = next(
+            (p for p in predicates if p.field_type == "attribute" and p.key == "name"),
+            None,
+        )
+        run_id_pred = next(
+            (p for p in predicates if p.field_type == "attribute" and p.key == "run_id"),
+            None,
+        )
+
+        # Separate prompt tag from other tag predicates — prompt filtering is handled separately
+        tag_preds = [p for p in predicates if p.field_type == "tag" and p.key != IS_PROMPT_TAG_KEY]
+
+        model_name = name_pred.value if name_pred and name_pred.op == "=" else None
+        run_id_filter = run_id_pred.value if run_id_pred and run_id_pred.op == "=" else None
 
         if model_name:
             # Targeted: get versions for a specific model
@@ -926,6 +992,16 @@ class DynamoDBRegistryStore(AbstractStore):
         # Apply run_id post-filter if name was also specified
         if run_id_filter and model_name:
             versions = [v for v in versions if v.run_id == run_id_filter]
+
+        # Apply tag filters
+        if tag_preds:
+            versions = self._filter_versions_by_tags(versions, tag_preds, _compare)
+
+        # Filter by prompt status: include only prompt versions or only non-prompt versions
+        if self._is_querying_prompt(predicates):
+            versions = [v for v in versions if self._version_is_prompt(v)]
+        else:
+            versions = [v for v in versions if not self._version_is_prompt(v)]
 
         if max_results:
             versions = versions[:max_results]
