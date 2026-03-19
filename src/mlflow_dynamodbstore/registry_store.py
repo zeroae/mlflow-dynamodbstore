@@ -1921,7 +1921,13 @@ class DynamoDBRegistryStore(AbstractStore):
         Returns ``storage_location`` if set (resolved from ``models:/`` URI),
         otherwise falls back to ``source``.
         """
-        model_ulid = self._resolve_model_ulid(name)
+        try:
+            model_ulid = self._resolve_model_ulid(name)
+        except MlflowException:
+            raise MlflowException(
+                f"Model Version (name={name}, version={version}) not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            ) from None
         padded = _pad_version(version)
         item = self._table.get_item(
             pk=f"{PK_MODEL_PREFIX}{model_ulid}",
