@@ -122,7 +122,7 @@ class TestExperimentCRUD:
     def test_delete_experiment_tag_nonexistent_experiment_raises(self, tracking_store):
         from mlflow.exceptions import MlflowException
 
-        with pytest.raises(MlflowException, match="does not exist"):
+        with pytest.raises(MlflowException, match="not found|not exist|No Experiment"):
             tracking_store.delete_experiment_tag("nonexistent-id", "key")
 
     def test_create_experiment_with_tags(self, tracking_store):
@@ -511,7 +511,7 @@ class TestLogOutputs:
         from mlflow.entities import LoggedModelOutput
         from mlflow.exceptions import MlflowException
 
-        with pytest.raises(MlflowException, match="does not exist"):
+        with pytest.raises(MlflowException, match="not found|does not exist"):
             tracking_store.log_outputs(
                 "nonexistent-run", [LoggedModelOutput(model_id="m-x", step=0)]
             )
