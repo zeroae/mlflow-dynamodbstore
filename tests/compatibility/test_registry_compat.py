@@ -56,14 +56,6 @@ from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402, F4
     test_update_registered_model,
 )
 
-# --- Category 4: error message format mismatch ---
-_xfail_error_msg = pytest.mark.xfail(
-    reason="DynamoDB store uses different error message format than SqlAlchemy"
-)
-test_create_registered_model_handle_prompt_properly = _xfail_error_msg(
-    test_create_registered_model_handle_prompt_properly
-)
-
 # --- Category 5: update_model_version on deleted version crashes ---
 _xfail_deleted_update = pytest.mark.xfail(
     reason="DynamoDB store crashes with KeyError on update of deleted model version"
@@ -75,24 +67,6 @@ _xfail_sql_internal = pytest.mark.xfail(
     reason="Test uses _get_sql_model_version_including_deleted (SqlAlchemy-specific)"
 )
 test_delete_model_version_redaction = _xfail_sql_internal(test_delete_model_version_redaction)
-
-# --- Category 7: operations on deleted entities don't raise ---
-_xfail_deleted_ops = pytest.mark.xfail(
-    reason="DynamoDB store does not raise on operations against deleted entities"
-)
-test_update_model_version = _xfail_deleted_ops(test_update_model_version)
-test_set_model_version_tag = _xfail_deleted_ops(test_set_model_version_tag)
-test_delete_model_version_tag = _xfail_deleted_ops(test_delete_model_version_tag)
-test_transition_model_version_stage_when_archive_existing_versions_is_true = _xfail_deleted_ops(
-    test_transition_model_version_stage_when_archive_existing_versions_is_true
-)
-
-# --- Category 8: missing input validation ---
-_xfail_validation = pytest.mark.xfail(
-    reason="DynamoDB store missing input validation (None keys, value length limits)"
-)
-test_delete_registered_model_tag = _xfail_validation(test_delete_registered_model_tag)
-test_set_registered_model_tag = _xfail_validation(test_set_registered_model_tag)
 
 # --- Category 9: get_latest_versions not implemented ---
 _xfail_latest_versions = pytest.mark.xfail(
