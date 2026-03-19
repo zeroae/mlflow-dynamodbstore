@@ -99,3 +99,4 @@ mlruns/
 
 # Git worktrees
 .worktrees/
+mlflow.db
