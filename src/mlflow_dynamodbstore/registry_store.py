@@ -370,12 +370,28 @@ class DynamoDBRegistryStore(AbstractStore):
         page_token: str | None = None,
     ) -> list[RegisteredModel]:
         """Search registered models with filter and order_by support."""
+        from mlflow.utils.search_utils import SearchModelUtils
+
         from mlflow_dynamodbstore.dynamodb.search import (
+            FilterPredicate,
             _compare,
-            parse_experiment_filter,
         )
 
-        predicates = parse_experiment_filter(filter_string)
+        # Use SearchModelUtils (not parse_experiment_filter) — handles
+        # backtick-quoted tag names and model registry filter syntax.
+        if filter_string:
+            parsed = SearchModelUtils.parse_search_filter(filter_string)
+            predicates = [
+                FilterPredicate(
+                    field_type=p["type"],
+                    key=p["key"],
+                    op=p["comparator"],
+                    value=p.get("value"),
+                )
+                for p in parsed
+            ]
+        else:
+            predicates = []
 
         name_pred = next(
             (p for p in predicates if p.field_type == "attribute" and p.key == "name"),
@@ -566,9 +582,11 @@ class DynamoDBRegistryStore(AbstractStore):
         """Filter models by tag predicates."""
         filtered: list[RegisteredModel] = []
         for model in models:
-            # Get tags as a dict
+            # Use _tags (includes mlflow.* prefixed tags) not .tags (which filters them out)
             tag_dict: dict[str, str] = {}
-            if isinstance(model.tags, dict):
+            if hasattr(model, "_tags") and isinstance(model._tags, dict):
+                tag_dict = model._tags
+            elif isinstance(model.tags, dict):
                 tag_dict = model.tags
             else:
                 for t in model.tags:

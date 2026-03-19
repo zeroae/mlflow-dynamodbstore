@@ -115,7 +115,20 @@ def span_dicts_to_mlflow_spans(
         for k, v in sd.get("attributes", {}).items():
             attrs[k] = v
 
-        status = SpanStatus(sd.get("status", "UNSET"), "")
+        # Handle both V3 format (dict: {"code": "STATUS_CODE_OK", "message": "..."})
+        # and X-Ray format (string: "OK", "ERROR", etc.)
+        raw_status = sd.get("status", "UNSET")
+        if isinstance(raw_status, dict):
+            status_code = raw_status.get("code", raw_status.get("status_code", "UNSET"))
+            status_msg = raw_status.get("message", raw_status.get("description", ""))
+        else:
+            status_code = raw_status
+            status_msg = ""
+        # V3 uses "STATUS_CODE_OK" / "STATUS_CODE_ERROR" / "STATUS_CODE_UNSET"
+        # SpanStatusCode expects "OK" / "ERROR" / "UNSET"
+        if status_code.startswith("STATUS_CODE_"):
+            status_code = status_code[len("STATUS_CODE_") :]
+        status = SpanStatus(status_code, status_msg)
 
         otel_span = OTelReadableSpan(
             name=sd.get("name", ""),

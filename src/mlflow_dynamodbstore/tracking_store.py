@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from mlflow.entities.model_registry import PromptVersion
     from mlflow.entities.trace import Trace
+    from mlflow.entities.trace_metrics import MetricAggregation, MetricDataPoint, MetricViewType
     from mlflow.genai.scorers.online.entities import OnlineScorer, OnlineScoringConfig
 
     from mlflow_dynamodbstore.xray.client import XRayClient
@@ -40,6 +41,7 @@ from mlflow.entities import (
     TraceState,
     ViewType,
 )
+from mlflow.entities.dataset_summary import _DatasetSummary
 from mlflow.entities.logged_model_status import LoggedModelStatus
 from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
@@ -48,7 +50,6 @@ from mlflow.protos.databricks_pb2 import (
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
-from mlflow.protos.service_pb2 import DatasetSummary
 from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow.tracing.analysis import TraceFilterCorrelationResult
@@ -126,7 +127,10 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_SCORER_OSCFG_SUFFIX,
     SK_SCORER_PREFIX,
     SK_SESSION_PREFIX,
+    SK_SPAN_METRIC_PREFIX,
+    SK_SPAN_PREFIX,
     SK_TAG_PREFIX,
+    SK_TRACE_METRIC_PREFIX,
     SK_TRACE_PREFIX,
 )
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
@@ -208,6 +212,12 @@ def _item_to_run(
 ) -> Run:
     """Convert DynamoDB items to an MLflow Run entity."""
     info = _item_to_run_info(item)
+    # Populate run_name from mlflow.runName tag if not set on the item
+    if not info.run_name:
+        for t in tags:
+            if t["key"] == "mlflow.runName":
+                info._set_run_name(t["value"])
+                break
     data = RunData(
         tags=[RunTag(t["key"], t["value"]) for t in tags],
         params=[Param(p["key"], p["value"]) for p in params],
@@ -1655,7 +1665,34 @@ class DynamoDBTrackingStore(AbstractStore):
                     metric_items = self._table.query(
                         pk=pk, sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}"
                     )
-                    runs.append(_item_to_run(item, tag_items, param_items, metric_items))
+                    # Fetch dataset inputs for the run
+                    input_items = self._table.query(
+                        pk=pk, sk_prefix=f"{run_prefix}{SK_INPUT_PREFIX}"
+                    )
+                    # Fetch dataset definitions (D# items in experiment partition)
+                    dataset_items = (
+                        self._table.query(pk=pk, sk_prefix=SK_DATASET_PREFIX) if input_items else []
+                    )
+                    # Fetch input tags
+                    input_tag_items: list[dict[str, Any]] = []
+                    if input_items:
+                        for inp in input_items:
+                            inp_sk = inp["SK"]
+                            itags = self._table.query(
+                                pk=pk, sk_prefix=f"{inp_sk}{SK_INPUT_TAG_SUFFIX}"
+                            )
+                            input_tag_items.extend(itags)
+                    runs.append(
+                        _item_to_run(
+                            item,
+                            tag_items,
+                            param_items,
+                            metric_items,
+                            input_items,
+                            dataset_items,
+                            input_tag_items,
+                        )
+                    )
                     remaining -= 1
 
                     if remaining <= 0:
@@ -2179,7 +2216,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
         self._table.batch_write(items)
 
-    def _search_datasets(self, experiment_ids: list[str]) -> list[DatasetSummary]:
+    def _search_datasets(self, experiment_ids: list[str]) -> list[_DatasetSummary]:
         """Search for legacy V2 datasets (D# and DLINK# items) under experiment partitions.
 
         This method queries existing D# (dataset) and DLINK# (dataset-run link) items
@@ -2235,20 +2272,17 @@ class DynamoDBTrackingStore(AbstractStore):
                             if key in dataset_map:
                                 dataset_map[key]["context"] = item["context"]
 
-        # Build DatasetSummary protobuf objects
-        results: list[DatasetSummary] = []
+        # Build _DatasetSummary entity objects (handler calls .to_proto() on these)
+        results: list[_DatasetSummary] = []
         for (name, digest), data in dataset_map.items():
-            summary = DatasetSummary()
-            exp_id: str = data["experiment_id"]
-            ds_name: str = data["name"]
-            ds_digest: str = data["digest"]
-            summary.experiment_id = exp_id
-            summary.name = ds_name
-            summary.digest = ds_digest
-            context = data["context"]
-            if context:
-                summary.context = context
-            results.append(summary)
+            results.append(
+                _DatasetSummary(
+                    experiment_id=data["experiment_id"],
+                    name=data["name"],
+                    digest=data["digest"],
+                    context=data["context"],
+                )
+            )
 
         return results
 
@@ -2435,6 +2469,8 @@ class DynamoDBTrackingStore(AbstractStore):
         state_str = meta.get("state", "STATE_UNSPECIFIED")
         state = TraceState(state_str)
 
+        assessments = self._load_assessments(pk, trace_id)
+
         return TraceInfo(
             trace_id=trace_id,
             trace_location=TraceLocation(
@@ -2447,6 +2483,7 @@ class DynamoDBTrackingStore(AbstractStore):
             trace_metadata=trace_metadata,
             tags=tags,
             client_request_id=meta.get("client_request_id"),
+            assessments=assessments,
         )
 
     @property
@@ -2525,8 +2562,8 @@ class DynamoDBTrackingStore(AbstractStore):
                 spans_item["ttl"] = ttl
             self._table.put_item(spans_item)
 
-            # Denormalize span attributes on META
-            if span_dicts:
+            # Denormalize span attributes on META (skip if already done)
+            if span_dicts and not (meta or {}).get("span_types"):
                 span_types = set()
                 span_statuses = set()
                 span_names = set()
@@ -2565,14 +2602,31 @@ class DynamoDBTrackingStore(AbstractStore):
                     self._table.batch_write(fts_items)
 
         # Convert span dicts to MLflow Span objects
-        spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
+        # Try V3 format (Span.to_dict) first — preserves original span IDs.
+        # Fall back to X-Ray converter which hashes span IDs.
+        if span_dicts and "start_time_unix_nano" in span_dicts[0]:
+            try:
+                from mlflow.entities.span import Span as SpanEntity
+
+                spans = [SpanEntity.from_dict(sd) for sd in span_dicts]
+            except Exception:
+                spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
+        else:
+            spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
 
         return Trace(info=trace_info, data=TraceData(spans=spans))
 
     def log_spans(
         self, location: str, spans: list[Any], tracking_uri: str | None = None
     ) -> list[Any]:
-        """Log spans to the tracking store by writing SPANS cache items."""
+        """Log spans to the tracking store by writing SPANS cache items.
+
+        In addition to the SPANS JSON blob, writes:
+        - Individual span items (T#<trace_id>#SPAN#<span_id>)
+        - Trace metric items (T#<trace_id>#TMETRIC#<key>) for aggregated token usage
+        - Span metric items (T#<trace_id>#SMETRIC#<span_id>#<key>) for per-span costs
+        - META denormalization of span_types, span_names, span_statuses
+        """
         import json as _json
         from collections import defaultdict
 
@@ -2593,20 +2647,209 @@ class DynamoDBTrackingStore(AbstractStore):
                 experiment_id = location
 
             pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            sk = f"{SK_TRACE_PREFIX}{trace_id}"
 
             # Read TTL from trace META
-            meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+            meta = self._table.get_item(pk=pk, sk=sk)
             ttl = int(meta["ttl"]) if meta and "ttl" in meta else self._get_trace_ttl()
 
             span_dicts = [s.to_dict() for s in trace_spans]
+
+            # Merge with existing cached spans (log_spans may be called multiple
+            # times for the same trace — e.g., parent span first, child span second)
+            spans_sk = f"{SK_TRACE_PREFIX}{trace_id}#SPANS"
+            existing = self._table.get_item(pk=pk, sk=spans_sk)
+            if existing is not None:
+                existing_dicts = _json.loads(existing["data"])
+                # Deduplicate by span_id
+                existing_by_id = {sd.get("span_id"): sd for sd in existing_dicts}
+                for sd in span_dicts:
+                    existing_by_id[sd.get("span_id")] = sd
+                span_dicts = list(existing_by_id.values())
+
             spans_item: dict[str, Any] = {
                 "PK": pk,
-                "SK": f"{SK_TRACE_PREFIX}{trace_id}#SPANS",
+                "SK": spans_sk,
                 "data": _json.dumps(span_dicts),
             }
             if ttl is not None:
                 spans_item["ttl"] = ttl
             self._table.put_item(spans_item)
+
+            # --- Write individual span items, metrics, and denormalize META ---
+            extra_items: list[dict[str, Any]] = []
+            span_types: set[str] = set()
+            span_statuses: set[str] = set()
+            span_names: set[str] = set()
+            # Accumulators for trace-level token usage
+            total_input_tokens = 0
+            total_output_tokens = 0
+            total_total_tokens = 0
+            has_token_usage = False
+
+            for span in trace_spans:
+                sd = span.to_dict()
+                attrs = sd.get("attributes", {})
+
+                # Read span fields — prefer direct properties, fall back to dict
+                span_id = getattr(span, "span_id", None) or sd.get("span_id")
+                name = getattr(span, "name", None) or sd.get("name", "")
+                span_type = getattr(span, "span_type", None) or sd.get("span_type", "")
+                start_ns = getattr(span, "start_time_ns", None)
+                if start_ns is None or not isinstance(start_ns, int | float):
+                    start_ns = sd.get("start_time_ns", sd.get("start_time_unix_nano", 0))
+                end_ns = getattr(span, "end_time_ns", None)
+                if end_ns is None or not isinstance(end_ns, int | float):
+                    end_ns = sd.get("end_time_ns", sd.get("end_time_unix_nano", 0))
+
+                # Extract status string
+                status = getattr(span, "status", None) or sd.get("status", "")
+                if hasattr(status, "status_code"):
+                    status_str = str(status.status_code)
+                elif isinstance(status, dict):
+                    status_str = str(status.get("code", status))
+                else:
+                    status_str = str(status)
+
+                # Collect for META denormalization
+                if span_type:
+                    span_types.add(str(span_type))
+                if status_str:
+                    span_statuses.add(status_str)
+                if name:
+                    span_names.add(str(name))
+
+                # Skip individual span item if we don't have a span_id
+                if not span_id:
+                    continue
+
+                # Build individual span item
+                span_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_TRACE_PREFIX}{trace_id}{SK_SPAN_PREFIX}{span_id}",
+                    "name": str(name),
+                    "type": str(span_type),
+                    "status": status_str,
+                    "start_time_ns": int(start_ns),
+                    "end_time_ns": int(end_ns),
+                    "duration_ms": (int(end_ns) - int(start_ns)) // 1_000_000,
+                }
+                model_name = attrs.get("mlflow.llm.model")
+                if model_name:
+                    try:
+                        model_name = _json.loads(model_name)
+                    except (TypeError, _json.JSONDecodeError):
+                        pass
+                    if model_name:
+                        span_item["model_name"] = model_name
+
+                model_provider = attrs.get("mlflow.llm.provider")
+                if model_provider:
+                    try:
+                        model_provider = _json.loads(model_provider)
+                    except (TypeError, _json.JSONDecodeError):
+                        pass
+                    if model_provider:
+                        span_item["model_provider"] = model_provider
+
+                if ttl is not None:
+                    span_item["ttl"] = ttl
+                extra_items.append(span_item)
+
+                # --- Token usage (aggregate to trace level) ---
+                token_usage_raw = attrs.get("mlflow.chat.tokenUsage")
+                if token_usage_raw:
+                    try:
+                        token_usage = (
+                            _json.loads(token_usage_raw)
+                            if isinstance(token_usage_raw, str)
+                            else token_usage_raw
+                        )
+                        total_input_tokens += int(token_usage.get("input_tokens", 0))
+                        total_output_tokens += int(token_usage.get("output_tokens", 0))
+                        total_total_tokens += int(token_usage.get("total_tokens", 0))
+                        has_token_usage = True
+                    except (TypeError, _json.JSONDecodeError, ValueError):
+                        pass
+
+                # --- Per-span cost metrics ---
+                cost_raw = attrs.get("mlflow.llm.cost")
+                if cost_raw:
+                    try:
+                        from decimal import Decimal as _Decimal
+
+                        cost = _json.loads(cost_raw) if isinstance(cost_raw, str) else cost_raw
+                        for cost_key in ("input_cost", "output_cost", "total_cost"):
+                            if cost_key in cost and cost[cost_key] is not None:
+                                cost_item: dict[str, Any] = {
+                                    "PK": pk,
+                                    "SK": (
+                                        f"{SK_TRACE_PREFIX}{trace_id}"
+                                        f"{SK_SPAN_METRIC_PREFIX}{span_id}#{cost_key}"
+                                    ),
+                                    "value": _Decimal(str(cost[cost_key])),
+                                    "key": cost_key,
+                                    "span_id": span_id,
+                                }
+                                if ttl is not None:
+                                    cost_item["ttl"] = ttl
+                                extra_items.append(cost_item)
+                    except (TypeError, _json.JSONDecodeError, ValueError):
+                        pass
+
+            # --- Write trace-level metric items ---
+            if has_token_usage:
+                from decimal import Decimal as _Decimal
+
+                for metric_key, metric_val in [
+                    ("input_tokens", total_input_tokens),
+                    ("output_tokens", total_output_tokens),
+                    ("total_tokens", total_total_tokens),
+                ]:
+                    tmetric_item: dict[str, Any] = {
+                        "PK": pk,
+                        "SK": (f"{SK_TRACE_PREFIX}{trace_id}{SK_TRACE_METRIC_PREFIX}{metric_key}"),
+                        "value": _Decimal(str(metric_val)),
+                        "key": metric_key,
+                    }
+                    if ttl is not None:
+                        tmetric_item["ttl"] = ttl
+                    extra_items.append(tmetric_item)
+
+            # Write all extra items in batch
+            if extra_items:
+                self._table.batch_write(extra_items)
+
+            # --- Denormalize span attributes on META ---
+            updates: dict[str, Any] = {}
+            if span_types:
+                updates["span_types"] = span_types
+            if span_statuses:
+                updates["span_statuses"] = span_statuses
+            if span_names:
+                updates["span_names"] = span_names
+
+            if updates and meta:
+                # Only denormalize if META item exists (log_spans may be called
+                # before start_trace in the V3 async path; update_item would
+                # create a partial META item, causing start_trace's
+                # condition=attribute_not_exists(PK) to fail).
+                self._table.update_item(pk=pk, sk=sk, updates=updates)
+
+            # Write FTS items for span names
+            if span_names:
+                span_names_text = " ".join(sorted(span_names))
+                fts_items = fts_items_for_text(
+                    pk=pk,
+                    entity_type="T",
+                    entity_id=trace_id,
+                    field="spans",
+                    text=span_names_text,
+                )
+                if ttl is not None:
+                    for item in fts_items:
+                        item["ttl"] = ttl
+                self._table.batch_write(fts_items)
 
         return spans
 
@@ -2879,8 +3122,10 @@ class DynamoDBTrackingStore(AbstractStore):
         for pred in span_predicates:
             field_name = span_key_to_field.get(pred.key)
             if not field_name:
-                # Unknown span key, skip (will need X-Ray)
-                return False
+                # Unknown span key (e.g. "content" from trace.text ILIKE).
+                # Can't filter from cached META sets — skip this predicate
+                # and let the trace through rather than rejecting it.
+                continue
             values = item.get(field_name)
             if not values:
                 return False
@@ -2991,6 +3236,8 @@ class DynamoDBTrackingStore(AbstractStore):
         state_str = meta.get("state", "STATE_UNSPECIFIED")
         state = TraceState(state_str)
 
+        assessments = self._load_assessments(pk, trace_id)
+
         return TraceInfo(
             trace_id=trace_id,
             trace_location=TraceLocation(
@@ -3003,7 +3250,30 @@ class DynamoDBTrackingStore(AbstractStore):
             trace_metadata=trace_metadata,
             tags=tags,
             client_request_id=meta.get("client_request_id"),
+            assessments=assessments,
         )
+
+    def _load_assessments(self, pk: str, trace_id: str) -> list[Assessment]:
+        """Load assessments for a trace, fixing the valid field for expectations."""
+        assess_items = self._table.query(
+            pk=pk,
+            sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#",
+        )
+        assessments: list[Assessment] = []
+        for item in assess_items:
+            if "data" not in item:
+                continue
+            try:
+                a = Assessment.from_dictionary(item["data"])
+                # Expectation.to_dictionary() stores valid=None, but the SQL store
+                # always sets valid=True. Proto3 omits None values, causing the UI
+                # to not render the assessment. Fix by defaulting to True.
+                if a.valid is None:
+                    a.valid = True
+                assessments.append(a)
+            except Exception:
+                pass
+        return assessments
 
     def _write_trace_tag(
         self,
@@ -3341,6 +3611,50 @@ class DynamoDBTrackingStore(AbstractStore):
         if fts_items:
             self._table.batch_write(fts_items)
 
+    @staticmethod
+    def _parse_assessment_numeric_value(assess_dict: dict[str, Any]) -> Decimal | None:
+        """Parse numeric value from assessment dict for denormalization."""
+        fb = assess_dict.get("feedback", {})
+        ex = assess_dict.get("expectation", {})
+        raw = fb.get("value") if fb else ex.get("value")
+        if raw is None:
+            return None
+        val_str = str(raw)
+        if val_str in ("True", "true", "yes"):
+            return Decimal("1")
+        if val_str in ("False", "false", "no"):
+            return Decimal("0")
+        try:
+            return Decimal(val_str)
+        except Exception:
+            return None
+
+    def _denormalize_assessment_item(
+        self, item: dict[str, Any], assess_dict: dict[str, Any]
+    ) -> None:
+        """Add denormalized top-level attributes to an assessment item."""
+        item["name"] = assess_dict.get("assessment_name", "")
+        item["assessment_type"] = "feedback" if "feedback" in assess_dict else "expectation"
+        numeric_val = self._parse_assessment_numeric_value(assess_dict)
+        if numeric_val is not None:
+            item["numeric_value"] = numeric_val
+        # Parse created_timestamp from proto timestamp or ISO string
+        create_time = assess_dict.get("create_time", {})
+        if isinstance(create_time, dict):
+            seconds = int(create_time.get("seconds", 0))
+            nanos = int(create_time.get("nanos", 0))
+            item["created_timestamp"] = seconds * 1000 + nanos // 1_000_000
+        elif isinstance(create_time, int | float):
+            item["created_timestamp"] = int(create_time)
+        elif isinstance(create_time, str) and create_time:
+            import datetime as _dt
+
+            try:
+                dt = _dt.datetime.fromisoformat(create_time.replace("Z", "+00:00"))
+                item["created_timestamp"] = int(dt.timestamp() * 1000)
+            except ValueError:
+                pass
+
     def create_assessment(self, assessment: Assessment) -> Assessment:
         """Create a new assessment for a trace."""
         trace_id = assessment.trace_id
@@ -3383,6 +3697,7 @@ class DynamoDBTrackingStore(AbstractStore):
         }
         if ttl is not None:
             item["ttl"] = ttl
+        self._denormalize_assessment_item(item, assess_dict)
         self._table.put_item(item)
 
         # Write FTS items for the assessment value text
@@ -3457,6 +3772,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
         # Write updated item
         item["data"] = assess_dict
+        self._denormalize_assessment_item(item, assess_dict)
         self._table.put_item(item)
 
         # FTS diff
@@ -3995,7 +4311,7 @@ class DynamoDBTrackingStore(AbstractStore):
             )
 
         now_ms = int(time.time() * 1000)
-        dataset_id = f"eval_{generate_ulid()}"
+        dataset_id = f"d-{generate_ulid()}"
         digest = self._compute_dataset_digest(name, now_ms)
         pk = f"{PK_DATASET_PREFIX}{dataset_id}"
 
@@ -4484,16 +4800,18 @@ class DynamoDBTrackingStore(AbstractStore):
             exclusive_start_key=exclusive_start_key,
         )
 
+        from mlflow_dynamodbstore.dynamodb.table import convert_decimals
+
         record_list = [
             DatasetRecord(
                 dataset_id=dataset_id,
                 dataset_record_id=item["dataset_record_id"],
-                inputs=item.get("inputs", {}),
+                inputs=convert_decimals(item.get("inputs", {})),
                 created_time=int(item["created_time"]),
                 last_update_time=int(item["last_update_time"]),
-                outputs=item.get("outputs"),
-                expectations=item.get("expectations"),
-                tags=item.get("tags"),
+                outputs=convert_decimals(item.get("outputs")),
+                expectations=convert_decimals(item.get("expectations")),
+                tags=convert_decimals(item.get("tags")),
             )
             for item in items
         ]
@@ -4544,3 +4862,299 @@ class DynamoDBTrackingStore(AbstractStore):
             )
 
         return len(record_ids)
+
+    # ------------------------------------------------------------------
+    # Trace Metrics Query
+    # ------------------------------------------------------------------
+
+    def query_trace_metrics(
+        self,
+        experiment_ids: list[str],
+        view_type: MetricViewType,
+        metric_name: str,
+        aggregations: list[MetricAggregation],
+        dimensions: list[str] | None = None,
+        filters: list[str] | None = None,
+        time_interval_seconds: int | None = None,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        max_results: int = 1000,
+        page_token: str | None = None,
+    ) -> PagedList[list[MetricDataPoint]]:
+        """Query aggregated trace metrics across experiments."""
+        from mlflow.entities.trace_metrics import AggregationType, MetricViewType
+        from mlflow.store.tracking.utils.sql_trace_metrics_utils import (
+            validate_query_trace_metrics_params,
+        )
+
+        from mlflow_dynamodbstore.trace_metrics.accumulators import MetricAccumulator
+        from mlflow_dynamodbstore.trace_metrics.extractors import (
+            TIME_BUCKET_LABEL,
+            build_dimension_key,
+            compute_time_bucket,
+            extract_metric_value,
+            get_timestamp_for_view,
+        )
+        from mlflow_dynamodbstore.trace_metrics.filters import (
+            apply_trace_metric_filters,
+            filter_assessment_items,
+            filter_span_items,
+            meta_prefilter_spans,
+        )
+        from mlflow_dynamodbstore.trace_metrics.pagination import (
+            cache_get,
+            cache_put,
+            compute_query_hash,
+            decode_page_token,
+            encode_page_token,
+        )
+
+        # 1. VALIDATE
+        validate_query_trace_metrics_params(view_type, metric_name, aggregations, dimensions)
+        if time_interval_seconds is not None and (start_time_ms is None or end_time_ms is None):
+            raise MlflowException(
+                "start_time_ms and end_time_ms are required when time_interval_seconds is set.",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        # 2. CHECK CACHE (if page_token)
+        if page_token:
+            token_data = decode_page_token(page_token)
+            cached = cache_get(self._table, token_data["query_hash"])
+            if cached is not None:
+                offset = token_data["offset"]
+                page = cached[offset : offset + max_results]
+                next_token = None
+                if offset + max_results < len(cached):
+                    next_token = encode_page_token(token_data["query_hash"], offset + max_results)
+                return PagedList(page, next_token)  # type: ignore[arg-type]
+
+        # Need percentile values?
+        need_values = any(a.aggregation_type == AggregationType.PERCENTILE for a in aggregations)
+
+        # 3. STREAM TRACE META ITEMS and accumulate
+        accumulators: dict[tuple[str | None, ...], MetricAccumulator] = {}
+        dim_labels: dict[tuple[str | None, ...], dict[str, str]] = {}
+
+        for experiment_id in experiment_ids:
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+            # Query META items (with optional time range via LSI1)
+            if start_time_ms is not None and end_time_ms is not None:
+                meta_candidates = self._table.query(
+                    pk=pk,
+                    index_name="lsi1",
+                    sk_gte=f"{start_time_ms:020d}",
+                    sk_lte=f"{end_time_ms:020d}",
+                )
+            else:
+                # NOTE: Without time range, this fetches all T# items (including sub-items).
+                # The "request_time" in item filter discards non-META items in Python.
+                # This is known technical debt — a dedicated META-only
+                # index would be more efficient.
+                meta_candidates = self._table.query(pk=pk, sk_prefix=SK_TRACE_PREFIX)
+
+            # Filter to META items only (have "request_time" attribute)
+            meta_items = [item for item in meta_candidates if "request_time" in item]
+
+            for meta_item in meta_items:
+                trace_id = meta_item["SK"][len(SK_TRACE_PREFIX) :]
+
+                # Only query tags if needed for filters or trace_name dimension
+                needs_tags = False
+                if filters:
+                    needs_tags = any("tag" in f for f in filters)
+                if dimensions and "trace_name" in dimensions:
+                    needs_tags = True
+                needs_metadata = bool(filters and any("metadata" in f for f in filters))
+
+                tag_items = (
+                    self._table.query(pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#TAG#")
+                    if needs_tags
+                    else []
+                )
+                metadata_items = (
+                    self._table.query(pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#")
+                    if needs_metadata
+                    else []
+                )
+
+                # Apply trace-level filters
+                if not apply_trace_metric_filters(
+                    meta_item, filters, view_type, tag_items, metadata_items
+                ):
+                    continue
+
+                # Build trace_tags dict for dimension extraction
+                trace_tags = {t["key"]: t["value"] for t in tag_items}
+
+                if view_type == MetricViewType.TRACES:
+                    # Fetch TMETRIC items for token metrics
+                    tmetric_items = self._table.query(
+                        pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}{SK_TRACE_METRIC_PREFIX}"
+                    )
+
+                    # Compute time bucket
+                    time_bucket = None
+                    if time_interval_seconds is not None:
+                        ts = get_timestamp_for_view(view_type, meta_item, meta_item)
+                        time_bucket = compute_time_bucket(ts, time_interval_seconds)
+
+                    value = extract_metric_value(
+                        metric_name, view_type, meta_item, meta_item, tmetric_items
+                    )
+                    if value is None:
+                        continue
+
+                    dim_key = build_dimension_key(
+                        dimensions, view_type, meta_item, meta_item, trace_tags, time_bucket
+                    )
+                    # Skip if any dimension value is None
+                    if dimensions and any(v is None for v in dim_key):
+                        continue
+
+                    if dim_key not in accumulators:
+                        accumulators[dim_key] = MetricAccumulator(collect_values=need_values)
+                        # Build dimension labels
+                        labels: dict[str, str] = {}
+                        idx = 0
+                        if time_bucket is not None:
+                            labels[TIME_BUCKET_LABEL] = time_bucket
+                            idx = 1
+                        for d in dimensions or []:
+                            labels[d] = str(dim_key[idx]) if dim_key[idx] is not None else ""
+                            idx += 1
+                        dim_labels[dim_key] = labels
+                    accumulators[dim_key].add(value)
+
+                elif view_type == MetricViewType.SPANS:
+                    # Pre-filter using META denormalized fields
+                    if not meta_prefilter_spans(meta_item, filters):
+                        continue
+
+                    # Fetch span items and span metric items
+                    span_items = self._table.query(
+                        pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}{SK_SPAN_PREFIX}"
+                    )
+                    smetric_items = self._table.query(
+                        pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}{SK_SPAN_METRIC_PREFIX}"
+                    )
+
+                    # Apply span-level filters
+                    span_items = filter_span_items(span_items, filters)
+
+                    for span_item in span_items:
+                        time_bucket = None
+                        if time_interval_seconds is not None:
+                            ts = get_timestamp_for_view(view_type, span_item, meta_item)
+                            time_bucket = compute_time_bucket(ts, time_interval_seconds)
+
+                        value = extract_metric_value(
+                            metric_name,
+                            view_type,
+                            span_item,
+                            meta_item,
+                            span_metric_items=smetric_items,
+                        )
+                        if value is None:
+                            continue
+
+                        dim_key = build_dimension_key(
+                            dimensions, view_type, span_item, meta_item, trace_tags, time_bucket
+                        )
+                        if dimensions and any(v is None for v in dim_key):
+                            continue
+
+                        if dim_key not in accumulators:
+                            accumulators[dim_key] = MetricAccumulator(collect_values=need_values)
+                            labels = {}
+                            idx = 0
+                            if time_bucket is not None:
+                                labels[TIME_BUCKET_LABEL] = time_bucket
+                                idx = 1
+                            for d in dimensions or []:
+                                labels[d] = str(dim_key[idx]) if dim_key[idx] is not None else ""
+                                idx += 1
+                            dim_labels[dim_key] = labels
+                        accumulators[dim_key].add(value)
+
+                elif view_type == MetricViewType.ASSESSMENTS:
+                    # Fetch assessment items
+                    assess_items = self._table.query(
+                        pk=pk, sk_prefix=f"{SK_TRACE_PREFIX}{trace_id}#ASSESS#"
+                    )
+
+                    # Apply assessment-level filters
+                    assess_items = filter_assessment_items(assess_items, filters)
+
+                    for assess_item in assess_items:
+                        time_bucket = None
+                        if time_interval_seconds is not None:
+                            ts = get_timestamp_for_view(view_type, assess_item, meta_item)
+                            time_bucket = compute_time_bucket(ts, time_interval_seconds)
+
+                        value = extract_metric_value(metric_name, view_type, assess_item, meta_item)
+                        if value is None:
+                            continue
+
+                        dim_key = build_dimension_key(
+                            dimensions, view_type, assess_item, meta_item, trace_tags, time_bucket
+                        )
+                        if dimensions and any(v is None for v in dim_key):
+                            continue
+
+                        if dim_key not in accumulators:
+                            accumulators[dim_key] = MetricAccumulator(collect_values=need_values)
+                            labels = {}
+                            idx = 0
+                            if time_bucket is not None:
+                                labels[TIME_BUCKET_LABEL] = time_bucket
+                                idx = 1
+                            for d in dimensions or []:
+                                labels[d] = str(dim_key[idx]) if dim_key[idx] is not None else ""
+                                idx += 1
+                            dim_labels[dim_key] = labels
+                        accumulators[dim_key].add(value)
+
+        # 4. FINALIZE — compute aggregation results, convert to MetricDataPoint list
+        from mlflow.entities.trace_metrics import MetricDataPoint
+
+        all_data_points: list[MetricDataPoint] = []
+        for dim_key, acc in accumulators.items():
+            agg_values = acc.finalize(aggregations)
+            labels = dim_labels.get(dim_key, {})
+            dp = MetricDataPoint(
+                metric_name=metric_name,
+                dimensions=labels or {},
+                values=agg_values,
+            )
+            all_data_points.append(dp)
+
+        # 5. CACHE AND PAGINATE
+        query_hash = compute_query_hash(
+            experiment_ids,
+            view_type,
+            metric_name,
+            aggregations,
+            dimensions,
+            filters,
+            time_interval_seconds,
+            start_time_ms,
+            end_time_ms,
+        )
+        offset = 0
+        if page_token:
+            from mlflow_dynamodbstore.trace_metrics.pagination import decode_page_token as _decode
+
+            token_data = _decode(page_token)
+            offset = token_data.get("offset", 0)
+
+        cache_put(self._table, query_hash, all_data_points)
+        page = all_data_points[offset : offset + max_results]
+        next_offset = offset + max_results
+        next_token = (
+            encode_page_token(query_hash, next_offset)
+            if next_offset < len(all_data_points)
+            else None
+        )
+        return PagedList(page, next_token)  # type: ignore[arg-type]

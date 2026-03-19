@@ -16,7 +16,7 @@ class TestCreateDataset:
         ds = tracking_store.create_dataset(name="my-dataset")
         assert isinstance(ds, EvaluationDataset)
         assert ds.name == "my-dataset"
-        assert ds.dataset_id.startswith("eval_")
+        assert ds.dataset_id.startswith("d-")
         assert ds.digest != ""
         assert ds.created_time > 0
         assert ds.last_update_time > 0
@@ -311,7 +311,7 @@ class TestDatasetRecords:
         rec = records[0]
         assert rec.inputs == {"q": "test"}
         assert rec.outputs == {"a": "answer"}
-        assert rec.expectations == {"score": Decimal("0.9")}
+        assert rec.expectations == {"score": 0.9}
         assert rec.tags == {"validation": "passed"}
 
     def test_upsert_update_with_optional_fields(self, tracking_store):
@@ -338,7 +338,7 @@ class TestDatasetRecords:
         records, _ = tracking_store._load_dataset_records(ds.dataset_id)
         rec = records[0]
         assert rec.outputs == {"a": "new"}
-        assert rec.expectations == {"accuracy": Decimal("0.95")}
+        assert rec.expectations == {"accuracy": 0.95}
         assert rec.tags == {"status": "validated"}
 
     def test_load_records_paginated(self, tracking_store):

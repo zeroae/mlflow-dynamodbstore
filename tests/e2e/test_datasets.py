@@ -16,7 +16,7 @@ class TestDatasets:
     def test_create_and_get_dataset(self, client: MlflowClient):
         """Create and retrieve an evaluation dataset."""
         ds = client.create_dataset(name=f"e2e-ds-{_uid()}")
-        assert ds.dataset_id.startswith("eval_")
+        assert ds.dataset_id.startswith("d-")
 
         fetched = client.get_dataset(ds.dataset_id)
         assert fetched.name == ds.name

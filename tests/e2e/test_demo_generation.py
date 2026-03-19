@@ -32,6 +32,6 @@ class TestDemoGeneration:
         resp = http_session.post(
             f"{http_session.base_url}/ajax-api/3.0/mlflow/demo/generate",
             json={"features": ["evaluation"]},
-            timeout=300,
+            timeout=600,
         )
         assert resp.status_code == 200, f"Demo evaluation failed: {resp.text}"

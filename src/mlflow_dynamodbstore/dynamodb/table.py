@@ -23,6 +23,24 @@ _INDEX_KEY_ATTRS: dict[str, tuple[str, str]] = {
 
 _BATCH_WRITE_CHUNK_SIZE = 25
 
+
+def convert_decimals(obj: Any) -> Any:
+    """Recursively convert Decimal values to int/float for JSON serialization.
+
+    DynamoDB returns numeric values as ``decimal.Decimal``.  Most MLflow entity
+    classes call ``json.dumps`` on stored dicts, which fails on ``Decimal``.
+    """
+    from decimal import Decimal
+
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == int(obj) else float(obj)
+    if isinstance(obj, dict):
+        return {k: convert_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [convert_decimals(v) for v in obj]
+    return obj
+
+
 # Attributes that must be numeric (DynamoDB N type) per table schema.
 # All other index key attributes are String (S).
 _NUMERIC_ATTRS: frozenset[str] = frozenset({"lsi2sk"})
