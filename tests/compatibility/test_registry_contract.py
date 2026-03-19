@@ -85,7 +85,6 @@ def test_set_and_get_registered_model_tag(registry_stores):
     assert_entities_match(sql_model, ddb_model, REGISTERED_MODEL)
 
 
-@pytest.mark.xfail(reason="DynamoDB store does not return aliases in get_model_version_by_alias")
 def test_set_registered_model_alias(registry_stores):
     """Alias operations must match."""
     registry_stores.sql.create_registered_model("alias-model")

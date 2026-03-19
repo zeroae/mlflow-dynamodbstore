@@ -56,17 +56,6 @@ from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402, F4
     test_update_registered_model,
 )
 
-# --- Category 3: aliases not returned by get_registered_model ---
-_xfail_aliases = pytest.mark.xfail(
-    reason="DynamoDB store does not return aliases in get_registered_model"
-)
-test_create_registered_model = _xfail_aliases(test_create_registered_model)
-test_set_registered_model_alias = _xfail_aliases(test_set_registered_model_alias)
-test_delete_model_deletes_alias = _xfail_aliases(test_delete_model_deletes_alias)
-test_delete_model_version_deletes_alias = _xfail_aliases(test_delete_model_version_deletes_alias)
-test_delete_registered_model_alias = _xfail_aliases(test_delete_registered_model_alias)
-test_get_model_version_by_alias = _xfail_aliases(test_get_model_version_by_alias)
-
 # --- Category 4: error message format mismatch ---
 _xfail_error_msg = pytest.mark.xfail(
     reason="DynamoDB store uses different error message format than SqlAlchemy"

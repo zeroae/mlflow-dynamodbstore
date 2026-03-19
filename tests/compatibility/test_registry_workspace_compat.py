@@ -21,9 +21,9 @@ from tests.store.model_registry.test_sqlalchemy_workspace_store import (  # noqa
     test_webhook_operations_are_workspace_scoped,
 )
 
-# --- Aliases not returned by get_registered_model ---
+# --- Cross-workspace model version error message mismatch ---
 test_model_version_operations_are_workspace_scoped = pytest.mark.xfail(
-    reason="DynamoDB store does not return aliases in get_registered_model"
+    reason="DynamoDB store raises 'Registered Model not found' instead of 'Model Version not found'"
 )(test_model_version_operations_are_workspace_scoped)
 
 

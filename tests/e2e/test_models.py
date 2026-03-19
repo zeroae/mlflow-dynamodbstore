@@ -44,14 +44,14 @@ class TestModels:
         name = f"e2e-ver-{_uid()}"
         client.create_registered_model(name)
         mv = client.create_model_version(name, source="s3://bucket/model")
-        assert mv.version == "1"
+        assert mv.version == 1
 
     def test_get_model_version(self, client: MlflowClient):
         name = f"e2e-getver-{_uid()}"
         client.create_registered_model(name)
         client.create_model_version(name, source="s3://bucket/model")
         mv = client.get_model_version(name, "1")
-        assert mv.version == "1"
+        assert mv.version == 1
         assert mv.creation_timestamp is not None
 
     def test_set_registered_model_alias(self, client: MlflowClient):
@@ -60,7 +60,7 @@ class TestModels:
         client.create_model_version(name, source="s3://bucket/model")
         client.set_registered_model_alias(name, "champion", "1")
         mv = client.get_model_version_by_alias(name, "champion")
-        assert mv.version == "1"
+        assert mv.version == 1
 
     def test_set_registered_model_tag(self, client: MlflowClient):
         name = f"e2e-tag-{_uid()}"
@@ -85,7 +85,7 @@ class TestModels:
         versions = client.search_model_versions(f"name='{name}'")
         assert len(versions) == 2
         version_numbers = {v.version for v in versions}
-        assert version_numbers == {"1", "2"}
+        assert version_numbers == {1, 2}
 
     def test_search_models_by_name_like(self, client: MlflowClient):
         """Search by name LIKE — uses FTS."""
