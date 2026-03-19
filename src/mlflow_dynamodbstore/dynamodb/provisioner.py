@@ -121,7 +121,7 @@ def _seed_initial_data(
             "PK": "WORKSPACE#default",
             "SK": "META",
             "name": "default",
-            "description": "Default workspace",
+            "description": "Default workspace for legacy resources",
             "gsi2pk": "WORKSPACES",
             "gsi2sk": "default",
         },

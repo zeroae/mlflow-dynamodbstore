@@ -7,7 +7,11 @@ from typing import Any
 from mlflow.entities import Workspace
 from mlflow.entities.workspace import WorkspaceDeletionMode
 from mlflow.exceptions import MlflowException
-from mlflow.protos.databricks_pb2 import RESOURCE_DOES_NOT_EXIST
+from mlflow.protos.databricks_pb2 import (
+    INVALID_STATE,
+    RESOURCE_ALREADY_EXISTS,
+    RESOURCE_DOES_NOT_EXIST,
+)
 from mlflow.store.workspace.abstract_store import AbstractStore
 
 from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
@@ -59,7 +63,11 @@ class DynamoDBWorkspaceStore(AbstractStore):
             sk=SK_WORKSPACE_META,
         )
         if existing is None:
-            self._put_workspace("default", description="", default_artifact_root="")
+            self._put_workspace(
+                "default",
+                description="Default workspace for legacy resources",
+                default_artifact_root="",
+            )
 
     def _put_workspace(
         self,
@@ -98,12 +106,22 @@ class DynamoDBWorkspaceStore(AbstractStore):
         Raises:
             MlflowException: If a workspace with the given name already exists.
         """
-        self._put_workspace(
-            workspace.name,
-            description=workspace.description or "",
-            default_artifact_root=workspace.default_artifact_root or "",
-            condition="attribute_not_exists(PK)",
-        )
+        from botocore.exceptions import ClientError
+
+        try:
+            self._put_workspace(
+                workspace.name,
+                description=workspace.description or "",
+                default_artifact_root=workspace.default_artifact_root or "",
+                condition="attribute_not_exists(PK)",
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise MlflowException(
+                    f"Workspace '{workspace.name}' already exists.",
+                    error_code=RESOURCE_ALREADY_EXISTS,
+                ) from None
+            raise
         return workspace
 
     def get_workspace(self, workspace_name: str) -> Workspace:
@@ -118,7 +136,7 @@ class DynamoDBWorkspaceStore(AbstractStore):
         )
         if item is None:
             raise MlflowException(
-                f"Workspace '{workspace_name}' does not exist.",
+                f"Workspace '{workspace_name}' not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         return self._item_to_workspace(item)
@@ -132,11 +150,15 @@ class DynamoDBWorkspaceStore(AbstractStore):
         return [self._item_to_workspace(item) for item in items]
 
     def update_workspace(self, workspace: Workspace) -> Workspace:
-        """Update mutable workspace attributes."""
+        """Update mutable workspace attributes.
+
+        An empty string for ``default_artifact_root`` signals "clear this field".
+        """
         updates: dict[str, Any] = {}
         if workspace.description is not None:
             updates["description"] = workspace.description
         if workspace.default_artifact_root is not None:
+            # Empty string means "clear" — store empty, _item_to_workspace returns None
             updates["default_artifact_root"] = workspace.default_artifact_root
 
         if updates:
@@ -145,7 +167,7 @@ class DynamoDBWorkspaceStore(AbstractStore):
                 sk=SK_WORKSPACE_META,
                 updates=updates,
             )
-        return workspace
+        return self.get_workspace(workspace.name)
 
     def delete_workspace(
         self,
@@ -159,8 +181,8 @@ class DynamoDBWorkspaceStore(AbstractStore):
         """
         if workspace_name == "default":
             raise MlflowException(
-                "Cannot delete the default workspace.",
-                error_code=RESOURCE_DOES_NOT_EXIST,
+                f"Cannot delete the reserved '{workspace_name}' workspace",
+                error_code=INVALID_STATE,
             )
         self._table.delete_item(
             pk=f"{PK_WORKSPACE_PREFIX}{workspace_name}",
