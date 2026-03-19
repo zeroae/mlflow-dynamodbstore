@@ -617,7 +617,7 @@ class DynamoDBRegistryStore(AbstractStore):
         if word_tokens:
             model_ulid_sets: list[set[str]] = []
             for token in word_tokens:
-                sk_prefix = f"W#{token}#M#"
+                sk_prefix = f"W#M#{token}#"
                 fts_items = self._table.query(
                     pk=gsi2pk,
                     sk_prefix=sk_prefix,
@@ -626,12 +626,10 @@ class DynamoDBRegistryStore(AbstractStore):
                 ids = set()
                 for item in fts_items:
                     gsi2sk = item.get(GSI2_SK, "")
-                    # Pattern: W#<token>#M#<model_ulid>
+                    # Pattern: W#M#<token>#<model_ulid>
                     parts = gsi2sk.split("#")
-                    for i, part in enumerate(parts):
-                        if part == "M" and i + 1 < len(parts):
-                            ids.add(parts[i + 1])
-                            break
+                    if len(parts) >= 4:
+                        ids.add(parts[3])
                 model_ulid_sets.append(ids)
 
             if model_ulid_sets:
@@ -646,7 +644,7 @@ class DynamoDBRegistryStore(AbstractStore):
         if trigram_tokens:
             model_ulid_sets = []
             for token in trigram_tokens:
-                sk_prefix = f"3#{token}#M#"
+                sk_prefix = f"3#M#{token}#"
                 fts_items = self._table.query(
                     pk=gsi2pk,
                     sk_prefix=sk_prefix,
@@ -655,11 +653,10 @@ class DynamoDBRegistryStore(AbstractStore):
                 ids = set()
                 for item in fts_items:
                     gsi2sk = item.get(GSI2_SK, "")
+                    # Pattern: 3#M#<token>#<model_ulid>
                     parts = gsi2sk.split("#")
-                    for i, part in enumerate(parts):
-                        if part == "M" and i + 1 < len(parts):
-                            ids.add(parts[i + 1])
-                            break
+                    if len(parts) >= 4:
+                        ids.add(parts[3])
                 model_ulid_sets.append(ids)
 
             if model_ulid_sets:

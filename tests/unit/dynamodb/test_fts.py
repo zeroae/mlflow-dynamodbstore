@@ -141,12 +141,12 @@ class TestFTSKeyBuilders:
             workspace="default",
         )
         forward_items = [i for i in items if i["SK"].startswith("FTS#")]
-        # Forward SK = FTS#<level>#<token>#<entity_type>#<entity_id>
+        # Forward SK = FTS#<level>#<entity_type>#<token>#<entity_id>
         for item in forward_items:
             parts = item["SK"].split("#")
             assert parts[0] == "FTS"
             assert parts[1] == "W"
-            assert parts[3] == "E"
+            assert parts[2] == "E"
             assert parts[4] == "01JQXYZ"
 
     def test_reverse_sk_pattern(self):

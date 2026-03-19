@@ -361,8 +361,8 @@ class TestSetTraceTag:
 
         pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
         fts_items = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
-        # Filter to items for trace entity "T#tr-abc123"
-        trace_fts = [i for i in fts_items if "T#tr-abc123" in i["SK"]]
+        # New forward SK: FTS#{level}#T#{token}#tr-abc123#{field}
+        trace_fts = [i for i in fts_items if "tr-abc123" in i["SK"]]
         assert len(trace_fts) > 0, "Expected FTS items to be written for trace tag"
         for fts_item in trace_fts:
             assert "ttl" in fts_item, f"FTS item missing ttl: {fts_item['SK']}"
@@ -383,13 +383,13 @@ class TestSetTraceTag:
         # Set initial tag value "alpha"
         tracking_store.set_trace_tag("tr-abc123", "my.tag", "alpha")
         fts_after_first = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
-        first_fts = {i["SK"] for i in fts_after_first if "T#tr-abc123#my.tag" in i["SK"]}
+        first_fts = {i["SK"] for i in fts_after_first if "tr-abc123#my.tag" in i["SK"]}
         assert len(first_fts) > 0
 
         # Overwrite with "beta" -- old "alpha" tokens should be removed
         tracking_store.set_trace_tag("tr-abc123", "my.tag", "beta")
         fts_after_second = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
-        second_fts = {i["SK"] for i in fts_after_second if "T#tr-abc123#my.tag" in i["SK"]}
+        second_fts = {i["SK"] for i in fts_after_second if "tr-abc123#my.tag" in i["SK"]}
 
         # "alpha" and "beta" share no tokens, so old tokens should be gone
         assert first_fts.isdisjoint(second_fts), (
@@ -560,7 +560,7 @@ class TestCreateAssessment:
         # Verify FTS tokens exist for the feedback value text
         fts_items = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
         assess_fts = [
-            i for i in fts_items if f"T#{trace_id}#assess_{result.assessment_id}" in i["SK"]
+            i for i in fts_items if f"#{trace_id}#assess_{result.assessment_id}" in i["SK"]
         ]
         assert len(assess_fts) > 0, "Expected FTS items for assessment value text"
 
@@ -588,7 +588,7 @@ class TestCreateAssessment:
         pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
         fts_items = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
         assess_fts = [
-            i for i in fts_items if f"T#{trace_id}#assess_{result.assessment_id}" in i["SK"]
+            i for i in fts_items if f"#{trace_id}#assess_{result.assessment_id}" in i["SK"]
         ]
         assert len(assess_fts) > 0
 
@@ -612,7 +612,7 @@ class TestUpdateAssessment:
         # Capture FTS tokens after create
         fts_after_create = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
         old_fts = {
-            i["SK"] for i in fts_after_create if f"T#{trace_id}#assess_{assessment_id}" in i["SK"]
+            i["SK"] for i in fts_after_create if f"#{trace_id}#assess_{assessment_id}" in i["SK"]
         }
         assert len(old_fts) > 0
 
@@ -627,7 +627,7 @@ class TestUpdateAssessment:
         # Verify FTS diff: old tokens removed, new tokens added
         fts_after_update = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
         new_fts = {
-            i["SK"] for i in fts_after_update if f"T#{trace_id}#assess_{assessment_id}" in i["SK"]
+            i["SK"] for i in fts_after_update if f"#{trace_id}#assess_{assessment_id}" in i["SK"]
         }
         assert old_fts.isdisjoint(new_fts), "Old FTS tokens should be removed on update"
         assert len(new_fts) > 0, "New FTS tokens should be written"
@@ -674,7 +674,7 @@ class TestDeleteAssessment:
         # Verify FTS items exist before delete
         fts_before = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
         assess_fts_before = [
-            i for i in fts_before if f"T#{trace_id}#assess_{assessment_id}" in i["SK"]
+            i for i in fts_before if f"#{trace_id}#assess_{assessment_id}" in i["SK"]
         ]
         assert len(assess_fts_before) > 0
 
@@ -696,7 +696,7 @@ class TestDeleteAssessment:
         # Verify all FTS items cleaned up
         fts_after = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
         assess_fts_after = [
-            i for i in fts_after if f"T#{trace_id}#assess_{assessment_id}" in i["SK"]
+            i for i in fts_after if f"#{trace_id}#assess_{assessment_id}" in i["SK"]
         ]
         assert len(assess_fts_after) == 0
 
@@ -1068,7 +1068,7 @@ class TestDeleteTraces:
 
         # Verify FTS items exist
         fts_before = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
-        trace_fts_before = [i for i in fts_before if "T#tr-abc123" in i["SK"]]
+        trace_fts_before = [i for i in fts_before if "tr-abc123" in i["SK"]]
         assert len(trace_fts_before) > 0
 
         fts_rev_before = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_REV_PREFIX)
@@ -1079,7 +1079,7 @@ class TestDeleteTraces:
 
         # All FTS items should be gone
         fts_after = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
-        trace_fts_after = [i for i in fts_after if "T#tr-abc123" in i["SK"]]
+        trace_fts_after = [i for i in fts_after if "tr-abc123" in i["SK"]]
         assert len(trace_fts_after) == 0
 
         fts_rev_after = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_REV_PREFIX)
@@ -1264,7 +1264,7 @@ class TestGetTraceWithSpans:
 
         pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
         fts_items = tracking_store._table.query(pk=pk, sk_prefix=SK_FTS_PREFIX)
-        span_fts = [i for i in fts_items if "T#tr-abc123#spans" in i["SK"]]
+        span_fts = [i for i in fts_items if "tr-abc123#spans" in i["SK"]]
         assert len(span_fts) > 0, "Expected FTS items for span names"
 
         # FTS items should have TTL

@@ -204,6 +204,22 @@ def tokenize_trigrams(text: str) -> set[str]:
     return grams
 
 
+def tokenize_tail_bigrams(text: str) -> set[str]:
+    """Last 2 characters of each word — covers end-of-word bigram positions."""
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return {word[-2:] for word in words if len(word) >= 2}
+
+
+def tokenize_bigrams(text: str) -> set[str]:
+    """All character bigrams of the search term (query-side only)."""
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    grams: set[str] = set()
+    for word in words:
+        for i in range(len(word) - 1):
+            grams.add(word[i : i + 2])
+    return grams
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -218,6 +234,8 @@ def _tokens_for_level(level: str, text: str) -> set[str]:
         return tokenize_words(text)
     if level == "3":
         return tokenize_trigrams(text)
+    if level == "2":
+        return tokenize_tail_bigrams(text)
     raise ValueError(f"Unknown FTS level: {level!r}")
 
 
@@ -232,7 +250,7 @@ def fts_items_for_text(
     entity_id: str,
     field: str | None,
     text: str,
-    levels: tuple[str, ...] = ("W", "3"),
+    levels: tuple[str, ...] = ("W", "3", "2"),
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return DynamoDB item dicts (forward + reverse) for every FTS token.
@@ -256,7 +274,7 @@ def fts_items_for_text(
     for level in levels:
         tokens = _tokens_for_level(level, text)
         for token in tokens:
-            forward_sk = f"{SK_FTS_PREFIX}{level}#{token}#{entity_type}#{entity_id}{field_suffix}"
+            forward_sk = f"{SK_FTS_PREFIX}{level}#{entity_type}#{token}#{entity_id}{field_suffix}"
             reverse_sk = (
                 f"{SK_FTS_REV_PREFIX}{entity_type}#{entity_id}{field_suffix}#{level}#{token}"
             )
@@ -266,7 +284,7 @@ def fts_items_for_text(
 
             if add_gsi2:
                 gsi2pk_val = f"{GSI2_FTS_NAMES_PREFIX}{workspace}"
-                gsi2sk_val = f"{level}#{token}#{entity_type}#{entity_id}{field_suffix}"
+                gsi2sk_val = f"{level}#{entity_type}#{token}#{entity_id}{field_suffix}"
                 forward[GSI2_PK] = gsi2pk_val
                 forward[GSI2_SK] = gsi2sk_val
 
@@ -279,7 +297,7 @@ def fts_items_for_text(
 def fts_diff(
     old_text: str | None,
     new_text: str,
-    levels: tuple[str, ...] = ("W", "3"),
+    levels: tuple[str, ...] = ("W", "3", "2"),
 ) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
     """Compute the token-level diff between *old_text* and *new_text*.
 
