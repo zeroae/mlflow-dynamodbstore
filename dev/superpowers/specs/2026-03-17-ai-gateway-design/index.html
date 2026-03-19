@@ -1320,6 +1320,100 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#access-pattern-schema-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Access Pattern → Schema Mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Access Pattern → Schema Mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#o1-lookups-getitem-on-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        O(1) Lookups (GetItem on Table)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#name-id-resolution-query-gsi-then-getitem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Name → ID Resolution (Query GSI, then GetItem)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#uniqueness-checks-query-gsi-expect-0-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Uniqueness Checks (Query GSI, expect 0 results)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#list-operations-query-gsi2-by-workspace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        List Operations (Query GSI2 by workspace)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cross-entity-lookups-query-dedicated-gsis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-Entity Lookups (Query dedicated GSIs)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#partition-queries-query-table-pk-with-sk-prefix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Partition Queries (Query Table PK with SK prefix)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#composite-patterns-multi-step" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Composite Patterns (multi-step)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#schema-constants" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1424,6 +1518,17 @@
   
     <nav class="md-nav" aria-label="Implementation Sub-Phases">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-50-port-gateway-compatibility-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 5.0: Port Gateway Compatibility Tests
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#phase-5a-secrets-5-methods" class="md-nav__link">
@@ -2358,6 +2463,288 @@
 <p><strong><code>delete_gateway_endpoint_tag(endpoint_id, key)</code></strong>
 1. DeleteItem: <code>SK=GW#TAG#&lt;key&gt;</code> (AP27).
 2. Remove key from denormalized tags on META, update <code>last_updated_at</code>.</p>
+<h2 id="access-pattern-schema-mapping">Access Pattern → Schema Mapping<a class="headerlink" href="#access-pattern-schema-mapping" title="Permanent link">&para;</a></h2>
+<p>Consolidated view showing how each access pattern resolves to a DynamoDB operation against the schema.</p>
+<h3 id="o1-lookups-getitem-on-table">O(1) Lookups (GetItem on Table)<a class="headerlink" href="#o1-lookups-getitem-on-table" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>AP</th>
+<th>Pattern</th>
+<th>PK</th>
+<th>SK</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP1</td>
+<td>Get secret by ID</td>
+<td><code>GW_SECRET#&lt;id&gt;</code></td>
+<td><code>GW#META</code></td>
+</tr>
+<tr>
+<td>AP6</td>
+<td>Get model def by ID</td>
+<td><code>GW_MODELDEF#&lt;id&gt;</code></td>
+<td><code>GW#META</code></td>
+</tr>
+<tr>
+<td>AP20</td>
+<td>Attach model (conditional PutItem)</td>
+<td><code>GW_ENDPOINT#&lt;ep_id&gt;</code></td>
+<td><code>GW#MAP#&lt;model_def_id&gt;#&lt;linkage_type&gt;</code></td>
+</tr>
+<tr>
+<td>AP21</td>
+<td>Detach model (DeleteItem)</td>
+<td><code>GW_ENDPOINT#&lt;ep_id&gt;</code></td>
+<td><code>GW#MAP#&lt;model_def_id&gt;#&lt;linkage_type&gt;</code></td>
+</tr>
+<tr>
+<td>AP22</td>
+<td>Create binding (PutItem)</td>
+<td><code>GW_ENDPOINT#&lt;ep_id&gt;</code></td>
+<td><code>GW#BIND#&lt;type&gt;#&lt;res_id&gt;</code></td>
+</tr>
+<tr>
+<td>AP23</td>
+<td>Delete binding (DeleteItem)</td>
+<td><code>GW_ENDPOINT#&lt;ep_id&gt;</code></td>
+<td><code>GW#BIND#&lt;type&gt;#&lt;res_id&gt;</code></td>
+</tr>
+<tr>
+<td>AP26</td>
+<td>Set tag (PutItem + UpdateItem META)</td>
+<td><code>GW_ENDPOINT#&lt;ep_id&gt;</code></td>
+<td><code>GW#TAG#&lt;key&gt;</code></td>
+</tr>
+<tr>
+<td>AP27</td>
+<td>Delete tag (DeleteItem + UpdateItem META)</td>
+<td><code>GW_ENDPOINT#&lt;ep_id&gt;</code></td>
+<td><code>GW#TAG#&lt;key&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="name-id-resolution-query-gsi-then-getitem">Name → ID Resolution (Query GSI, then GetItem)<a class="headerlink" href="#name-id-resolution-query-gsi-then-getitem" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>AP</th>
+<th>Pattern</th>
+<th>GSI</th>
+<th>GSI PK</th>
+<th>GSI SK</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP2</td>
+<td>Secret by name</td>
+<td>GSI1</td>
+<td><code>GW_SECRET_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+<td><code>&lt;secret_id&gt;</code></td>
+</tr>
+<tr>
+<td>AP7</td>
+<td>Model def by name</td>
+<td>GSI3</td>
+<td><code>GW_MODELDEF_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+<td><code>&lt;model_def_id&gt;</code></td>
+</tr>
+<tr>
+<td>AP13</td>
+<td>Endpoint by name</td>
+<td>GSI3</td>
+<td><code>GW_ENDPOINT_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+<td><code>&lt;endpoint_id&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="uniqueness-checks-query-gsi-expect-0-results">Uniqueness Checks (Query GSI, expect 0 results)<a class="headerlink" href="#uniqueness-checks-query-gsi-expect-0-results" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>AP</th>
+<th>Pattern</th>
+<th>GSI</th>
+<th>GSI PK</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP3</td>
+<td>Secret name unique</td>
+<td>GSI1</td>
+<td><code>GW_SECRET_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+</tr>
+<tr>
+<td>AP8</td>
+<td>Model def name unique</td>
+<td>GSI3</td>
+<td><code>GW_MODELDEF_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+</tr>
+<tr>
+<td>AP14</td>
+<td>Endpoint name unique</td>
+<td>GSI3</td>
+<td><code>GW_ENDPOINT_NAME#&lt;ws&gt;#&lt;name&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="list-operations-query-gsi2-by-workspace">List Operations (Query GSI2 by workspace)<a class="headerlink" href="#list-operations-query-gsi2-by-workspace" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>AP</th>
+<th>Pattern</th>
+<th>GSI PK</th>
+<th>GSI SK</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP4</td>
+<td>List secrets</td>
+<td><code>GW_SECRETS#&lt;ws&gt;</code></td>
+<td><code>&lt;secret_id&gt;</code></td>
+<td>FilterExpression on provider</td>
+</tr>
+<tr>
+<td>AP9</td>
+<td>List model defs</td>
+<td><code>GW_MODELDEFS#&lt;ws&gt;</code></td>
+<td><code>&lt;model_def_id&gt;</code></td>
+<td>Filter on provider, secret_id</td>
+</tr>
+<tr>
+<td>AP15</td>
+<td>List endpoints</td>
+<td><code>GW_ENDPOINTS#&lt;ws&gt;</code></td>
+<td><code>&lt;endpoint_id&gt;</code></td>
+<td>Returns IDs, batch-get partitions</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cross-entity-lookups-query-dedicated-gsis">Cross-Entity Lookups (Query dedicated GSIs)<a class="headerlink" href="#cross-entity-lookups-query-dedicated-gsis" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>AP</th>
+<th>Pattern</th>
+<th>GSI</th>
+<th>GSI PK</th>
+<th>GSI SK</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP5</td>
+<td>Model defs by secret (impact check)</td>
+<td>GSI4</td>
+<td><code>GW_MODELDEF_SECRET#&lt;secret_id&gt;</code></td>
+<td><code>&lt;model_def_id&gt;</code></td>
+<td>delete_gateway_secret orphans these</td>
+</tr>
+<tr>
+<td>AP10</td>
+<td>Model defs by secret (filter)</td>
+<td>GSI4</td>
+<td><code>GW_MODELDEF_SECRET#&lt;secret_id&gt;</code></td>
+<td><code>&lt;model_def_id&gt;</code></td>
+<td>list_gateway_model_definitions</td>
+</tr>
+<tr>
+<td>AP11</td>
+<td>Endpoints by model def (RESTRICT)</td>
+<td>GSI5</td>
+<td><code>GW_ENDPOINT_MODELDEF#&lt;model_def_id&gt;</code></td>
+<td><code>&lt;endpoint_id&gt;</code></td>
+<td>Must be empty to allow delete</td>
+</tr>
+<tr>
+<td>AP25</td>
+<td>Endpoints by bound resource</td>
+<td>GSI2</td>
+<td><code>GW_BIND#&lt;type&gt;#&lt;res_id&gt;</code></td>
+<td><code>&lt;endpoint_id&gt;</code></td>
+<td>Reverse lookup for bindings</td>
+</tr>
+</tbody>
+</table>
+<h3 id="partition-queries-query-table-pk-with-sk-prefix">Partition Queries (Query Table PK with SK prefix)<a class="headerlink" href="#partition-queries-query-table-pk-with-sk-prefix" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>AP</th>
+<th>Pattern</th>
+<th>PK</th>
+<th>SK Condition</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP12</td>
+<td>Get full endpoint</td>
+<td><code>GW_ENDPOINT#&lt;id&gt;</code></td>
+<td>(all items)</td>
+<td>META + mappings + bindings + tags</td>
+</tr>
+<tr>
+<td>AP18</td>
+<td>Delete endpoint cascade</td>
+<td><code>GW_ENDPOINT#&lt;id&gt;</code></td>
+<td>(all items)</td>
+<td>Query then batch delete</td>
+</tr>
+<tr>
+<td>AP19</td>
+<td>Replace model configs</td>
+<td><code>GW_ENDPOINT#&lt;id&gt;</code></td>
+<td><code>begins_with GW#MAP#</code></td>
+<td>Delete old, write new</td>
+</tr>
+<tr>
+<td>AP21</td>
+<td>Detach all linkages</td>
+<td><code>GW_ENDPOINT#&lt;ep_id&gt;</code></td>
+<td><code>begins_with GW#MAP#&lt;model_def_id&gt;#</code></td>
+<td>When linkage_type not specified</td>
+</tr>
+<tr>
+<td>AP24</td>
+<td>List bindings by endpoint</td>
+<td><code>GW_ENDPOINT#&lt;ep_id&gt;</code></td>
+<td><code>begins_with GW#BIND#</code></td>
+<td>Narrow with type/id prefix</td>
+</tr>
+</tbody>
+</table>
+<h3 id="composite-patterns-multi-step">Composite Patterns (multi-step)<a class="headerlink" href="#composite-patterns-multi-step" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>AP</th>
+<th>Pattern</th>
+<th>Steps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP16</td>
+<td>List endpoints by provider</td>
+<td>AP15 → get partitions → filter by model_def provider in-memory</td>
+</tr>
+<tr>
+<td>AP17</td>
+<td>List endpoints by secret</td>
+<td>AP10 (model defs by secret) → AP11 (endpoints by model def) → deduplicate</td>
+</tr>
+</tbody>
+</table>
 <h2 id="schema-constants">Schema Constants<a class="headerlink" href="#schema-constants" title="Permanent link">&para;</a></h2>
 <p>New constants to add to <code>dynamodb/schema.py</code>:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Gateway partition prefixes</span>
@@ -2603,21 +2990,158 @@
 <h3 id="coverage">Coverage<a class="headerlink" href="#coverage" title="Permanent link">&para;</a></h3>
 <p>100% patch coverage on new code.</p>
 <h2 id="implementation-sub-phases">Implementation Sub-Phases<a class="headerlink" href="#implementation-sub-phases" title="Permanent link">&para;</a></h2>
-<p>Given the size (22 methods), this phase should be implemented in 3 sub-phases:</p>
+<p>Given the size (22 methods), this phase should be implemented in 4 sub-phases:</p>
+<h3 id="phase-50-port-gateway-compatibility-tests">Phase 5.0: Port Gateway Compatibility Tests<a class="headerlink" href="#phase-50-port-gateway-compatibility-tests" title="Permanent link">&para;</a></h3>
+<p>Before implementing any gateway methods, port MLflow's gateway store test suite into the project's compatibility test infrastructure. This establishes the target contract and enables TDD for all subsequent sub-phases.</p>
+<p><strong>Source</strong>: <code>vendor/mlflow/tests/store/tracking/test_gateway_sql_store.py</code> (2002 lines, 64 test functions)</p>
+<p><strong>Target</strong>: <code>tests/compatibility/test_gateway_compat.py</code></p>
+<p><strong>Porting approach</strong> — follow the established pattern in <code>test_tracking_compat.py</code> and <code>test_workspace_compat.py</code>:</p>
+<ol>
+<li>
+<p><strong>Create <code>test_gateway_compat.py</code></strong> with a module-level <code>store</code> fixture override that provides the DynamoDB tracking store (same pattern as <code>test_tracking_compat.py</code>):
+   <div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="k">def</span><span class="w"> </span><span class="nf">store</span><span class="p">(</span><span class="n">tracking_store</span><span class="p">,</span> <span class="n">monkeypatch</span><span class="p">):</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">monkeypatch</span><span class="o">.</span><span class="n">setenv</span><span class="p">(</span><span class="n">MLFLOW_ENABLE_WORKSPACES</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;false&quot;</span><span class="p">)</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="k">return</span> <span class="n">tracking_store</span>
+</span></code></pre></div>
+   The <code>tracking_store</code> and <code>mock_dynamodb</code> fixtures are already defined in <code>tests/compatibility/conftest.py</code>.</p>
+</li>
+<li>
+<p><strong>Add <code>set_kek_passphrase</code> autouse fixture</strong> — gateway tests require <code>MLFLOW_CRYPTO_KEK_PASSPHRASE</code> to be set for envelope encryption:
+   <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span><span class="p">(</span><span class="n">autouse</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">def</span><span class="w"> </span><span class="nf">set_kek_passphrase</span><span class="p">(</span><span class="n">monkeypatch</span><span class="p">):</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">monkeypatch</span><span class="o">.</span><span class="n">setenv</span><span class="p">(</span><span class="s2">&quot;MLFLOW_CRYPTO_KEK_PASSPHRASE&quot;</span><span class="p">,</span> <span class="s2">&quot;test-passphrase&quot;</span><span class="p">)</span>
+</span></code></pre></div></p>
+</li>
+<li>
+<p><strong>Import test functions</strong> from the vendored file — skip tests that are purely SQLAlchemy-specific (not testing the store API contract):
+   <div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">tests.store.tracking.test_gateway_sql_store</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">test_create_gateway_secret</span><span class="p">,</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">test_create_gateway_secret_with_auth_config</span><span class="p">,</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="c1"># ... all store-method tests (53 total)</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">test_create_gateway_endpoint_with_traffic_split</span><span class="p">,</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">)</span>
+</span></code></pre></div></p>
+</li>
+</ol>
+<p><strong>Do not import</strong> (11 tests that are intrinsically SQLAlchemy-specific):
+   - <code>test_secret_id_and_name_are_immutable_at_database_level</code> — uses <code>sqlalchemy.text()</code> and <code>ManagedSessionMaker</code> to test SQL column triggers
+   - 10 <code>config_resolver</code> tests (<code>test_get_resource_gateway_endpoint_configs</code>, <code>test_get_resource_endpoint_configs_*</code>, <code>test_get_gateway_endpoint_config*</code>) — <code>config_resolver.py</code> does <code>isinstance(store, SqlAlchemyStore)</code> check and uses ORM queries with <code>ManagedSessionMaker</code>; these test server-side SQLAlchemy plumbing, not the store API contract</p>
+<ol>
+<li>
+<p><strong>Handle the <code>workspaces_enabled</code> fixture</strong> — the vendored file has an autouse parametrized fixture that switches between <code>SqlAlchemyStore</code> and <code>WorkspaceAwareSqlAlchemyStore</code>. The DynamoDB store is always workspace-aware, so add <code>workspaces_enabled</code> to <code>tests/compatibility/conftest.py</code> (not per-file) so all compatibility tests that depend on it just work:
+   <div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span><span class="p">(</span><span class="n">autouse</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">[</span><span class="kc">False</span><span class="p">,</span> <span class="kc">True</span><span class="p">],</span> <span class="n">ids</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;workspace-disabled&quot;</span><span class="p">,</span> <span class="s2">&quot;workspace-enabled&quot;</span><span class="p">])</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="k">def</span><span class="w"> </span><span class="nf">workspaces_enabled</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">monkeypatch</span><span class="p">):</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">enabled</span> <span class="o">=</span> <span class="n">request</span><span class="o">.</span><span class="n">param</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">monkeypatch</span><span class="o">.</span><span class="n">setenv</span><span class="p">(</span><span class="n">MLFLOW_ENABLE_WORKSPACES</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;true&quot;</span> <span class="k">if</span> <span class="n">enabled</span> <span class="k">else</span> <span class="s2">&quot;false&quot;</span><span class="p">)</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="k">if</span> <span class="n">enabled</span><span class="p">:</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        <span class="n">workspace_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;compat-test-</span><span class="si">{</span><span class="n">uuid</span><span class="o">.</span><span class="n">uuid4</span><span class="p">()</span><span class="o">.</span><span class="n">hex</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>        <span class="k">with</span> <span class="n">WorkspaceContext</span><span class="p">(</span><span class="n">workspace_name</span><span class="p">):</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>            <span class="k">yield</span> <span class="n">enabled</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>    <span class="k">else</span><span class="p">:</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>        <span class="k">yield</span> <span class="n">enabled</span>
+</span></code></pre></div>
+   This mirrors the vendored fixture exactly but the <code>store</code> fixture always returns the same DynamoDB store class — the parametrization just exercises workspace scoping via <code>WorkspaceContext</code>.</p>
+</li>
+<li>
+<p><strong>Handle the <code>_cleanup_database</code> helper</strong> — the vendored file defines this to clean SQLAlchemy tables between tests. With moto's <code>mock_aws</code>, each test gets a fresh DynamoDB, so no cleanup is needed. The function is not imported as a test (no <code>test_</code> prefix) so it's not collected.</p>
+</li>
+<li>
+<p><strong>xfail all imported tests</strong> — all gateway methods currently raise <code>NotImplementedError</code> from the inherited <code>GatewayStoreMixin</code> stubs:
+   <div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">_xfail_gateway</span> <span class="o">=</span> <span class="n">pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">xfail</span><span class="p">(</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">raises</span><span class="o">=</span><span class="ne">NotImplementedError</span><span class="p">,</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">reason</span><span class="o">=</span><span class="s2">&quot;Gateway store methods not yet implemented (Phase 5)&quot;</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="p">)</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">test_create_gateway_secret</span> <span class="o">=</span> <span class="n">_xfail_gateway</span><span class="p">(</span><span class="n">test_create_gateway_secret</span><span class="p">)</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="c1"># ... all 53 store-method tests</span>
+</span></code></pre></div></p>
+</li>
+</ol>
+<p><strong>Test inventory</strong> (55 imported, 11 excluded):</p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Imported</th>
+<th>Unlocked By</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Secrets</td>
+<td>13</td>
+<td>Phase 5a</td>
+</tr>
+<tr>
+<td>Model Definitions</td>
+<td>10</td>
+<td>Phase 5b</td>
+</tr>
+<tr>
+<td>Endpoints CRUD</td>
+<td>10</td>
+<td>Phase 5c</td>
+</tr>
+<tr>
+<td>Attach/Detach</td>
+<td>4</td>
+<td>Phase 5c</td>
+</tr>
+<tr>
+<td>Bindings</td>
+<td>3</td>
+<td>Phase 5c</td>
+</tr>
+<tr>
+<td>Tags</td>
+<td>8</td>
+<td>Phase 5c</td>
+</tr>
+<tr>
+<td>Scorer integration</td>
+<td>5</td>
+<td>Phase 5c</td>
+</tr>
+<tr>
+<td>Fallback/Traffic routing</td>
+<td>2</td>
+<td>Phase 5c</td>
+</tr>
+<tr>
+<td><strong>Not imported</strong></td>
+<td><strong>11</strong></td>
+<td><strong>Reason</strong></td>
+</tr>
+<tr>
+<td>SQL column constraints</td>
+<td>1</td>
+<td>Uses <code>sqlalchemy.text()</code> + <code>ManagedSessionMaker</code></td>
+</tr>
+<tr>
+<td>config_resolver</td>
+<td>10</td>
+<td><code>isinstance(store, SqlAlchemyStore)</code> + ORM queries</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Verification</strong>: <code>uv run pytest tests/compatibility/test_gateway_compat.py -v</code> — all 110 tests (55 x 2 workspace params) should collect and xfail (not error on import or collection).</p>
 <h3 id="phase-5a-secrets-5-methods">Phase 5a: Secrets (5 methods)<a class="headerlink" href="#phase-5a-secrets-5-methods" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>create_gateway_secret</code>, <code>get_secret_info</code>, <code>update_gateway_secret</code>, <code>delete_gateway_secret</code>, <code>list_secret_infos</code></li>
 <li>Foundation — model defs and endpoints depend on secrets</li>
+<li>Remove <code>xfail</code> from secret compatibility tests; all 13 should pass</li>
 </ul>
 <h3 id="phase-5b-model-definitions-5-methods">Phase 5b: Model Definitions (5 methods)<a class="headerlink" href="#phase-5b-model-definitions-5-methods" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>create_gateway_model_definition</code>, <code>get_gateway_model_definition</code>, <code>list_gateway_model_definitions</code>, <code>update_gateway_model_definition</code>, <code>delete_gateway_model_definition</code></li>
 <li>Depends on Phase 5a for secret resolution</li>
+<li>Remove <code>xfail</code> from model definition compatibility tests; all 9 should pass</li>
 </ul>
 <h3 id="phase-5c-endpoints-attachments-bindings-tags-12-methods">Phase 5c: Endpoints, Attachments, Bindings, Tags (12 methods)<a class="headerlink" href="#phase-5c-endpoints-attachments-bindings-tags-12-methods" title="Permanent link">&para;</a></h3>
 <ul>
 <li>All endpoint CRUD, attach/detach, binding CRUD, tag operations</li>
 <li>Depends on Phase 5b for model_definition resolution</li>
+<li>Remove <code>xfail</code> from remaining compatibility tests; all should pass</li>
 </ul>
 <h2 id="out-of-scope">Out of Scope<a class="headerlink" href="#out-of-scope" title="Permanent link">&para;</a></h2>
 <ul>
