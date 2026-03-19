@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from typing import Any
 
 from mlflow.entities.model_registry import RegisteredModel, RegisteredModelTag
 from mlflow.entities.model_registry.model_version import ModelVersion
+from mlflow.entities.model_registry.model_version_stages import STAGE_DELETED_INTERNAL
 from mlflow.entities.model_registry.model_version_tag import ModelVersionTag
 from mlflow.entities.model_registry.registered_model_alias import RegisteredModelAlias
 from mlflow.exceptions import MlflowException
@@ -994,11 +996,9 @@ class DynamoDBRegistryStore(AbstractStore):
         model_ulid = self._resolve_model_ulid(name)
         pk = f"{PK_MODEL_PREFIX}{model_ulid}"
 
-        # Determine next version number
-        existing = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
-        # Filter out tag items (V#00000001#TAG#key)
-        version_items = [it for it in existing if SK_VERSION_TAG_SUFFIX not in it["SK"]]
-        next_ver = len(version_items) + 1
+        # Atomically increment version counter on model META item
+        counter = self._table.add_attribute(pk, SK_MODEL_META, "next_version", 1)
+        next_ver = int(counter["next_version"])
         padded = _pad_version(next_ver)
 
         now_ms = get_current_time_millis()
@@ -1069,12 +1069,29 @@ class DynamoDBRegistryStore(AbstractStore):
             pk=f"{PK_MODEL_PREFIX}{model_ulid}",
             sk=f"{SK_VERSION_PREFIX}{padded}",
         )
-        if item is None:
+        if item is None or item.get("current_stage") == STAGE_DELETED_INTERNAL:
             raise MlflowException(
                 f"Model Version (name={name}, version={version}) not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
+        tags = self._get_version_tags(model_ulid, padded)
+        aliases = self._aliases_for_model_version(model_ulid, int(version))
+        return _item_to_model_version(item, tags, aliases)
+
+    def _get_sql_model_version_including_deleted(self, name: str, version: str) -> ModelVersion:
+        """Retrieve a model version even if soft-deleted (for testing/audit)."""
+        model_ulid = self._resolve_model_ulid(name)
+        padded = _pad_version(version)
+        item = self._table.get_item(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk=f"{SK_VERSION_PREFIX}{padded}",
+        )
+        if item is None:
+            raise MlflowException(
+                f"Model Version (name={name}, version={version}) not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
         tags = self._get_version_tags(model_ulid, padded)
         aliases = self._aliases_for_model_version(model_ulid, int(version))
         return _item_to_model_version(item, tags, aliases)
@@ -1107,17 +1124,43 @@ class DynamoDBRegistryStore(AbstractStore):
         return _item_to_model_version(updated_item, tags)
 
     def delete_model_version(self, name: str, version: str) -> None:
-        """Delete a model version and its tags."""
+        """Soft-delete a model version: redact sensitive fields, mark as deleted."""
         # Verify version exists (raises on deleted/missing versions)
         self.get_model_version(name, version)
         model_ulid = self._resolve_model_ulid(name)
         padded = _pad_version(version)
         pk = f"{PK_MODEL_PREFIX}{model_ulid}"
+        now_ms = get_current_time_millis()
 
-        # Delete version item
-        self._table.delete_item(pk=pk, sk=f"{SK_VERSION_PREFIX}{padded}")
+        # Soft-delete: redact sensitive fields, set deleted stage
+        updates: dict[str, Any] = {
+            "current_stage": STAGE_DELETED_INTERNAL,
+            "source": "REDACTED-SOURCE-PATH",
+            "run_id": "REDACTED-RUN-ID",
+            "run_link": "REDACTED-RUN-LINK",
+            "description": "",
+            "status_message": "",
+            "last_updated_timestamp": now_ms,
+            LSI2_SK: now_ms,
+            LSI3_SK: f"{STAGE_DELETED_INTERNAL}#{padded}",
+        }
 
-        # Delete version tags
+        # Optional TTL for eventual hard-delete
+        ttl_seconds = self._config.get_soft_deleted_ttl_seconds()
+        if ttl_seconds is not None:
+            updates["ttl"] = int(time.time()) + ttl_seconds
+
+        # Remove sparse index keys so deleted version won't appear in filtered queries
+        removes = [LSI4_SK, LSI5_SK, GSI1_PK, GSI1_SK]
+
+        self._table.update_item(
+            pk=pk,
+            sk=f"{SK_VERSION_PREFIX}{padded}",
+            updates=updates,
+            removes=removes,
+        )
+
+        # Hard-delete tags (no value in keeping redacted version's tags)
         tag_prefix = f"{SK_VERSION_PREFIX}{padded}{SK_VERSION_TAG_SUFFIX}"
         tag_items = self._table.query(pk=pk, sk_prefix=tag_prefix)
         for tag_item in tag_items:
@@ -1405,9 +1448,11 @@ class DynamoDBRegistryStore(AbstractStore):
                 filter_expression=filter_expression,
             )
             for item in items:
-                # Skip tag items and non-version items
+                # Skip tag items, non-version items, and deleted versions
                 sk = item.get("SK", "")
                 if not sk.startswith(SK_VERSION_PREFIX) or SK_VERSION_TAG_SUFFIX in sk:
+                    continue
+                if item.get("current_stage") == STAGE_DELETED_INTERNAL:
                     continue
                 padded = sk.replace(SK_VERSION_PREFIX, "")
                 tags = self._get_version_tags(model_ulid, padded)
@@ -1455,7 +1500,7 @@ class DynamoDBRegistryStore(AbstractStore):
                     pk=f"{PK_MODEL_PREFIX}{model_ulid}",
                     sk=f"{SK_VERSION_PREFIX}{padded}",
                 )
-                if vi is not None:
+                if vi is not None and vi.get("current_stage") != STAGE_DELETED_INTERNAL:
                     tags = self._get_version_tags(model_ulid, padded)
                     versions.append(_item_to_model_version(vi, tags))
         return versions
@@ -1488,6 +1533,8 @@ class DynamoDBRegistryStore(AbstractStore):
             for vi in ver_items:
                 if SK_VERSION_TAG_SUFFIX in vi["SK"]:
                     continue
+                if vi.get("current_stage") == STAGE_DELETED_INTERNAL:
+                    continue
                 padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
                 tags = self._get_version_tags(model_ulid, padded)
                 versions.append(_item_to_model_version(vi, tags))
@@ -1501,7 +1548,12 @@ class DynamoDBRegistryStore(AbstractStore):
         if not stages:
             # Get all versions and determine unique stages
             ver_items = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
-            ver_items = [vi for vi in ver_items if SK_VERSION_TAG_SUFFIX not in vi["SK"]]
+            ver_items = [
+                vi
+                for vi in ver_items
+                if SK_VERSION_TAG_SUFFIX not in vi["SK"]
+                and vi.get("current_stage") != STAGE_DELETED_INTERNAL
+            ]
             # Group by stage, pick latest (highest version) per stage
             stage_latest: dict[str, dict[str, Any]] = {}
             for vi in ver_items:
@@ -1533,6 +1585,8 @@ class DynamoDBRegistryStore(AbstractStore):
             )
             if stage_items:
                 vi = stage_items[0]
+                if vi.get("current_stage") == STAGE_DELETED_INTERNAL:
+                    continue
                 padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
                 tags = self._get_version_tags(model_ulid, padded)
                 results.append(_item_to_model_version(vi, tags))
@@ -1621,10 +1675,14 @@ class DynamoDBRegistryStore(AbstractStore):
         if archive_existing_versions:
             version_items = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
             for vi in version_items:
+                if SK_VERSION_TAG_SUFFIX in vi["SK"]:
+                    continue
                 vi_padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
                 if vi_padded == padded:
                     continue
                 vi_stage = vi.get("current_stage", "None")
+                if vi_stage == STAGE_DELETED_INTERNAL:
+                    continue
                 if vi_stage == canonical_stage:
                     self._table.update_item(
                         pk=pk,

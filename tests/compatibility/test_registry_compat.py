@@ -58,12 +58,6 @@ from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402, F4
     test_update_registered_model,
 )
 
-# --- Category 6: missing SqlAlchemy-internal method ---
-_xfail_sql_internal = pytest.mark.xfail(
-    reason="Test uses _get_sql_model_version_including_deleted (SqlAlchemy-specific)"
-)
-test_delete_model_version_redaction = _xfail_sql_internal(test_delete_model_version_redaction)
-
 # --- Category 11: test mocks sqlalchemy_store.MlflowClient, not our module ---
 _xfail_model_id = pytest.mark.xfail(
     reason="Test mocks sqlalchemy_store.MlflowClient — mock path incompatible with DynamoDB store"
