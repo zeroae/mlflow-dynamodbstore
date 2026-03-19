@@ -113,12 +113,6 @@ def _sync_time_mock(fn):
     return wrapper
 
 
-# --- copy_model_version: source URI format mismatch ---
-_xfail_copy = pytest.mark.xfail(
-    reason="copy_model_version sets source to original path instead of models:/ URI"
-)
-test_copy_model_version = _xfail_copy(test_copy_model_version)
-
 # --- Category 13: registered model order_by needs time mock sync ---
 test_search_registered_model_order_by = _sync_time_mock(test_search_registered_model_order_by)
 
