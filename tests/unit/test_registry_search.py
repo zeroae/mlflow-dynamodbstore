@@ -538,6 +538,37 @@ class TestSearchRegisteredModelOrderBy:
         # ts=10 group sorted name DESC: A3, A2, A1; ts=20: B1; ts=30 name DESC: C2, C1
         assert all_names == ["A3", "A2", "A1", "B1", "C2", "C1"]
 
+    def test_pagination_tiebreak_with_filter_no_data_loss(self, registry_store):
+        """When filter_fn is active with tiebreak, all items must be returned.
+
+        Verifies that 2x batch_size optimization doesn't cause data loss
+        when combined with tiebreak tie-group detection. With filter_fn active,
+        the paginated path fetches 2x items. If tiebreak code breaks early at
+        max_results+1 and uses the LEK (which points past the full batch),
+        unprocessed items would be lost.
+        """
+        # Create enough models that DDB paginates (2x batch won't get all)
+        models = []
+        for i in range(15):
+            models.append((f"m{i:02d}", 10))  # all same timestamp
+        self._create_models_with_timestamps(registry_store, models)
+
+        all_names: list[str] = []
+        token = None
+        for _ in range(20):
+            result = registry_store.search_registered_models(
+                order_by=["last_updated_timestamp ASC", "name ASC"],
+                max_results=3,
+                page_token=token,
+            )
+            all_names.extend(m.name for m in result)
+            token = result.token
+            if not token:
+                break
+
+        expected = [f"m{i:02d}" for i in range(15)]
+        assert all_names == expected
+
     def test_pagination_consecutive_overflow_groups(self, registry_store):
         """Two consecutive tie groups both larger than page size."""
         # max_results=2, groups: x(t=10) has 4 items, y(t=20) has 3 items, z(t=30) has 1
