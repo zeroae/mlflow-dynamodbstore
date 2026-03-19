@@ -61,11 +61,3 @@ _xfail_sql_internal = pytest.mark.xfail(
 test_delete_workspace_restrict_blocks_when_resources_exist = _xfail_sql_internal(
     test_delete_workspace_restrict_blocks_when_resources_exist
 )
-
-# --- Missing input validation ---
-_xfail_validation = pytest.mark.xfail(
-    reason="DynamoDB store does not validate workspace name format"
-)
-test_create_workspace_invalid_name_raises = _xfail_validation(
-    test_create_workspace_invalid_name_raises
-)

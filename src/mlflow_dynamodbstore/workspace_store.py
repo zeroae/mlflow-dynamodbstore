@@ -107,7 +107,9 @@ class DynamoDBWorkspaceStore(AbstractStore):
             MlflowException: If a workspace with the given name already exists.
         """
         from botocore.exceptions import ClientError
+        from mlflow.store.workspace.abstract_store import WorkspaceNameValidator
 
+        WorkspaceNameValidator.validate(workspace.name)
         try:
             self._put_workspace(
                 workspace.name,
