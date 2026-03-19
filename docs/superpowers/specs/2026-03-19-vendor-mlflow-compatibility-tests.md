@@ -64,10 +64,17 @@ MLflow is added as a shallow git submodule at `vendor/mlflow`, pinned to a relea
     shallow = true
 ```
 
+The actual version pin is the submodule commit SHA recorded in the git index (not in `.gitmodules`). The `shallow = true` setting only controls fetch depth — `git clone --recurse-submodules` will check out the exact SHA committed in the index regardless.
+
 **Update policy:** Manual. Update the submodule pin in the same PR that bumps the `mlflow` dependency in `pyproject.toml`. They should stay in lockstep.
 
 ```bash
-cd vendor/mlflow && git fetch --depth 1 origin tag v3.x.y && git checkout v3.x.y
+cd vendor/mlflow
+git fetch --depth 1 origin tag v3.x.y
+git checkout v3.x.y
+cd ../..
+git add vendor/mlflow
+git commit -m "chore: bump vendor/mlflow to v3.x.y"
 ```
 
 **Developer experience:**
@@ -82,7 +89,11 @@ cd vendor/mlflow && git fetch --depth 1 origin tag v3.x.y && git checkout v3.x.y
 
 ### sys.path setup
 
-Adds `vendor/mlflow` to `sys.path` so MLflow test helpers are importable (`from tests.helper_functions import random_str`). MLflow's root `conftest.py` is NOT loaded — our conftest provides all needed fixtures.
+Adds `vendor/mlflow` to `sys.path` at conftest load time. This makes MLflow test helpers importable as `from tests.helper_functions import random_str`. The import path is `tests.store...`, NOT `vendor.mlflow.tests...` — `vendor/mlflow` is a filesystem root added to `sys.path`, not a Python package.
+
+Note: the project uses `--import-mode=importlib` in pytest. The `sys.path` insertion in conftest.py runs at import time before test collection, so the `tests.*` namespace from `vendor/mlflow` is available.
+
+MLflow's root `conftest.py` is NOT loaded by pytest because `vendor/mlflow/tests/` is not in `testpaths` and `confcutdir` prevents upward conftest discovery. Our conftest provides all needed fixtures.
 
 ### AWS backend selection
 
@@ -93,32 +104,55 @@ Same pattern as the existing e2e conftest:
 
 ### Store fixtures
 
+The existing project defines `tracking_store`, `registry_store`, and `workspace_store` fixtures in `tests/unit/conftest.py` and `tests/integration/conftest.py`. The compatibility conftest builds on these patterns.
+
 **For Phase 1 contract tests** — both stores side by side:
 
 ```python
 @pytest.fixture
-def stores(dynamodb_tracking_store, sqlalchemy_tracking_store):
-    return Stores(ddb=dynamodb_tracking_store, sql=sqlalchemy_tracking_store)
+def stores(tracking_store, tmp_path):
+    """Provides both DynamoDB and SqlAlchemy stores for comparison."""
+    db_path = tmp_path / "mlflow.db"
+    sql_store = SqlAlchemyStore(f"sqlite:///{db_path}", str(tmp_path / "artifacts"))
+    return Stores(ddb=tracking_store, sql=sql_store)
 ```
 
-The SqlAlchemy store uses a temporary SQLite database (same as MLflow's own conftest — cheap, no external deps).
+The SqlAlchemy store uses a temporary SQLite database (same as MLflow's own conftest — cheap, no external deps). Similar fixtures are defined for registry and workspace stores.
 
-**For Phase 2 compat tests** — DynamoDB store only, named `store` to match what MLflow tests expect:
+**For Phase 2a compat tests** — DynamoDB store aliased to `store` to match what MLflow test functions expect:
 
 ```python
 @pytest.fixture
-def store(dynamodb_store):
-    return dynamodb_store
+def store(registry_store):
+    """Alias for MLflow test compatibility."""
+    return registry_store
 ```
 
-**For Phase 2b workspace tests** — DynamoDB store with workspaces enabled:
+Each compat test file gets its own conftest or fixture override appropriate to its store type (registry tests alias `registry_store`, workspace tests alias `workspace_store`).
+
+**For Phase 2b workspace tests** — DynamoDB stores with workspaces enabled:
 
 ```python
 @pytest.fixture
-def workspace_tracking_store(monkeypatch, dynamodb_tracking_store):
+def workspace_tracking_store(monkeypatch, tracking_store):
     monkeypatch.setenv(MLFLOW_ENABLE_WORKSPACES.name, "true")
-    return dynamodb_tracking_store
+    return tracking_store
+
+@pytest.fixture
+def workspace_registry_store(monkeypatch, registry_store):
+    monkeypatch.setenv(MLFLOW_ENABLE_WORKSPACES.name, "true")
+    return registry_store
 ```
+
+### Fixture shadowing strategy (Phase 2)
+
+MLflow's test files define their own fixtures (`store`, `cached_db`, `workspaces_enabled`, etc.) locally in conftest.py files or as module-level autouse fixtures. When we import test functions from these files, we must prevent their fixtures from conflicting with ours.
+
+The strategy:
+1. **Import only test functions**, not fixtures or conftest modules. The `from tests.store.model_registry.test_sqlalchemy_store import test_create_registered_model` syntax imports only the function object — its original module's fixtures are not automatically registered in our test module.
+2. **Our conftest's `store` fixture takes precedence** because pytest resolves fixtures from the closest conftest first (`tests/compatibility/conftest.py`).
+3. **Autouse fixtures from MLflow's files** (like `workspaces_enabled`) are NOT imported and do NOT activate — they only apply when pytest collects tests from the original module, not when functions are re-imported into a different module.
+4. **If a test function references a fixture we don't provide**, pytest raises a clear `fixture not found` error at collection time, and we either add the fixture or remove that test from the import list.
 
 ## Phase 1: Contract Fidelity Tests
 
@@ -163,12 +197,19 @@ Tests cover: entity CRUD, search operations, batch operations, and the specific 
 
 ## Phase 2a: CRUD Compat Tests
 
-Thin test modules import specific test functions from vendored MLflow test files:
+Thin test modules import specific test functions from vendored MLflow test files. The imports use the `sys.path`-based `tests.store...` namespace, not dotted `vendor.mlflow...` paths:
 
 ```python
 # tests/compatibility/test_registry_compat.py
-# ruff: noqa: F401
-from vendor.mlflow.tests.store.model_registry.test_sqlalchemy_store import (
+"""Registry store compatibility tests imported from MLflow."""
+import sys
+from pathlib import Path
+
+# Ensure vendor/mlflow is on sys.path (also done in conftest.py)
+sys.path.insert(0, str(Path(__file__).parents[2] / "vendor" / "mlflow"))
+
+# ruff: noqa: F401 — imports ARE the tests
+from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402
     test_create_registered_model,
     test_get_registered_model,
     test_update_registered_model,
@@ -189,16 +230,17 @@ Pytest discovers the imported functions and runs them with our conftest fixtures
 - Tests that assert on SqlAlchemy ORM models (`SqlRegisteredModel`, etc.)
 - Tests checking dialect-specific behavior
 - Tests using `WorkspaceAwareSqlAlchemyStore` directly (covered by Phase 2b)
+- Tests that depend on autouse fixtures from MLflow's module (e.g., `workspaces_enabled`)
 
-Same pattern for `test_workspace_compat.py` importing from `vendor/mlflow/tests/store/workspace/test_sqlalchemy_store.py`.
+**`test_workspace_compat.py`** imports from `tests.store.workspace.test_sqlalchemy_store` using the same pattern. Note that MLflow's workspace tests use a `workspace_store` fixture (not `store`), so our conftest must provide a `workspace_store` fixture aliased to our DynamoDB workspace store.
 
 ## Phase 2b: Workspace Isolation Compat Tests
 
 Import MLflow's dedicated workspace isolation tests:
 
 **Source files:**
-- `vendor/mlflow/tests/store/model_registry/test_sqlalchemy_workspace_store.py` (~10 isolation tests)
-- `vendor/mlflow/tests/store/tracking/test_sqlalchemy_workspace_store.py` (44 isolation tests)
+- `tests/store/model_registry/test_sqlalchemy_workspace_store.py` (~10 isolation tests)
+- `tests/store/tracking/test_sqlalchemy_workspace_store.py` (44 isolation tests)
 
 **MLflow's isolation test pattern:**
 1. Create resource in `WorkspaceContext("team-a")`
@@ -208,8 +250,8 @@ Import MLflow's dedicated workspace isolation tests:
 **Expected initial state:** These tests will fail because the DynamoDB stores hard-code `self._workspace = "default"` and ignore `WorkspaceContext`. Mark with `pytest.mark.xfail` until workspace support is implemented, then remove the markers.
 
 **Import files:**
-- `test_registry_workspace_compat.py` — imports registry isolation tests
-- `test_tracking_workspace_compat.py` — imports tracking isolation tests
+- `test_registry_workspace_compat.py` — imports registry isolation tests, uses `workspace_registry_store` fixture
+- `test_tracking_workspace_compat.py` — imports tracking isolation tests, uses `workspace_tracking_store` fixture
 
 ## Phase 2c: Future — Tracking CRUD Compat
 
