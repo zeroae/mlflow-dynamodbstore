@@ -120,7 +120,8 @@ class TestFTSWrites:
         )
         fts_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="FTS#")
         # Should have run name FTS items (no GSI2 for runs)
-        run_fts = [i for i in fts_items if f"#R#{run.info.run_id}" in i["SK"]]
+        # New forward SK format: FTS#{level}#R#{token}#{run_id}
+        run_fts = [i for i in fts_items if f"#{run.info.run_id}" in i["SK"] and "#R#" in i["SK"]]
         assert len(run_fts) > 0
         for item in run_fts:
             assert "gsi2pk" not in item
@@ -131,7 +132,7 @@ class TestFTSWrites:
             exp_id, user_id="u", start_time=1000, tags=[], run_name="my-pipeline"
         )
         fts_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="FTS#")
-        run_fts = [i for i in fts_items if f"#R#{run.info.run_id}" in i["SK"]]
+        run_fts = [i for i in fts_items if f"#{run.info.run_id}" in i["SK"] and "#R#" in i["SK"]]
         word_items = [i for i in run_fts if i["SK"].startswith("FTS#W#")]
         trigram_items = [i for i in run_fts if i["SK"].startswith("FTS#3#")]
         assert len(word_items) > 0
@@ -155,7 +156,7 @@ class TestFTSWrites:
         tracking_store.update_run_info(run_id, "FINISHED", 2000, "new-run-name")
 
         fts_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="FTS#W#")
-        run_fts = [i for i in fts_items if f"#R#{run_id}" in i["SK"]]
+        run_fts = [i for i in fts_items if f"#{run_id}" in i["SK"] and "#R#" in i["SK"]]
         sks = [i["SK"] for i in run_fts]
         # The stem of "old" should no longer appear
         assert not any("#old#" in sk.lower() for sk in sks)
@@ -180,7 +181,11 @@ class TestFTSWrites:
         )
 
         fts_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="FTS#")
-        param_fts = [i for i in fts_items if f"#R#{run_id}" in i["SK"] and "#model_type" in i["SK"]]
+        param_fts = [
+            i
+            for i in fts_items
+            if f"#{run_id}" in i["SK"] and "#model_type" in i["SK"] and "#R#" in i["SK"]
+        ]
         assert len(param_fts) > 0
 
     def test_log_batch_params_no_fts_when_not_configured(self, tracking_store):
@@ -219,7 +224,11 @@ class TestFTSWrites:
         tracking_store.set_tag(run_id, RunTag("description", "fraud detection model"))
 
         fts_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="FTS#")
-        tag_fts = [i for i in fts_items if f"#R#{run_id}" in i["SK"] and "#description" in i["SK"]]
+        tag_fts = [
+            i
+            for i in fts_items
+            if f"#{run_id}" in i["SK"] and "#description" in i["SK"] and "#R#" in i["SK"]
+        ]
         assert len(tag_fts) > 0
 
     def test_set_tag_no_fts_when_not_configured(self, tracking_store):

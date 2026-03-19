@@ -543,7 +543,7 @@ class DynamoDBTrackingStore(AbstractStore):
         )
 
         # Update FTS items for experiment name change
-        levels = ("W", "3")  # always trigram for experiment_name
+        levels = ("W", "3", "2")  # always trigram for experiment_name
         tokens_to_add, tokens_to_remove = fts_diff(old_name, new_name, levels)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
 
@@ -561,7 +561,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 if len(parts) >= 4:
                     lvl, tok = parts[2], parts[3]
                     if (lvl, tok) in tokens_to_remove:
-                        forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#E#{experiment_id}"
+                        forward_sk = f"{SK_FTS_PREFIX}{lvl}#E#{tok}#{experiment_id}"
                         self._table.delete_item(pk=pk, sk=forward_sk)
                         self._table.delete_item(pk=pk, sk=rev_sk)
 
@@ -569,10 +569,10 @@ class DynamoDBTrackingStore(AbstractStore):
         if tokens_to_add:
             new_fts_items: list[dict[str, Any]] = []
             for lvl, tok in tokens_to_add:
-                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#E#{experiment_id}"
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#E#{tok}#{experiment_id}"
                 reverse_sk = f"{SK_FTS_REV_PREFIX}E#{experiment_id}#{lvl}#{tok}"
                 gsi2pk_val = f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}"
-                gsi2sk_val = f"{lvl}#{tok}#E#{experiment_id}"
+                gsi2sk_val = f"{lvl}#E#{tok}#{experiment_id}"
                 new_fts_items.append(
                     {"PK": pk, "SK": forward_sk, GSI2_PK: gsi2pk_val, GSI2_SK: gsi2sk_val}
                 )
@@ -797,18 +797,16 @@ class DynamoDBTrackingStore(AbstractStore):
             for token in word_tokens:
                 fts_items = self._table.query(
                     pk=f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}",
-                    sk_prefix=f"W#{token}#E#",
+                    sk_prefix=f"W#E#{token}#",
                     index_name="gsi2",
                 )
                 ids = set()
                 for item in fts_items:
                     gsi2sk = item.get(GSI2_SK, "")
-                    # Pattern: W#<token>#E#<exp_id>
+                    # Pattern: W#E#<token>#<exp_id>
                     parts = gsi2sk.split("#")
-                    for i, part in enumerate(parts):
-                        if part == "E" and i + 1 < len(parts):
-                            ids.add(parts[i + 1])
-                            break
+                    if len(parts) >= 4:
+                        ids.add(parts[3])
                 exp_ids = ids if exp_ids is None else exp_ids & ids
         else:
             # Fallback to trigrams
@@ -816,17 +814,16 @@ class DynamoDBTrackingStore(AbstractStore):
             for token in trigram_tokens:
                 fts_items = self._table.query(
                     pk=f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}",
-                    sk_prefix=f"3#{token}#E#",
+                    sk_prefix=f"3#E#{token}#",
                     index_name="gsi2",
                 )
                 ids = set()
                 for item in fts_items:
                     gsi2sk = item.get(GSI2_SK, "")
+                    # Pattern: 3#E#<token>#<exp_id>
                     parts = gsi2sk.split("#")
-                    for i, part in enumerate(parts):
-                        if part == "E" and i + 1 < len(parts):
-                            ids.add(parts[i + 1])
-                            break
+                    if len(parts) >= 4:
+                        ids.add(parts[3])
                 exp_ids = ids if exp_ids is None else exp_ids & ids
 
         if not exp_ids:
@@ -1928,7 +1925,7 @@ class DynamoDBTrackingStore(AbstractStore):
             parts = suffix.split("#", 1)
             if len(parts) == 2:
                 lvl, tok = parts[0], parts[1]
-                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{entity_type}#{tok}#{entity_id}{field_suffix}"
                 self._table.delete_item(pk=pk, sk=forward_sk)
             self._table.delete_item(pk=pk, sk=rev_sk)
 
@@ -1943,7 +1940,7 @@ class DynamoDBTrackingStore(AbstractStore):
         workspace: str | None,
     ) -> None:
         """Compute FTS diff and apply: delete removed token items, write new token items."""
-        levels = ("W", "3")
+        levels = ("W", "3", "2")
         tokens_to_add, tokens_to_remove = fts_diff(old_text, new_text, levels)
         field_suffix = f"#{field}" if field else ""
         entity_prefix = f"{entity_type}#{entity_id}{field_suffix}"
@@ -1960,8 +1957,8 @@ class DynamoDBTrackingStore(AbstractStore):
                 if len(parts) == 2:
                     lvl, tok = parts[0], parts[1]
                     if (lvl, tok) in tokens_to_remove:
-                        forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
-                        self._table.delete_item(pk=pk, sk=forward_sk)
+                        fwd = f"{SK_FTS_PREFIX}{lvl}#{entity_type}#{tok}#{entity_id}{field_suffix}"
+                        self._table.delete_item(pk=pk, sk=fwd)
                         self._table.delete_item(pk=pk, sk=rev_sk)
 
         # Write new FTS items for added tokens
@@ -1969,12 +1966,12 @@ class DynamoDBTrackingStore(AbstractStore):
             add_gsi2 = entity_type in ("E", "M") and workspace is not None
             new_fts_items: list[dict[str, Any]] = []
             for lvl, tok in tokens_to_add:
-                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{entity_type}#{tok}#{entity_id}{field_suffix}"
                 reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
                 forward: dict[str, Any] = {"PK": pk, "SK": forward_sk}
                 if add_gsi2:
                     forward[GSI2_PK] = f"{GSI2_FTS_NAMES_PREFIX}{workspace}"
-                    forward[GSI2_SK] = f"{lvl}#{tok}#{entity_prefix}"
+                    forward[GSI2_SK] = f"{lvl}#{entity_type}#{tok}#{entity_id}{field_suffix}"
                 new_fts_items.append(forward)
                 new_fts_items.append({"PK": pk, "SK": reverse_sk})
             self._table.batch_write(new_fts_items)
@@ -3373,7 +3370,7 @@ class DynamoDBTrackingStore(AbstractStore):
         if self._config.should_trigram("trace_tag_value") and (tag_value or old_value):
             field_suffix = f"#{tag_key}"
             entity_prefix = f"T#{trace_id}{field_suffix}"
-            levels = ("W", "3")
+            levels = ("W", "3", "2")
             tokens_to_add, tokens_to_remove = fts_diff(old_value, tag_value, levels)
 
             # Delete removed FTS items
@@ -3387,7 +3384,7 @@ class DynamoDBTrackingStore(AbstractStore):
                     if len(parts) == 2:
                         lvl, tok = parts[0], parts[1]
                         if (lvl, tok) in tokens_to_remove:
-                            forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                            forward_sk = f"{SK_FTS_PREFIX}{lvl}#T#{tok}#{trace_id}{field_suffix}"
                             self._table.delete_item(pk=pk, sk=forward_sk)
                             self._table.delete_item(pk=pk, sk=rev_sk)
 
@@ -3395,7 +3392,7 @@ class DynamoDBTrackingStore(AbstractStore):
             if tokens_to_add:
                 new_fts_items: list[dict[str, Any]] = []
                 for lvl, tok in tokens_to_add:
-                    forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                    forward_sk = f"{SK_FTS_PREFIX}{lvl}#T#{tok}#{trace_id}{field_suffix}"
                     reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
                     new_fwd: dict[str, Any] = {"PK": pk, "SK": forward_sk}
                     new_rev: dict[str, Any] = {"PK": pk, "SK": reverse_sk}
@@ -3848,7 +3845,7 @@ class DynamoDBTrackingStore(AbstractStore):
         field = f"assess_{assessment_id}"
 
         if old_fts_text or new_fts_text:
-            levels = ("W", "3")
+            levels = ("W", "3", "2")
             tokens_to_add, tokens_to_remove = fts_diff(old_fts_text, new_fts_text or "", levels)
             field_suffix = f"#{field}"
             entity_prefix = f"T#{trace_id}{field_suffix}"
@@ -3864,7 +3861,7 @@ class DynamoDBTrackingStore(AbstractStore):
                     if len(parts) == 2:
                         lvl, tok = parts[0], parts[1]
                         if (lvl, tok) in tokens_to_remove:
-                            forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                            forward_sk = f"{SK_FTS_PREFIX}{lvl}#T#{tok}#{trace_id}{field_suffix}"
                             self._table.delete_item(pk=pk, sk=forward_sk)
                             self._table.delete_item(pk=pk, sk=rev_sk)
 
@@ -3872,7 +3869,7 @@ class DynamoDBTrackingStore(AbstractStore):
             if tokens_to_add:
                 new_fts_items: list[dict[str, Any]] = []
                 for lvl, tok in tokens_to_add:
-                    forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                    forward_sk = f"{SK_FTS_PREFIX}{lvl}#T#{tok}#{trace_id}{field_suffix}"
                     reverse_sk = f"{SK_FTS_REV_PREFIX}{entity_prefix}#{lvl}#{tok}"
                     new_fwd: dict[str, Any] = {"PK": pk, "SK": forward_sk}
                     new_rev: dict[str, Any] = {"PK": pk, "SK": reverse_sk}
@@ -4329,16 +4326,16 @@ class DynamoDBTrackingStore(AbstractStore):
                 # Try to find the level marker
                 # If parts[0] is a known level (W or 3), then no field
                 # Otherwise parts[0] is field, parts[1] is level
-                if parts[0] in ("W", "3"):
-                    entity_prefix = base
+                if parts[0] in ("W", "3", "2"):
+                    field_part = ""
                     lvl = parts[0]
                     tok = "#".join(parts[1:])
                 else:
-                    entity_prefix = f"{base}#{parts[0]}"
+                    field_part = f"#{parts[0]}"
                     lvl = parts[1]
                     tok = "#".join(parts[2:])
 
-                forward_sk = f"{SK_FTS_PREFIX}{lvl}#{tok}#{entity_prefix}"
+                forward_sk = f"{SK_FTS_PREFIX}{lvl}#T#{tok}#{trace_id}{field_part}"
                 self._table.delete_item(pk=pk, sk=forward_sk)
                 self._table.delete_item(pk=pk, sk=rev_sk)
 

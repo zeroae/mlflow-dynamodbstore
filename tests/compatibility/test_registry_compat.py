@@ -102,9 +102,3 @@ test_search_model_versions_by_tag = _xfail_search_order(test_search_model_versio
 test_search_model_versions_order_by_simple = _xfail_search_order(
     test_search_model_versions_order_by_simple
 )
-
-# --- Category 14: infix LIKE patterns not supported ---
-_xfail_like = pytest.mark.xfail(
-    reason="DynamoDB store only supports prefix LIKE patterns, not infix '%X%'"
-)
-test_search_registered_models = _xfail_like(test_search_registered_models)

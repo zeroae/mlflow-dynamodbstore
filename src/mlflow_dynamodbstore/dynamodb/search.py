@@ -746,20 +746,18 @@ def _execute_fts(
         # For each word token, query FTS items and collect entity IDs
         entity_id_sets: list[set[str]] = []
         for token in word_tokens:
-            sk_prefix = f"{SK_FTS_PREFIX}W#{token}#R#"
+            sk_prefix = f"{SK_FTS_PREFIX}W#R#{token}#"
             fts_items = table.query(pk=pk, sk_prefix=sk_prefix)
             # Extract entity_id (run_id) from the SK pattern:
-            # FTS#W#<token>#R#<run_id>
+            # FTS#W#R#<token>#<run_id>
             ids = set()
             for item in fts_items:
                 sk = item.get("SK", "")
-                # Parse run_id from SK: FTS#W#<token>#R#<run_id>[#<field>]
+                # Parse run_id from SK: FTS#W#R#<token>#<run_id>[#<field>]
                 parts = sk.split("#")
-                # Find the R marker and get the next part
-                for i, part in enumerate(parts):
-                    if part == "R" and i + 1 < len(parts):
-                        ids.add(parts[i + 1])
-                        break
+                # parts[0]=FTS, parts[1]=W, parts[2]=R, parts[3]=token, parts[4]=run_id
+                if len(parts) >= 5:
+                    ids.add(parts[4])
             entity_id_sets.append(ids)
 
         if not entity_id_sets:
@@ -778,16 +776,16 @@ def _execute_fts(
     if trigram_tokens:
         entity_id_sets = []
         for token in trigram_tokens:
-            sk_prefix = f"{SK_FTS_PREFIX}3#{token}#R#"
+            sk_prefix = f"{SK_FTS_PREFIX}3#R#{token}#"
             fts_items = table.query(pk=pk, sk_prefix=sk_prefix)
             ids = set()
             for item in fts_items:
                 sk = item.get("SK", "")
+                # Parse run_id from SK: FTS#3#R#<token>#<run_id>[#<field>]
                 parts = sk.split("#")
-                for i, part in enumerate(parts):
-                    if part == "R" and i + 1 < len(parts):
-                        ids.add(parts[i + 1])
-                        break
+                # parts[0]=FTS, parts[1]=3, parts[2]=R, parts[3]=token, parts[4]=run_id
+                if len(parts) >= 5:
+                    ids.add(parts[4])
             entity_id_sets.append(ids)
 
         if not entity_id_sets:
@@ -879,12 +877,11 @@ def _execute_trace_fts(
         ids = set()
         for item in fts_items:
             sk = item.get("SK", "")
-            # FTS#W#<token>#T#<trace_id>[#<field>]
+            # FTS#<level>#T#<token>#<trace_id>[#<field>]
+            # parts[0]=FTS, parts[1]=level, parts[2]=T, parts[3]=token, parts[4]=trace_id
             parts = sk.split("#")
-            for i, part in enumerate(parts):
-                if part == "T" and i + 1 < len(parts):
-                    ids.add(parts[i + 1])
-                    break
+            if len(parts) >= 5 and parts[2] == "T":
+                ids.add(parts[4])
         return ids
 
     for level, tokens in [
@@ -895,7 +892,7 @@ def _execute_trace_fts(
             continue
         entity_id_sets: list[set[str]] = []
         for token in tokens:
-            sk_prefix = f"{SK_FTS_PREFIX}{level}#{token}#T#"
+            sk_prefix = f"{SK_FTS_PREFIX}{level}#T#{token}#"
             fts_items = table.query(pk=pk, sk_prefix=sk_prefix)
             entity_id_sets.append(_extract_trace_ids(fts_items))
 

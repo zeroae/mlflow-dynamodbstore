@@ -342,7 +342,7 @@ class TestQueryExecutor:
             }
         )
         # The stemmed form of "pipeline" is "pipelin"
-        table.put_item({"PK": "EXP#01JQ", "SK": "FTS#W#pipelin#R#RUN1"})
+        table.put_item({"PK": "EXP#01JQ", "SK": "FTS#W#R#pipelin#RUN1"})
         plan = QueryPlan(
             strategy="fts",
             index=None,
@@ -377,7 +377,7 @@ class TestQueryExecutor:
             }
         )
         # "xy" is too short for word tokens but we add trigram tokens for "xyz"
-        table.put_item({"PK": "EXP#01JQ", "SK": "FTS#3#xyz#R#RUN1"})
+        table.put_item({"PK": "EXP#01JQ", "SK": "FTS#3#R#xyz#RUN1"})
         plan = QueryPlan(
             strategy="fts",
             index=None,
@@ -579,10 +579,10 @@ class TestQueryExecutor:
             }
         )
         # RUN1 has both tokens
-        table.put_item({"PK": "EXP#01JQ", "SK": "FTS#W#train#R#RUN1"})
-        table.put_item({"PK": "EXP#01JQ", "SK": "FTS#W#model#R#RUN1"})
+        table.put_item({"PK": "EXP#01JQ", "SK": "FTS#W#R#train#RUN1"})
+        table.put_item({"PK": "EXP#01JQ", "SK": "FTS#W#R#model#RUN1"})
         # RUN2 has only one token
-        table.put_item({"PK": "EXP#01JQ", "SK": "FTS#W#train#R#RUN2"})
+        table.put_item({"PK": "EXP#01JQ", "SK": "FTS#W#R#train#RUN2"})
 
         plan = QueryPlan(
             strategy="fts",

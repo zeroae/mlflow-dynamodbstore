@@ -502,13 +502,18 @@ class DynamoDBRegistryStore(AbstractStore):
             return PagedList(models[:max_results], token=None)
 
         if name_pred and name_pred.op in ("LIKE", "ILIKE"):
-            is_prefix = name_pred.value.endswith("%") and "%" not in name_pred.value[:-1]
+            _prefix_body = name_pred.value[:-1]
+            is_prefix = (
+                name_pred.value.endswith("%")
+                and "%" not in _prefix_body
+                and "_" not in _prefix_body
+            )
             if not is_prefix:
                 # Non-prefix LIKE — FTS / general fallback, no pagination
                 models = _post_filter(
                     self._search_models_by_name_like(name_pred.value, name_pred.op)
                 )
-                models = self._sort_models(models, order_by)
+                models = self._sort_models(models, order_by or ["name ASC"])
                 return PagedList(models[:max_results], token=None)
             # Prefix LIKE falls through to paginated path below
 
@@ -576,9 +581,10 @@ class DynamoDBRegistryStore(AbstractStore):
         if op == "ILIKE":
             fn_pattern = fn_pattern.lower()
 
-        # Prefix-only: use GSI5 begins_with
-        if pattern.endswith("%") and "%" not in pattern[:-1]:
-            prefix = pattern[:-1]
+        # Prefix-only: use GSI5 begins_with (no wildcards in the prefix body)
+        _prefix_body = pattern[:-1]
+        if pattern.endswith("%") and "%" not in _prefix_body and "_" not in _prefix_body:
+            prefix = _prefix_body
             items = self._table.query(
                 pk=f"{GSI5_MODEL_NAMES_PREFIX}{self._workspace}",
                 sk_prefix=prefix,
@@ -593,10 +599,12 @@ class DynamoDBRegistryStore(AbstractStore):
                     models.append(_item_to_registered_model(item, tags))
             return models
 
-        # Contains pattern (%word%): use FTS via GSI2
+        # Contains pattern (%word%): use NSS via GSI2
         if pattern.startswith("%") and pattern.endswith("%"):
             search_term = pattern.strip("%")
-            return self._search_models_by_fts(search_term)
+            if not search_term:
+                return self._search_models_by_gsi2()
+            return self._search_models_by_nss(search_term)
 
         # General LIKE: fall back to GSI2 scan + Python filter
         all_models = self._search_models_by_gsi2()
@@ -606,34 +614,34 @@ class DynamoDBRegistryStore(AbstractStore):
             if _fnmatch.fnmatch(m.name.lower() if op == "ILIKE" else m.name, fn_pattern)
         ]
 
-    def _search_models_by_fts(self, search_term: str) -> list[RegisteredModel]:
-        """Search models by FTS tokens via GSI2 cross-partition index."""
-        from mlflow_dynamodbstore.dynamodb.fts import tokenize_trigrams, tokenize_words
+    def _search_models_by_nss(self, search_term: str) -> list[RegisteredModel]:
+        """N-gram Substring Search — find models by character n-gram intersection via GSI2."""
+        from mlflow_dynamodbstore.dynamodb.fts import tokenize_bigrams, tokenize_trigrams
 
         gsi2pk = f"{GSI2_FTS_NAMES_PREFIX}{self._workspace}"
 
-        # Try word tokens first
-        word_tokens = tokenize_words(search_term)
-        if word_tokens:
-            model_ulid_sets: list[set[str]] = []
-            for token in word_tokens:
-                sk_prefix = f"W#{token}#M#"
-                fts_items = self._table.query(
-                    pk=gsi2pk,
-                    sk_prefix=sk_prefix,
-                    index_name="gsi2",
-                )
-                ids = set()
-                for item in fts_items:
-                    gsi2sk = item.get(GSI2_SK, "")
-                    # Pattern: W#<token>#M#<model_ulid>
-                    parts = gsi2sk.split("#")
-                    for i, part in enumerate(parts):
-                        if part == "M" and i + 1 < len(parts):
-                            ids.add(parts[i + 1])
-                            break
-                model_ulid_sets.append(ids)
+        def _query_ids(sk_prefix: str) -> set[str]:
+            """Query GSI2 and extract model ULIDs from results."""
+            fts_items = self._table.query(
+                pk=gsi2pk,
+                sk_prefix=sk_prefix,
+                index_name="gsi2",
+            )
+            ids: set[str] = set()
+            for item in fts_items:
+                gsi2sk = item.get(GSI2_SK, "")
+                parts = gsi2sk.split("#")
+                # Pattern: <level>#M#<token>#<model_ulid>
+                if len(parts) >= 4 and parts[1] == "M":
+                    ids.add(parts[3])
+            return ids
 
+        # Trigrams: exact match for 3+ char tokens
+        trigram_tokens = tokenize_trigrams(search_term)
+        if trigram_tokens:
+            model_ulid_sets: list[set[str]] = []
+            for token in trigram_tokens:
+                model_ulid_sets.append(_query_ids(f"3#M#{token}#"))
             if model_ulid_sets:
                 result_ids = model_ulid_sets[0]
                 for s in model_ulid_sets[1:]:
@@ -641,27 +649,14 @@ class DynamoDBRegistryStore(AbstractStore):
                 if result_ids:
                     return self._fetch_models_by_ulids(list(result_ids))
 
-        # Fallback to trigrams
-        trigram_tokens = tokenize_trigrams(search_term)
-        if trigram_tokens:
+        # Bigrams: trigram-prefix + tail-bigram union, for 2-char tokens
+        bigram_tokens = tokenize_bigrams(search_term)
+        if bigram_tokens:
             model_ulid_sets = []
-            for token in trigram_tokens:
-                sk_prefix = f"3#{token}#M#"
-                fts_items = self._table.query(
-                    pk=gsi2pk,
-                    sk_prefix=sk_prefix,
-                    index_name="gsi2",
-                )
-                ids = set()
-                for item in fts_items:
-                    gsi2sk = item.get(GSI2_SK, "")
-                    parts = gsi2sk.split("#")
-                    for i, part in enumerate(parts):
-                        if part == "M" and i + 1 < len(parts):
-                            ids.add(parts[i + 1])
-                            break
+            for token in bigram_tokens:
+                # Union: trigram-prefix (non-tail positions) + tail bigram (end-of-word)
+                ids = _query_ids(f"3#M#{token}") | _query_ids(f"2#M#{token}#")
                 model_ulid_sets.append(ids)
-
             if model_ulid_sets:
                 result_ids = model_ulid_sets[0]
                 for s in model_ulid_sets[1:]:
