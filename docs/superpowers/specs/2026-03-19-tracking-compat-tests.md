@@ -7,11 +7,11 @@
 
 ## Problem
 
-Phase 2c was deferred in the parent spec because MLflow's tracking store tests were estimated to have 531 SQL-specific references, making them "too coupled." Analysis of the actual test functions in v3.10.1 shows **247 of 316 tests (78%) are importable** — they only use the abstract store interface and don't reference SqlAlchemy internals.
+Phase 2c was deferred in the parent spec because MLflow's tracking store tests were estimated to have 531 SQL-specific references, making them "too coupled." Analysis of the actual test functions in v3.10.1 shows **244 of 316 tests (77%) are importable** — they only use the abstract store interface and don't reference SqlAlchemy internals.
 
 ## Goal
 
-Import the 247 importable tracking store tests from MLflow, run them against the DynamoDB store, and xfail failures so CI stays green. The xfail markers serve as an inventory of DynamoDB store gaps.
+Import the 244 importable tracking store tests from MLflow, run them against the DynamoDB store, and xfail failures so CI stays green. The xfail markers serve as an inventory of DynamoDB store gaps.
 
 ## Approach
 
@@ -27,26 +27,27 @@ The compatibility conftest's `store` fixture defaults to `registry_store`. Track
 
 ```python
 @pytest.fixture
-def store(tracking_store):
+def store(tracking_store, monkeypatch):
+    monkeypatch.setenv(MLFLOW_ENABLE_WORKSPACES.name, "false")
     return tracking_store
 ```
 
-This takes precedence over the conftest-level `store` fixture for tests in this module.
+This takes precedence over the conftest-level `store` fixture for tests in this module. The `MLFLOW_ENABLE_WORKSPACES=false` baseline is needed because MLflow's tracking tests have an autouse `workspaces_enabled` fixture that normally sets this — since that autouse fixture doesn't activate for re-imported functions, we must set it explicitly.
 
 ### Import list
 
-247 test functions imported from `vendor/mlflow/tests/store/tracking/test_sqlalchemy_store.py`.
+244 test functions imported from `vendor/mlflow/tests/store/tracking/test_sqlalchemy_store.py`.
 
-### Excluded tests (69)
+### Excluded tests (72)
 
 Tests excluded because they reference SqlAlchemy internals or take unsupported fixtures:
 
 | Reason | Count | Examples |
 |---|---|---|
 | Uses `ManagedSessionMaker` / session internals | 28 | `test_create_experiments`, `test_log_metric`, `test_run_info` |
-| Takes `store_and_trace_info` fixture | 12 | `test_create_and_get_assessment`, `test_update_assessment_*` |
+| Takes `store_and_trace_info` fixture | 15 | `test_create_and_get_assessment`, `test_update_assessment_*`, `test_assessment_with_*` |
 | Takes `workspaces_enabled` fixture | 4 | `test_create_experiment_with_tags_works_correctly` |
-| Takes `store_with_traces` fixture | 4 | `test_search_traces_order_by`, `test_search_traces_pagination` |
+| Takes `store_with_traces` fixture | 4 | `test_search_traces_order_by`, `test_search_traces_pagination`, `test_search_traces_with_filter`, `test_search_traces_with_invalid_filter` |
 | Takes `db_uri` / `tmp_sqlite_uri` fixture | 5 | `test_get_orderby_clauses`, `test_sqlalchemy_store_*` |
 | References `SqlRun`/`SqlMetric`/ORM models | 6 | `test_get_attribute_name`, `test_get_metric_history` |
 | References DB-specific types (MSSQL/MYSQL) | 4 | `test_set_zero_value_insertion_*` |
@@ -56,7 +57,7 @@ Tests excluded because they reference SqlAlchemy internals or take unsupported f
 ### xfail strategy
 
 After first run:
-1. Run all 247 tests, note failures
+1. Run all 244 tests, note failures
 2. Group failures by reason (e.g., "trace search filter not implemented", "scorer not implemented", "dataset feature gap")
 3. Apply `pytest.mark.xfail(reason="...")` per group so CI stays green
 4. Remove xfail markers as gaps are fixed
