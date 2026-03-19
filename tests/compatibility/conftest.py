@@ -131,27 +131,33 @@ def workspace_store(mock_dynamodb):
     )
 
 
-# --- SqlAlchemy store fixtures (SQLite-backed, for Phase 1 comparison) ---
+# --- SqlAlchemy store fixtures (in-memory SQLite, for Phase 1 comparison) ---
+# Each fixture uses a unique named in-memory DB via file URI to avoid sharing
+# state through SqlAlchemyStore's class-level engine cache (_engine_map).
+_sql_counter = 0
+
+
+def _unique_memory_uri() -> str:
+    global _sql_counter
+    _sql_counter += 1
+    return f"sqlite:///file:mem{_sql_counter}?mode=memory&cache=shared&uri=true"
 
 
 @pytest.fixture
 def sql_tracking_store(tmp_path):
     artifact_uri = str(tmp_path / "artifacts")
-    db_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
-    return SqlAlchemyTrackingStore(db_uri, artifact_uri)
+    return SqlAlchemyTrackingStore(_unique_memory_uri(), artifact_uri)
 
 
 @pytest.fixture
-def sql_registry_store(tmp_path):
-    db_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
-    return SqlAlchemyRegistryStore(db_uri)
+def sql_registry_store():
+    return SqlAlchemyRegistryStore(_unique_memory_uri())
 
 
 @pytest.fixture
-def sql_workspace_store(tmp_path, monkeypatch):
+def sql_workspace_store(monkeypatch):
     monkeypatch.setenv(MLFLOW_ENABLE_WORKSPACES.name, "true")
-    db_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
-    return SqlAlchemyWorkspaceStore(db_uri)
+    return SqlAlchemyWorkspaceStore(_unique_memory_uri())
 
 
 # --- Phase 1: Side-by-side store pairs ---

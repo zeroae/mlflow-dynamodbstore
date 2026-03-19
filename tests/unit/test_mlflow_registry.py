@@ -90,9 +90,9 @@ class TestRegistryCompatibility:
         v1 = store.create_model_version("test-model", source="s3://v1")
         v2 = store.create_model_version("test-model", source="s3://v2")
         v3 = store.create_model_version("test-model", source="s3://v3")
-        assert v1.version == "1"
-        assert v2.version == "2"
-        assert v3.version == "3"
+        assert v1.version == 1
+        assert v2.version == 2
+        assert v3.version == 3
 
     def test_model_version_default_stage(self, store):
         """MLflow expects the default stage to be 'None' (the string)."""
@@ -158,7 +158,7 @@ class TestRegistryCompatibility:
         store.create_model_version("test-model", source="s3://bucket")
         store.set_registered_model_alias("test-model", "prod", "1")
         mv = store.get_model_version_by_alias("test-model", "prod")
-        assert mv.version == "1"
+        assert mv.version == 1
 
     def test_alias_returns_model_version_type(self, store):
         """get_model_version_by_alias must return a ModelVersion instance."""
@@ -176,7 +176,7 @@ class TestRegistryCompatibility:
         store.set_registered_model_alias("test-model", "prod", "1")
         store.set_registered_model_alias("test-model", "prod", "2")
         mv = store.get_model_version_by_alias("test-model", "prod")
-        assert mv.version == "2"
+        assert mv.version == 2
 
     def test_get_nonexistent_alias_raises_mlflow_exception(self, store):
         """Resolving a non-existent alias must raise MlflowException."""
@@ -301,7 +301,7 @@ class TestRegistryCompatibility:
         results = store.get_latest_versions("latest-model")
         # Both versions are in "None" stage, so we should get just the latest
         assert len(results) == 1
-        assert results[0].version == "2"
+        assert results[0].version == 2
 
     # --- Get nonexistent model version contract ---
 

@@ -32,6 +32,7 @@ EXPERIMENT = {
     "tags": MUST_MATCH,
     "creation_time": TYPE_MUST_MATCH,
     "last_update_time": TYPE_MUST_MATCH,
+    "workspace": MUST_MATCH,
 }
 
 RUN_INFO = {
@@ -58,6 +59,10 @@ METRIC = {
     "value": MUST_MATCH,
     "timestamp": TYPE_MUST_MATCH,
     "step": MUST_MATCH,
+    "dataset_digest": MUST_MATCH,
+    "dataset_name": MUST_MATCH,
+    "model_id": MUST_MATCH,
+    "run_id": IGNORE,
 }
 
 PARAM = {
@@ -78,6 +83,9 @@ REGISTERED_MODEL = {
     "latest_versions": MUST_MATCH,
     "tags": MUST_MATCH,
     "aliases": MUST_MATCH,
+    "deployment_job_id": MUST_MATCH,
+    "deployment_job_state": MUST_MATCH,
+    "workspace": MUST_MATCH,
 }
 
 MODEL_VERSION = {
@@ -95,13 +103,17 @@ MODEL_VERSION = {
     "tags": MUST_MATCH,
     "run_link": MUST_MATCH,
     "aliases": MUST_MATCH,
+    "deployment_job_state": MUST_MATCH,
+    "metrics": MUST_MATCH,
+    "model_id": MUST_MATCH,
+    "params": MUST_MATCH,
+    "workspace": MUST_MATCH,
 }
 
 WORKSPACE = {
     "name": MUST_MATCH,
     "description": MUST_MATCH,
-    "creation_time": TYPE_MUST_MATCH,
-    "last_update_time": TYPE_MUST_MATCH,
+    "default_artifact_root": MUST_MATCH,
 }
 
 TRACE_INFO = {

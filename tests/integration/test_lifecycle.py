@@ -188,14 +188,14 @@ class TestFullLifecycle:
             source="s3://bucket/model/v1",
             run_id=run1_id,
         )
-        assert v1.version == "1"
+        assert v1.version == 1
 
         v2 = registry_store.create_model_version(
             name="lifecycle-model",
             source="s3://bucket/model/v2",
             run_id=run2_id,
         )
-        assert v2.version == "2"
+        assert v2.version == 2
 
         # Set alias
         registry_store.set_registered_model_alias(
@@ -206,7 +206,7 @@ class TestFullLifecycle:
 
         # Retrieve by alias
         mv = registry_store.get_model_version_by_alias("lifecycle-model", "champion")
-        assert mv.version == "1"
+        assert mv.version == 1
         assert mv.source == "s3://bucket/model/v1"
 
         # ==============================================================
@@ -432,7 +432,7 @@ class TestFullLifecycle:
         model = registry_store.get_registered_model("lifecycle-model")
         assert model.name == "lifecycle-model"
         mv = registry_store.get_model_version_by_alias("lifecycle-model", "champion")
-        assert mv.version == "1"
+        assert mv.version == 1
 
         # Traces still accessible
         info = tracking_store.get_trace_info("trace-lifecycle-001")

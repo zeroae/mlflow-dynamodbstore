@@ -10,13 +10,13 @@ class TestRegistryIntegration:
         # Create versions
         v1 = registry_store.create_model_version("test-model", source="s3://v1")
         v2 = registry_store.create_model_version("test-model", source="s3://v2")
-        assert v1.version == "1"
-        assert v2.version == "2"
+        assert v1.version == 1
+        assert v2.version == 2
 
         # Set alias
         registry_store.set_registered_model_alias("test-model", "champion", "1")
         mv = registry_store.get_model_version_by_alias("test-model", "champion")
-        assert mv.version == "1"
+        assert mv.version == 1
 
         # Rename model
         registry_store.rename_registered_model("test-model", "better-model")

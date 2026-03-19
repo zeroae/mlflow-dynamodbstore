@@ -72,7 +72,8 @@ def _item_to_registered_model(
         name=item["name"],
         creation_timestamp=_int_or_none(item.get("creation_timestamp")),
         last_updated_timestamp=_int_or_none(item.get("last_updated_timestamp")),
-        description=item.get("description", ""),
+        description=item.get("description") or None,
+        latest_versions=[],
         tags=tags or [],
     )
 
@@ -89,16 +90,16 @@ def _item_to_model_version(
     """Convert a DynamoDB item to an MLflow ModelVersion entity."""
     return ModelVersion(
         name=item["name"],
-        version=str(int(item["version"])),
+        version=int(item["version"]),  # type: ignore[arg-type]  # MLflow returns int at runtime
         creation_timestamp=_int_or_none(item.get("creation_timestamp")) or 0,
         last_updated_timestamp=_int_or_none(item.get("last_updated_timestamp")),
-        description=item.get("description", ""),
+        description=item.get("description") or None,
         source=item.get("source", ""),
-        run_id=item.get("run_id", ""),
+        run_id=item.get("run_id") or None,
         status=item.get("status", "READY"),
         current_stage=item.get("current_stage", "None"),
         tags=tags or [],
-        run_link=item.get("run_link", ""),
+        run_link=item.get("run_link") or None,
     )
 
 
@@ -137,7 +138,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if not results:
             raise MlflowException(
-                f"Registered Model with name={name} not found.",
+                f"Registered Model with name={name} not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -165,7 +166,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if existing:
             raise MlflowException(
-                f"Registered Model '{name}' already exists.",
+                f"Registered Model (name={name}) already exists.",
                 error_code=RESOURCE_ALREADY_EXISTS,
             )
 
@@ -239,7 +240,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if item is None:
             raise MlflowException(
-                f"Registered Model with name={name} not found.",
+                f"Registered Model with name={name} not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -258,7 +259,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if existing:
             raise MlflowException(
-                f"Registered Model '{new_name}' already exists.",
+                f"Registered Model (name={new_name}) already exists.",
                 error_code=RESOURCE_ALREADY_EXISTS,
             )
 
@@ -766,7 +767,7 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if item is None:
             raise MlflowException(
-                f"Model Version (name={name}, version={version}) not found.",
+                f"Model Version (name={name}, version={version}) not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -791,7 +792,7 @@ class DynamoDBRegistryStore(AbstractStore):
 
         if updated_item is None:
             raise MlflowException(
-                f"Model Version (name={name}, version={version}) not found.",
+                f"Model Version (name={name}, version={version}) not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -1008,7 +1009,7 @@ class DynamoDBRegistryStore(AbstractStore):
 
         if updated_item is None:
             raise MlflowException(
-                f"Model Version (name={name}, version={version}) not found.",
+                f"Model Version (name={name}, version={version}) not found",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
