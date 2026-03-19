@@ -31,7 +31,7 @@ Git submodule + import-based test collection. MLflow is vendored as a read-only 
 ```
 zae-mlflow/
 ├── vendor/
-│   └── mlflow/                          # git submodule → mlflow/mlflow @ v3.1.x
+│   └── mlflow/                          # git submodule → mlflow/mlflow @ v3.10.x
 │       └── tests/store/...              # MLflow's test files (read-only)
 ├── tests/
 │   └── compatibility/
@@ -55,7 +55,7 @@ zae-mlflow/
 
 ## Git Submodule
 
-MLflow is added as a shallow git submodule at `vendor/mlflow`, pinned to a release tag (`>= v3.1`).
+MLflow is added as a shallow git submodule at `vendor/mlflow`, pinned to a release tag (`>= v3.10`).
 
 ```ini
 [submodule "vendor/mlflow"]
@@ -275,6 +275,6 @@ Deferred. MLflow's tracking store tests (`test_sqlalchemy_store.py`, 510KB) have
 
 ## Dependency Changes
 
-- `pyproject.toml`: bump `mlflow>=3.0` to `mlflow>=3.1`
+- `pyproject.toml`: bump `mlflow>=3.0` to `mlflow>=3.10`
 - No new Python dependencies (comparison framework is pure stdlib + pytest)
 - Submodule adds MLflow repo as a git dependency (shallow, ~single commit)
