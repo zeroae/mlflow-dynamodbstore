@@ -111,8 +111,7 @@ class DynamoDBRegistryStore(AbstractStore):
         if uri.deploy:
             ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
-        self._cache = ResolutionCache()
-        self._workspace = "default"
+        self._cache = ResolutionCache(workspace=lambda: self._workspace)
         self._config = ConfigReader(self._table)
         self._config.reconcile()
 
@@ -120,6 +119,13 @@ class DynamoDBRegistryStore(AbstractStore):
     def supports_workspaces(self) -> bool:
         """DynamoDB registry store always supports workspaces."""
         return True
+
+    @property
+    def _workspace(self) -> str:
+        """Return the active workspace from context, defaulting to 'default'."""
+        from mlflow.utils.workspace_context import get_request_workspace
+
+        return get_request_workspace() or "default"
 
     # ------------------------------------------------------------------
     # Name -> ULID resolution
