@@ -131,35 +131,25 @@ def workspace_store(mock_dynamodb):
     )
 
 
-# --- SqlAlchemy store fixtures (SQLite-backed, for Phase 1 comparison) ---
-# Session-scoped DB URI avoids paying Alembic migration cost per test.
-
-
-@pytest.fixture(scope="session")
-def _sql_db_uri(tmp_path_factory):
-    db_path = tmp_path_factory.mktemp("sql") / "mlflow.db"
-    return f"sqlite:///{db_path}"
-
-
-@pytest.fixture(scope="session")
-def _sql_artifact_uri(tmp_path_factory):
-    return str(tmp_path_factory.mktemp("artifacts"))
+# --- SqlAlchemy store fixtures (in-memory SQLite, for Phase 1 comparison) ---
 
 
 @pytest.fixture
-def sql_tracking_store(_sql_db_uri, _sql_artifact_uri):
-    return SqlAlchemyTrackingStore(_sql_db_uri, _sql_artifact_uri)
+def sql_tracking_store(tmp_path):
+    db_uri = "sqlite:///:memory:"
+    artifact_uri = str(tmp_path / "artifacts")
+    return SqlAlchemyTrackingStore(db_uri, artifact_uri)
 
 
 @pytest.fixture
-def sql_registry_store(_sql_db_uri):
-    return SqlAlchemyRegistryStore(_sql_db_uri)
+def sql_registry_store():
+    return SqlAlchemyRegistryStore("sqlite:///:memory:")
 
 
 @pytest.fixture
-def sql_workspace_store(_sql_db_uri, monkeypatch):
+def sql_workspace_store(monkeypatch):
     monkeypatch.setenv(MLFLOW_ENABLE_WORKSPACES.name, "true")
-    return SqlAlchemyWorkspaceStore(_sql_db_uri)
+    return SqlAlchemyWorkspaceStore("sqlite:///:memory:")
 
 
 # --- Phase 1: Side-by-side store pairs ---

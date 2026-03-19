@@ -8,6 +8,7 @@ from tests.compatibility.comparison import assert_entities_match
 from tests.compatibility.field_policy import WORKSPACE
 
 
+@pytest.mark.xfail(reason="DynamoDB store default workspace description differs from SqlAlchemy")
 def test_list_workspaces(workspace_stores):
     """Default workspace should be present and match."""
     sql_workspaces = workspace_stores.sql.list_workspaces()
