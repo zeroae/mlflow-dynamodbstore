@@ -1784,30 +1784,28 @@ class DynamoDBRegistryStore(AbstractStore):
         sk_lte: str | None = None,
         filter_expression: Any | None = None,
     ) -> list[ModelVersion]:
-        """List all model versions across all models."""
+        """List all model versions across all models, ordered by last_updated_timestamp DESC."""
         model_items = self._table.query(
             pk=f"{GSI2_MODELS_PREFIX}{self._workspace}",
             index_name="gsi2",
         )
-        if sk_prefix is None and sk_gte is None:
-            sk_prefix = SK_VERSION_PREFIX
         versions: list[ModelVersion] = []
         for model_item in model_items:
             model_ulid = model_item["PK"].replace(PK_MODEL_PREFIX, "")
             pk = f"{PK_MODEL_PREFIX}{model_ulid}"
             ver_items = self._table.query(
                 pk=pk,
-                sk_prefix=sk_prefix,
-                sk_gte=sk_gte,
-                sk_lte=sk_lte,
+                index_name="lsi2",
+                scan_forward=False,
                 filter_expression=filter_expression,
             )
             for vi in ver_items:
-                if SK_VERSION_TAG_SUFFIX in vi["SK"]:
+                sk = vi.get("SK", "")
+                if not sk.startswith(SK_VERSION_PREFIX) or SK_VERSION_TAG_SUFFIX in sk:
                     continue
                 if vi.get("current_stage") == STAGE_DELETED_INTERNAL:
                     continue
-                padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
+                padded = sk.replace(SK_VERSION_PREFIX, "")
                 tags = self._get_version_tags(model_ulid, padded)
                 versions.append(_item_to_model_version(vi, tags))
         return versions
