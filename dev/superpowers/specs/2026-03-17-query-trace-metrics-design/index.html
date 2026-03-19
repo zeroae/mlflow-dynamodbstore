@@ -1,0 +1,2008 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="DynamoDB-backed MLflow tracking store, model registry, and auth plugin">
+      
+      
+        <meta name="author" content="ZeroAE">
+      
+      
+        <link rel="canonical" href="https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-17-query-trace-metrics-design/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
+    
+    
+      
+        <title>Phase 4b: query_trace_metrics — Trace Analytics Engine - mlflow-dynamodbstore</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#phase-4b-query_trace_metrics-trace-analytics-engine" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="mlflow-dynamodbstore" class="md-header__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            mlflow-dynamodbstore
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Phase 4b: query_trace_metrics — Trace Analytics Engine
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/zeroae/mlflow-dynamodbstore" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/mlflow-dynamodbstore
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="mlflow-dynamodbstore" class="md-nav__button md-logo" aria-label="mlflow-dynamodbstore" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    mlflow-dynamodbstore
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/zeroae/mlflow-dynamodbstore" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/mlflow-dynamodbstore
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/workspaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workspaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/xray-integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    X-Ray Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/ttl-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TTL Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../operator-guide/upgrading/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/access-patterns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Access Patterns
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../contributing/development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADRs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    ADRs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../adr/001-single-table-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single Table Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Scope">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-query_trace_metrics-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What query_trace_metrics Does
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#supported-metrics-by-view-type" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported Metrics by View Type
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filters
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dynamodb-item-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DynamoDB Item Design
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DynamoDB Item Design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new-item-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        New Item Types
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#assessment-item-denormalization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Assessment Item Denormalization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#no-new-gsis-or-lsis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        No New GSIs or LSIs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#schema-constants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema Constants
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#access-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Access Patterns
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Access Patterns">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scan-risk-assessment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scan Risk Assessment
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-streaming-aggregation-approach-c" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture: Streaming Aggregation (Approach C)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture: Streaming Aggregation (Approach C)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why Streaming
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#query-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Query Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#time-bucketing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Time Bucketing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#accumulator-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accumulator Design
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#meta-pre-filter-for-span-queries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        META Pre-filter for Span Queries
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pagination-with-dynamodb-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pagination with DynamoDB Cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#write-path-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write Path Changes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Write Path Changes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#log_spans-additions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        log_spans Additions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#create_assessment-update_assessment-additions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        create_assessment / update_assessment Additions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing Strategy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Testing Strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#unit-tests-moto-direct-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unit Tests (moto, direct store)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#integration-tests-moto-server-rest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration Tests (moto server, REST)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#e2e-tests-full-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        E2E Tests (full server)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/zeroae/mlflow-dynamodbstore/edit/main/docs/superpowers/specs/2026-03-17-query-trace-metrics-design.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="phase-4b-query_trace_metrics-trace-analytics-engine">Phase 4b: <code>query_trace_metrics</code> — Trace Analytics Engine<a class="headerlink" href="#phase-4b-query_trace_metrics-trace-analytics-engine" title="Permanent link">&para;</a></h1>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p>Phases 1–3 implemented datasets, logged models, scorers, core gaps, and advanced traces. Phase 4a closed remaining simple gaps (<code>log_outputs</code>, <code>log_spans_async</code>, <code>get_metric_history_bulk_interval_from_steps</code>). Phase 4b implements <code>query_trace_metrics</code> — the <strong>last remaining <code>NotImplementedError</code></strong> in the DynamoDB tracking store. This method powers the experiment overview dashboard's trace analytics charts (latency, token counts, error rates, cost breakdowns over time).</p>
+<h2 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h2>
+<p>1 store method: <code>query_trace_metrics</code></p>
+<p>Supporting changes:
+- Schema additions (3 new item types + assessment denormalization)
+- Write path changes in <code>log_spans</code> and <code>create_assessment</code>/<code>update_assessment</code>
+- New <code>trace_metrics/</code> package for aggregation logic</p>
+<h3 id="what-query_trace_metrics-does">What <code>query_trace_metrics</code> Does<a class="headerlink" href="#what-query_trace_metrics-does" title="Permanent link">&para;</a></h3>
+<p>Given experiment IDs, a view type (TRACES/SPANS/ASSESSMENTS), a metric name, and aggregation types, it returns aggregated <code>MetricDataPoint</code> objects grouped by optional dimensions (e.g., trace name, span type) and/or time buckets.</p>
+<p><strong>Signature</strong> (from <code>AbstractStore</code>):
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">query_trace_metrics</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="bp">self</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">experiment_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">view_type</span><span class="p">:</span> <span class="n">MetricViewType</span><span class="p">,</span>         <span class="c1"># TRACES, SPANS, ASSESSMENTS</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">metric_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>                   <span class="c1"># e.g., &quot;latency&quot;, &quot;trace_count&quot;, &quot;input_tokens&quot;</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">aggregations</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">MetricAggregation</span><span class="p">],</span>  <span class="c1"># COUNT, SUM, AVG, MIN, MAX, PERCENTILE</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">dimensions</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>    <span class="c1"># e.g., [&quot;trace_name&quot;, &quot;trace_status&quot;]</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">filters</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>       <span class="c1"># e.g., [&quot;trace.status = &#39;OK&#39;&quot;]</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">time_interval_seconds</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">start_time_ms</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">end_time_ms</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">max_results</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1000</span><span class="p">,</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">page_token</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">PagedList</span><span class="p">[</span><span class="nb">list</span><span class="p">[</span><span class="n">MetricDataPoint</span><span class="p">]]</span>
+</span></code></pre></div></p>
+<p><strong>Return type</strong>: <code>MetricDataPoint(metric_name, dimensions: dict[str, str], values: dict[str, float])</code></p>
+<h3 id="supported-metrics-by-view-type">Supported Metrics by View Type<a class="headerlink" href="#supported-metrics-by-view-type" title="Permanent link">&para;</a></h3>
+<p><strong>TRACES view:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Aggregations</th>
+<th>Dimensions</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>trace_count</code></td>
+<td>COUNT</td>
+<td>trace_name, trace_status</td>
+</tr>
+<tr>
+<td><code>latency</code></td>
+<td>AVG, PERCENTILE</td>
+<td>trace_name</td>
+</tr>
+<tr>
+<td><code>input_tokens</code></td>
+<td>SUM, AVG, PERCENTILE</td>
+<td>trace_name</td>
+</tr>
+<tr>
+<td><code>output_tokens</code></td>
+<td>SUM, AVG, PERCENTILE</td>
+<td>trace_name</td>
+</tr>
+<tr>
+<td><code>total_tokens</code></td>
+<td>SUM, AVG, PERCENTILE</td>
+<td>trace_name</td>
+</tr>
+</tbody>
+</table>
+<p><strong>SPANS view:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Aggregations</th>
+<th>Dimensions</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>span_count</code></td>
+<td>COUNT</td>
+<td>span_name, span_type, span_status, span_model_name, span_model_provider</td>
+</tr>
+<tr>
+<td><code>latency</code></td>
+<td>AVG, PERCENTILE</td>
+<td>span_name, span_status</td>
+</tr>
+<tr>
+<td><code>input_cost</code></td>
+<td>SUM, AVG, PERCENTILE</td>
+<td>span_model_name, span_model_provider</td>
+</tr>
+<tr>
+<td><code>output_cost</code></td>
+<td>SUM, AVG, PERCENTILE</td>
+<td>span_model_name, span_model_provider</td>
+</tr>
+<tr>
+<td><code>total_cost</code></td>
+<td>SUM, AVG, PERCENTILE</td>
+<td>span_model_name, span_model_provider</td>
+</tr>
+</tbody>
+</table>
+<p><strong>ASSESSMENTS view:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Aggregations</th>
+<th>Dimensions</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>assessment_count</code></td>
+<td>COUNT</td>
+<td>assessment_name, assessment_value</td>
+</tr>
+<tr>
+<td><code>assessment_value</code></td>
+<td>AVG, PERCENTILE</td>
+<td>assessment_name</td>
+</tr>
+</tbody>
+</table>
+<h3 id="filters">Filters<a class="headerlink" href="#filters" title="Permanent link">&para;</a></h3>
+<p>Exact match only (no LIKE patterns). Parsed by MLflow's <code>SearchTraceMetricsUtils.parse_search_filter()</code>:</p>
+<ul>
+<li><strong>Trace</strong>: <code>trace.status = 'OK'</code>, <code>trace.metadata.key = 'value'</code>, <code>trace.tag.key = 'value'</code></li>
+<li><strong>Span</strong>: <code>span.name = 'ChatModel'</code>, <code>span.status = 'ERROR'</code>, <code>span.type = 'LLM'</code></li>
+<li><strong>Assessment</strong>: <code>assessment.name = 'score'</code>, <code>assessment.type = 'feedback'</code></li>
+</ul>
+<h2 id="dynamodb-item-design">DynamoDB Item Design<a class="headerlink" href="#dynamodb-item-design" title="Permanent link">&para;</a></h2>
+<h3 id="new-item-types">New Item Types<a class="headerlink" href="#new-item-types" title="Permanent link">&para;</a></h3>
+<p><strong>Individual Span Items</strong> — <code>T#&lt;trace_id&gt;#SPAN#&lt;span_id&gt;</code></p>
+<p>Written at <code>log_spans</code> time. One item per span, with denormalized queryable fields.</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>PK</th>
+<th>SK</th>
+<th>Attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Span</td>
+<td><code>EXP#&lt;exp_id&gt;</code></td>
+<td><code>T#&lt;trace_id&gt;#SPAN#&lt;span_id&gt;</code></td>
+<td>name, type, status, start_time_ns, end_time_ns, duration_ms, model_name (optional), model_provider (optional), ttl (optional)</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>duration_ms</code>: precomputed <code>(end_time_ns - start_time_ns) // 1_000_000</code></li>
+<li><code>model_name</code> / <code>model_provider</code>: extracted from span attributes (keys <code>SpanAttributeKey.MODEL</code> = <code>mlflow.llm.model</code>, <code>SpanAttributeKey.MODEL_PROVIDER</code> = <code>mlflow.llm.provider</code>)</li>
+</ul>
+<p><strong>Trace Metric Items</strong> — <code>T#&lt;trace_id&gt;#TMETRIC#&lt;key&gt;</code></p>
+<p>Written at <code>log_spans</code> time. Aggregated token usage across all spans in the trace.</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>PK</th>
+<th>SK</th>
+<th>Attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trace Metric</td>
+<td><code>EXP#&lt;exp_id&gt;</code></td>
+<td><code>T#&lt;trace_id&gt;#TMETRIC#&lt;key&gt;</code></td>
+<td>key, value (float), ttl (optional)</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>key</code>: one of <code>input_tokens</code>, <code>output_tokens</code>, <code>total_tokens</code></li>
+<li>Token usage extracted from <code>SpanAttributeKey.CHAT_USAGE</code> span attributes, summed across all spans</li>
+</ul>
+<p><strong>Span Metric Items</strong> — <code>T#&lt;trace_id&gt;#SMETRIC#&lt;span_id&gt;#&lt;key&gt;</code></p>
+<p>Written at <code>log_spans</code> time. Per-span cost metrics.</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>PK</th>
+<th>SK</th>
+<th>Attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Span Metric</td>
+<td><code>EXP#&lt;exp_id&gt;</code></td>
+<td><code>T#&lt;trace_id&gt;#SMETRIC#&lt;span_id&gt;#&lt;key&gt;</code></td>
+<td>span_id, key, value (float), ttl (optional)</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>key</code>: one of <code>input_cost</code>, <code>output_cost</code>, <code>total_cost</code></li>
+<li>Cost extracted from <code>SpanAttributeKey.LLM_COST</code> span attributes (JSON string → dict)</li>
+</ul>
+<p><strong>Query Metrics Cache Items</strong> — <code>TMCACHE#&lt;query_hash&gt;</code> / <code>RESULT</code></p>
+<p>Caches aggregation results to avoid recomputation on pagination.</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>PK</th>
+<th>SK</th>
+<th>Attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cache</td>
+<td><code>TMCACHE#&lt;query_hash&gt;</code></td>
+<td><code>RESULT</code></td>
+<td>data (JSON-serialized list of MetricDataPoint dicts), ttl</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>query_hash</code>: deterministic hash of all query params (sorted experiment_ids, view_type, metric_name, sorted aggregations, sorted dimensions, sorted filters, time_interval_seconds, start_time_ms, end_time_ms). Lists are sorted before hashing to ensure determinism regardless of input order.</li>
+<li><code>ttl</code>: current epoch seconds + 900 (15 minutes)</li>
+<li><strong>Partition key divergence</strong>: <code>TMCACHE#</code> is the first PK prefix that does not use <code>EXP#</code>. This is intentional — cache items span multiple experiments and have their own lifecycle (TTL-based auto-expiry). Table-level TTL must be enabled on the <code>ttl</code> attribute (already required for trace TTL support).</li>
+<li><strong>Cache consistency</strong>: Traces added/deleted during the 15-minute window produce stale pages. This is acceptable for dashboard analytics — the SQL store doesn't implement pagination at all, and chart data tolerates slight staleness.</li>
+</ul>
+<h3 id="assessment-item-denormalization">Assessment Item Denormalization<a class="headerlink" href="#assessment-item-denormalization" title="Permanent link">&para;</a></h3>
+<p>Existing <code>T#&lt;trace_id&gt;#ASSESS#&lt;assessment_id&gt;</code> items gain top-level attributes:</p>
+<table>
+<thead>
+<tr>
+<th>New Attribute</th>
+<th>Source</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td><code>data["assessment_name"]</code></td>
+<td>Assessment name string</td>
+</tr>
+<tr>
+<td><code>assessment_type</code></td>
+<td>Derived: <code>"feedback"</code> if <code>data</code> has <code>feedback</code> key, else <code>"expectation"</code></td>
+<td>Matches <code>Assessment.from_dictionary()</code> logic</td>
+</tr>
+<tr>
+<td><code>numeric_value</code></td>
+<td>Parsed from <code>data["feedback"]["value"]</code> or <code>data["expectation"]["value"]</code></td>
+<td>JSON-encoded value; handles: numeric, <code>"true"</code>→1.0, <code>"false"</code>→0.0, <code>"yes"</code>→1.0, <code>"no"</code>→0.0, non-numeric→None</td>
+</tr>
+<tr>
+<td><code>created_timestamp</code></td>
+<td><code>data["create_time"]</code></td>
+<td>Proto timestamp (converted to milliseconds)</td>
+</tr>
+</tbody>
+</table>
+<p>Written in <code>create_assessment</code> and <code>update_assessment</code>.</p>
+<h3 id="no-new-gsis-or-lsis">No New GSIs or LSIs<a class="headerlink" href="#no-new-gsis-or-lsis" title="Permanent link">&para;</a></h3>
+<p>All new items live in the experiment partition under the trace SK prefix. Queried via SK prefix patterns. Time range filtering uses existing LSI1.</p>
+<h2 id="schema-constants">Schema Constants<a class="headerlink" href="#schema-constants" title="Permanent link">&para;</a></h2>
+<p>New constants to add to <code>dynamodb/schema.py</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">SK_SPAN_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;#SPAN#&quot;</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">SK_TRACE_METRIC_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;#TMETRIC#&quot;</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">SK_SPAN_METRIC_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;#SMETRIC#&quot;</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">PK_TMCACHE_PREFIX</span> <span class="o">=</span> <span class="s2">&quot;TMCACHE#&quot;</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">SK_TMCACHE_RESULT</span> <span class="o">=</span> <span class="s2">&quot;RESULT&quot;</span>
+</span></code></pre></div>
+<h2 id="access-patterns">Access Patterns<a class="headerlink" href="#access-patterns" title="Permanent link">&para;</a></h2>
+<p>Every method maps to Query, GetItem, BatchWrite, or PutItem — never Scan.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Access Pattern</th>
+<th>Caller</th>
+<th>Operation</th>
+<th>Key Condition</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AP1</td>
+<td>Write individual span</td>
+<td><code>log_spans</code></td>
+<td>BatchWrite</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK=T#&lt;trace_id&gt;#SPAN#&lt;span_id&gt;</code></td>
+<td>One per span</td>
+</tr>
+<tr>
+<td>AP2</td>
+<td>Write trace metric</td>
+<td><code>log_spans</code></td>
+<td>BatchWrite</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK=T#&lt;trace_id&gt;#TMETRIC#&lt;key&gt;</code></td>
+<td>Up to 3 token keys (input_tokens, output_tokens, total_tokens)</td>
+</tr>
+<tr>
+<td>AP3</td>
+<td>Write span metric</td>
+<td><code>log_spans</code></td>
+<td>BatchWrite</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK=T#&lt;trace_id&gt;#SMETRIC#&lt;span_id&gt;#&lt;key&gt;</code></td>
+<td>Up to 3 cost keys per span</td>
+</tr>
+<tr>
+<td>AP4</td>
+<td>Query trace METAs by time range</td>
+<td><code>query_trace_metrics</code></td>
+<td>Query (LSI1)</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, lsi1sk BETWEEN f"{start_ms:020d}" AND f"{end_ms:020d}"</code></td>
+<td>Paginated via <code>query_page()</code>; lsi1sk is zero-padded string</td>
+</tr>
+<tr>
+<td>AP5</td>
+<td>Fetch spans for a trace</td>
+<td><code>query_trace_metrics</code> (SPANS)</td>
+<td>Query</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with T#&lt;trace_id&gt;#SPAN#</code></td>
+<td>After META pre-filter</td>
+</tr>
+<tr>
+<td>AP6</td>
+<td>Fetch trace metrics for a trace</td>
+<td><code>query_trace_metrics</code> (TRACES)</td>
+<td>Query</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with T#&lt;trace_id&gt;#TMETRIC#</code></td>
+<td>Token usage</td>
+</tr>
+<tr>
+<td>AP7</td>
+<td>Fetch span metrics for a trace</td>
+<td><code>query_trace_metrics</code> (SPANS)</td>
+<td>Query</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with T#&lt;trace_id&gt;#SMETRIC#</code></td>
+<td>Span costs</td>
+</tr>
+<tr>
+<td>AP8</td>
+<td>Fetch assessments for a trace</td>
+<td><code>query_trace_metrics</code> (ASSESSMENTS)</td>
+<td>Query</td>
+<td><code>PK=EXP#&lt;exp_id&gt;, SK begins_with T#&lt;trace_id&gt;#ASSESS#</code></td>
+<td>Already exists</td>
+</tr>
+<tr>
+<td>AP9</td>
+<td>Cache put</td>
+<td><code>query_trace_metrics</code></td>
+<td>PutItem</td>
+<td><code>PK=TMCACHE#&lt;hash&gt;, SK=RESULT</code></td>
+<td>TTL = 15 min</td>
+</tr>
+<tr>
+<td>AP10</td>
+<td>Cache get</td>
+<td><code>query_trace_metrics</code></td>
+<td>GetItem</td>
+<td><code>PK=TMCACHE#&lt;hash&gt;, SK=RESULT</code></td>
+<td>Direct lookup</td>
+</tr>
+</tbody>
+</table>
+<h3 id="scan-risk-assessment">Scan Risk Assessment<a class="headerlink" href="#scan-risk-assessment" title="Permanent link">&para;</a></h3>
+<p><strong>All 10 access patterns are efficient.</strong> No table scans. AP1-AP3 are batch writes with known keys. AP4 uses LSI1 for time range (most selective filter). AP5-AP8 are scoped to a single trace's sub-items. AP9-AP10 are direct key operations.</p>
+<h2 id="architecture-streaming-aggregation-approach-c">Architecture: Streaming Aggregation (Approach C)<a class="headerlink" href="#architecture-streaming-aggregation-approach-c" title="Permanent link">&para;</a></h2>
+<h3 id="why-streaming">Why Streaming<a class="headerlink" href="#why-streaming" title="Permanent link">&para;</a></h3>
+<p>Rather than collecting all matching traces into memory before aggregating, we process traces in batches:</p>
+<ul>
+<li><strong>Constant memory</strong> for COUNT/SUM/AVG/MIN/MAX accumulators (O(1) per dimension group)</li>
+<li><strong>Natural DynamoDB alignment</strong> — <code>query_page()</code> returns paginated results; streaming maps directly to this</li>
+<li><strong>Immediate work</strong> — aggregation starts on first batch, no waiting for full scan</li>
+<li><strong>Percentile exception</strong> — percentile computation requires all values, so raw values are collected into a list. This is unavoidable regardless of approach.</li>
+</ul>
+<h3 id="query-flow">Query Flow<a class="headerlink" href="#query-flow" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>1. VALIDATE
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>   └─ validate_query_trace_metrics_params() — reuse MLflow&#39;s validator
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>   └─ Additional: if time_interval_seconds is set, require start_time_ms and end_time_ms
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>2. CHECK CACHE (if page_token provided)
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>   └─ GetItem TMCACHE#&lt;hash&gt;/RESULT → if hit, slice at offset, return page
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>3. STREAM TRACE META ITEMS
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>   └─ For each experiment_id:
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>      └─ query_page(LSI1, time range) → batch of META items
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>         │
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>         ├─ 4. APPLY FILTERS per batch
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>         │     ├─ Trace filters: status (META.state), tags (sub-items), metadata (sub-items)
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>         │     ├─ Span pre-filter: check META.span_names/span_types/span_statuses sets
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>         │     └─ Assessment filters: query assessment sub-items
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>         │
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>         ├─ 5. FETCH VIEW-SPECIFIC ITEMS for surviving traces
+</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>         │     ├─ TRACES: META.execution_duration + TMETRIC items
+</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>         │     ├─ SPANS: SPAN items + SMETRIC items
+</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>         │     └─ ASSESSMENTS: ASSESS items (denormalized)
+</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>         │
+</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>         └─ 6. UPDATE ACCUMULATORS
+</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>               ├─ Compute dimension key (time bucket + dimension values)
+</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>               └─ Feed values into MetricAccumulator per group
+</span><span id="__span-2-25"><a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>
+</span><span id="__span-2-26"><a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>7. FINALIZE
+</span><span id="__span-2-27"><a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a>   ├─ Compute AVG = sum/count, percentiles via linear interpolation
+</span><span id="__span-2-28"><a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a>   ├─ Convert to MetricDataPoint objects
+</span><span id="__span-2-29"><a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a>   ├─ Sort by dimension keys (time bucket first)
+</span><span id="__span-2-30"><a id="__codelineno-2-30" name="__codelineno-2-30" href="#__codelineno-2-30"></a>   └─ Store full result in cache (TMCACHE, TTL=15min)
+</span><span id="__span-2-31"><a id="__codelineno-2-31" name="__codelineno-2-31" href="#__codelineno-2-31"></a>
+</span><span id="__span-2-32"><a id="__codelineno-2-32" name="__codelineno-2-32" href="#__codelineno-2-32"></a>8. PAGINATE
+</span><span id="__span-2-33"><a id="__codelineno-2-33" name="__codelineno-2-33" href="#__codelineno-2-33"></a>   └─ Return first max_results, encode next page token with query_hash + offset
+</span></code></pre></div>
+<h3 id="time-bucketing">Time Bucketing<a class="headerlink" href="#time-bucketing" title="Permanent link">&para;</a></h3>
+<p>Matches SQL store behavior:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">bucket_ms</span> <span class="o">=</span> <span class="n">time_interval_seconds</span> <span class="o">*</span> <span class="mi">1000</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">bucket_start</span> <span class="o">=</span> <span class="p">(</span><span class="n">timestamp_ms</span> <span class="o">//</span> <span class="n">bucket_ms</span><span class="p">)</span> <span class="o">*</span> <span class="n">bucket_ms</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">bucket_label</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">fromtimestamp</span><span class="p">(</span><span class="n">bucket_start</span> <span class="o">/</span> <span class="mi">1000</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">)</span><span class="o">.</span><span class="n">isoformat</span><span class="p">()</span>
+</span></code></pre></div></p>
+<p>Time bucket is the first dimension in the dimension key tuple.</p>
+<h3 id="accumulator-design">Accumulator Design<a class="headerlink" href="#accumulator-design" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nd">@dataclass</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">MetricAccumulator</span><span class="p">:</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="nb">sum</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="nb">min</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="s2">&quot;inf&quot;</span><span class="p">)</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="nb">max</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="s2">&quot;-inf&quot;</span><span class="p">)</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="n">values</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># only allocated if percentile requested</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">add</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">value</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">count</span> <span class="o">+=</span> <span class="mi">1</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">sum</span> <span class="o">+=</span> <span class="n">value</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>        <span class="k">if</span> <span class="n">value</span> <span class="o">&lt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">min</span><span class="p">:</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">min</span> <span class="o">=</span> <span class="n">value</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>        <span class="k">if</span> <span class="n">value</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">max</span><span class="p">:</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">max</span> <span class="o">=</span> <span class="n">value</span>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">values</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">values</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">finalize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">aggregations</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">MetricAggregation</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>        <span class="n">result</span> <span class="o">=</span> <span class="p">{}</span>
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>        <span class="k">for</span> <span class="n">agg</span> <span class="ow">in</span> <span class="n">aggregations</span><span class="p">:</span>
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>            <span class="k">match</span> <span class="n">agg</span><span class="o">.</span><span class="n">aggregation_type</span><span class="p">:</span>
+</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>                <span class="k">case</span> <span class="n">AggregationType</span><span class="o">.</span><span class="n">COUNT</span><span class="p">:</span>
+</span><span id="__span-4-24"><a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a>                    <span class="n">result</span><span class="p">[</span><span class="nb">str</span><span class="p">(</span><span class="n">agg</span><span class="p">)]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">count</span>
+</span><span id="__span-4-25"><a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a>                <span class="k">case</span> <span class="n">AggregationType</span><span class="o">.</span><span class="n">SUM</span><span class="p">:</span>
+</span><span id="__span-4-26"><a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>                    <span class="n">result</span><span class="p">[</span><span class="nb">str</span><span class="p">(</span><span class="n">agg</span><span class="p">)]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sum</span>
+</span><span id="__span-4-27"><a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a>                <span class="k">case</span> <span class="n">AggregationType</span><span class="o">.</span><span class="n">AVG</span><span class="p">:</span>
+</span><span id="__span-4-28"><a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>                    <span class="n">result</span><span class="p">[</span><span class="nb">str</span><span class="p">(</span><span class="n">agg</span><span class="p">)]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sum</span> <span class="o">/</span> <span class="bp">self</span><span class="o">.</span><span class="n">count</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">count</span> <span class="k">else</span> <span class="mf">0.0</span>
+</span><span id="__span-4-29"><a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>                <span class="k">case</span> <span class="n">AggregationType</span><span class="o">.</span><span class="n">MIN</span><span class="p">:</span>
+</span><span id="__span-4-30"><a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>                    <span class="n">result</span><span class="p">[</span><span class="nb">str</span><span class="p">(</span><span class="n">agg</span><span class="p">)]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">min</span>
+</span><span id="__span-4-31"><a id="__codelineno-4-31" name="__codelineno-4-31" href="#__codelineno-4-31"></a>                <span class="k">case</span> <span class="n">AggregationType</span><span class="o">.</span><span class="n">MAX</span><span class="p">:</span>
+</span><span id="__span-4-32"><a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a>                    <span class="n">result</span><span class="p">[</span><span class="nb">str</span><span class="p">(</span><span class="n">agg</span><span class="p">)]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">max</span>
+</span><span id="__span-4-33"><a id="__codelineno-4-33" name="__codelineno-4-33" href="#__codelineno-4-33"></a>                <span class="k">case</span> <span class="n">AggregationType</span><span class="o">.</span><span class="n">PERCENTILE</span><span class="p">:</span>
+</span><span id="__span-4-34"><a id="__codelineno-4-34" name="__codelineno-4-34" href="#__codelineno-4-34"></a>                    <span class="n">result</span><span class="p">[</span><span class="nb">str</span><span class="p">(</span><span class="n">agg</span><span class="p">)]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_percentile</span><span class="p">(</span><span class="n">agg</span><span class="o">.</span><span class="n">percentile_value</span><span class="p">)</span>
+</span><span id="__span-4-35"><a id="__codelineno-4-35" name="__codelineno-4-35" href="#__codelineno-4-35"></a>        <span class="k">return</span> <span class="n">result</span>
+</span></code></pre></div>
+<p>Accumulators keyed by <code>tuple</code> of dimension values, stored in <code>dict[tuple, MetricAccumulator]</code>.</p>
+<p><strong>Note on MIN/MAX</strong>: MLflow's <code>validate_query_trace_metrics_params()</code> currently does not include MIN/MAX in supported aggregation configs, so they won't reach the accumulator in practice. The accumulator tracks them anyway (O(1) cost) for forward compatibility — if MLflow adds MIN/MAX support later, no accumulator changes needed.</p>
+<p>Percentile uses linear interpolation matching <code>percentile_cont</code> (PostgreSQL/SQLite behavior).</p>
+<h3 id="meta-pre-filter-for-span-queries">META Pre-filter for Span Queries<a class="headerlink" href="#meta-pre-filter-for-span-queries" title="Permanent link">&para;</a></h3>
+<p>For SPANS view with span-level filters, the denormalized sets on trace META items (<code>span_names</code>, <code>span_types</code>, <code>span_statuses</code>) serve as a fast pre-filter. If a trace's <code>span_types</code> set doesn't contain <code>"LLM"</code>, skip fetching its span items entirely. This avoids unnecessary DynamoDB reads.</p>
+<h3 id="pagination-with-dynamodb-cache">Pagination with DynamoDB Cache<a class="headerlink" href="#pagination-with-dynamodb-cache" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>First call</strong> (no page_token): compute all aggregations → store full result in <code>TMCACHE#&lt;hash&gt;/RESULT</code> with 15-min TTL → return first <code>max_results</code> data points + page token</li>
+<li><strong>Subsequent calls</strong> (with page_token): token contains <code>{"query_hash": "&lt;hash&gt;", "offset": N}</code> → GetItem from cache → slice at offset → return next page + token (or None if last page)</li>
+<li><strong>Cache miss on pagination</strong>: recompute aggregations, re-cache, return requested page</li>
+</ul>
+<h2 id="write-path-changes">Write Path Changes<a class="headerlink" href="#write-path-changes" title="Permanent link">&para;</a></h2>
+<h3 id="log_spans-additions"><code>log_spans</code> Additions<a class="headerlink" href="#log_spans-additions" title="Permanent link">&para;</a></h3>
+<p>In addition to the existing span blob write (<code>T#&lt;trace_id&gt;#SPANS</code>), <code>log_spans</code> now also writes:</p>
+<p><strong>Note</strong>: META denormalization of <code>span_types</code>, <code>span_names</code>, <code>span_statuses</code> currently happens in the read path (<code>_get_trace_with_spans</code>). This Phase moves that denormalization into <code>log_spans</code> (the write path) so that <code>query_trace_metrics</code> can rely on these sets being present on META items without requiring a prior <code>get_trace</code> call. The read-path denormalization becomes a no-op if sets are already present.</p>
+<ol>
+<li><strong>Individual span items</strong> — for each span:</li>
+<li>Extract <code>name</code>, <code>type</code>, <code>status</code>, <code>start_time_ns</code>, <code>end_time_ns</code></li>
+<li>Compute <code>duration_ms = (end_time_ns - start_time_ns) // 1_000_000</code></li>
+<li>Extract <code>model_name</code> and <code>model_provider</code> from span attributes (if present)</li>
+<li>
+<p>Create <code>T#&lt;trace_id&gt;#SPAN#&lt;span_id&gt;</code> item</p>
+</li>
+<li>
+<p><strong>Span metric items</strong> — for each span with <code>SpanAttributeKey.LLM_COST</code> attribute:</p>
+</li>
+<li>Parse cost JSON string → dict</li>
+<li>
+<p>For each cost key/value pair, create <code>T#&lt;trace_id&gt;#SMETRIC#&lt;span_id&gt;#&lt;key&gt;</code> item</p>
+</li>
+<li>
+<p><strong>Trace metric items</strong> — aggregate token usage across all spans:</p>
+</li>
+<li>For each span, extract <code>SpanAttributeKey.CHAT_USAGE</code> from attributes</li>
+<li>Sum <code>input_tokens</code>, <code>output_tokens</code>, <code>total_tokens</code> across all spans</li>
+<li>Create <code>T#&lt;trace_id&gt;#TMETRIC#&lt;key&gt;</code> for each non-null token key</li>
+</ol>
+<p>All new items written via existing <code>batch_write()</code> (boto3 <code>batch_writer</code> handles 25-item chunking automatically). TTL propagates from the trace.</p>
+<p><strong>Write amplification</strong>: For a trace with N spans where M have cost attributes, <code>log_spans</code> writes: 1 SPANS blob + N span items + up to 3M span metric items + up to 3 trace metric items + META update. Example: 20 spans, 5 with costs → 1 + 20 + 15 + 3 = 39 items (2 batch calls). Individual span items are small (~200 bytes each), so WCU impact is modest.</p>
+<h3 id="create_assessment-update_assessment-additions"><code>create_assessment</code> / <code>update_assessment</code> Additions<a class="headerlink" href="#create_assessment-update_assessment-additions" title="Permanent link">&para;</a></h3>
+<p>When writing assessment items, denormalize top-level attributes:
+- Extract <code>name</code>, <code>assessment_type</code> from assessment entity
+- Parse <code>numeric_value</code> from value field (handle float, int, bool true→1.0/false→0.0, string "yes"→1.0/"no"→0.0)
+- Store <code>created_timestamp</code> from <code>creation_time</code></p>
+<h2 id="file-structure">File Structure<a class="headerlink" href="#file-structure" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>src/mlflow_dynamodbstore/
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>├── dynamodb/
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>│   └── schema.py              # Add SK_SPAN_PREFIX, SK_TRACE_METRIC_PREFIX,
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>│                               # SK_SPAN_METRIC_PREFIX, PK_TMCACHE_PREFIX, SK_TMCACHE_RESULT
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>├── tracking_store.py           # Add query_trace_metrics orchestrator +
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>│                               # write path changes in log_spans, create/update_assessment
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>└── trace_metrics/              # NEW package
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    ├── __init__.py
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    ├── accumulators.py         # MetricAccumulator + percentile computation
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    ├── extractors.py           # View-specific data extraction (traces/spans/assessments)
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>    ├── filters.py              # Filter parsing + application for trace metrics queries
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>    └── pagination.py           # DynamoDB cache read/write + page token encode/decode
+</span></code></pre></div>
+<p><strong>Why a separate package</strong>: <code>tracking_store.py</code> is already ~4400 lines. The aggregation logic is self-contained and benefits from isolation. <code>tracking_store.query_trace_metrics()</code> becomes a thin orchestrator that delegates to these modules.</p>
+<h2 id="testing-strategy">Testing Strategy<a class="headerlink" href="#testing-strategy" title="Permanent link">&para;</a></h2>
+<h3 id="unit-tests-moto-direct-store">Unit Tests (moto, direct store)<a class="headerlink" href="#unit-tests-moto-direct-store" title="Permanent link">&para;</a></h3>
+<p><strong>Write path:</strong>
+- <code>log_spans</code> creates individual span items with correct attributes
+- <code>log_spans</code> creates trace metric items from token usage in span attributes
+- <code>log_spans</code> creates span metric items from cost attributes
+- <code>log_spans</code> handles spans without token/cost attributes (no metric items created)
+- <code>create_assessment</code> denormalizes name, type, numeric_value, created_timestamp onto item
+- <code>update_assessment</code> updates denormalized attributes correctly
+- <code>log_spans</code> moves META denormalization (span_types/names/statuses) from read path to write path</p>
+<p><strong>Accumulators:</strong>
+- COUNT, SUM, AVG, MIN, MAX produce correct results
+- Percentile with linear interpolation matches <code>percentile_cont</code> behavior
+- Empty accumulator returns sensible defaults
+- Multiple dimension groups tracked independently</p>
+<p><strong>Extractors:</strong>
+- TRACES view: extracts trace_count (from META), latency (from META execution_duration), token metrics (from TMETRIC items)
+- SPANS view: extracts span_count, latency (from duration_ms), costs (from SMETRIC items)
+- ASSESSMENTS view: extracts assessment_count, assessment_value (numeric parsing including true/false/yes/no)
+- Time bucketing produces correct ISO 8601 UTC strings</p>
+<p><strong>Filters:</strong>
+- Trace status filter
+- Trace tag filter (exact match)
+- Trace metadata filter (exact match)
+- Span name/type/status filters (exact match against span items)
+- Assessment name/type filters
+- META pre-filter skips traces that can't match span filters</p>
+<p><strong>Pagination:</strong>
+- Cache miss → compute + store + return first page
+- Cache hit → return correct offset slice
+- Page token encodes query_hash + offset
+- TTL is set correctly (15 min)
+- Cache item auto-expires</p>
+<p><strong>Full query_trace_metrics:</strong>
+- Each view type × each metric name × each aggregation type
+- Time bucketing with dimensions
+- Multiple experiment IDs merged
+- max_results respected
+- Filters reduce result set
+- Traces with no spans logged (empty span data)
+- Invalid metric names / unsupported aggregation-dimension combos rejected by validator
+- Span filters on non-SPANS view type rejected
+- time_interval_seconds without start/end raises error</p>
+<h3 id="integration-tests-moto-server-rest">Integration Tests (moto server, REST)<a class="headerlink" href="#integration-tests-moto-server-rest" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Round-trip via MlflowClient for each view type</li>
+<li>Pagination across multiple pages</li>
+</ul>
+<h3 id="e2e-tests-full-server">E2E Tests (full server)<a class="headerlink" href="#e2e-tests-full-server" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Create traces with spans (decorated functions), query metrics via client</li>
+<li>Verify time bucketing returns correct chart data</li>
+<li>Span cost and trace token aggregation</li>
+</ul>
+<h3 id="coverage">Coverage<a class="headerlink" href="#coverage" title="Permanent link">&para;</a></h3>
+<p>100% patch coverage on new code.</p>
+<h2 id="out-of-scope">Out of Scope<a class="headerlink" href="#out-of-scope" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Gateway endpoint management (11 methods) — separate system, not tracking store</li>
+<li><code>get_online_trace_details</code> — Databricks-only</li>
+<li>True async DynamoDB I/O via <code>aioboto3</code> — future optimization</li>
+<li>FTS for span names — <code>query_trace_metrics</code> uses exact match filters only</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/zeroae/mlflow-dynamodbstore" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/mlflow-dynamodbstore/" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
+      
+    
+  </body>
+</html>
