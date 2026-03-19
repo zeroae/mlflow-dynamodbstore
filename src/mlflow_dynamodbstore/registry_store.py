@@ -264,10 +264,15 @@ class DynamoDBRegistryStore(AbstractStore):
 
         tags = self._get_model_tags(model_ulid)
         aliases = self._aliases_for_registered_model(model_ulid)
-        return _item_to_registered_model(item, tags, aliases)
+        rm = _item_to_registered_model(item, tags, aliases)
+        rm.latest_versions = self.get_latest_versions(name)
+        return rm
 
     def rename_registered_model(self, name: str, new_name: str) -> RegisteredModel:
         """Rename a registered model."""
+        from mlflow.utils.validation import _validate_model_renaming
+
+        _validate_model_renaming(new_name)
         model_ulid = self._resolve_model_ulid(name)
 
         # Check new name uniqueness
@@ -333,6 +338,12 @@ class DynamoDBRegistryStore(AbstractStore):
             workspace=self._workspace,
         )
         self._table.batch_write(new_fts_items)
+
+        # Update name on all model version items
+        ver_items = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
+        for vi in ver_items:
+            if SK_VERSION_TAG_SUFFIX not in vi["SK"]:
+                self._table.update_item(pk=pk, sk=vi["SK"], updates={"name": new_name})
 
         # Invalidate old name cache, cache new name
         self._cache.invalidate("model_name", name)
@@ -726,6 +737,12 @@ class DynamoDBRegistryStore(AbstractStore):
         model_id: str | None = None,
     ) -> ModelVersion:
         """Create a new model version under the given registered model."""
+        if not run_id and model_id:
+            from mlflow import MlflowClient
+
+            model = MlflowClient().get_logged_model(model_id)
+            run_id = model.source_run_id
+
         model_ulid = self._resolve_model_ulid(name)
         pk = f"{PK_MODEL_PREFIX}{model_ulid}"
 
@@ -995,12 +1012,17 @@ class DynamoDBRegistryStore(AbstractStore):
                 results.append(_item_to_model_version(vi, tags))
             return results
 
+        from mlflow.entities.model_registry.model_version_stages import (
+            get_canonical_stage,
+        )
+
         results = []
         for stage in stages:
-            # Query LSI3 where lsi3sk begins_with "stage#"
+            canonical = get_canonical_stage(stage)
+            # Query LSI3 where lsi3sk begins_with "CanonicalStage#"
             stage_items = self._table.query(
                 pk=pk,
-                sk_prefix=f"{stage}#",
+                sk_prefix=f"{canonical}#",
                 index_name="lsi3",
                 scan_forward=False,
                 limit=1,
