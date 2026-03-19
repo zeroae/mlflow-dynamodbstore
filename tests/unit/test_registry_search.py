@@ -538,6 +538,41 @@ class TestSearchRegisteredModelOrderBy:
         # ts=10 group sorted name DESC: A3, A2, A1; ts=20: B1; ts=30 name DESC: C2, C1
         assert all_names == ["A3", "A2", "A1", "B1", "C2", "C1"]
 
+    def test_pagination_tiebreak_with_prompt_filter(self, registry_store):
+        """Tiebreak pagination works when prompt filter is active (rejects prompts)."""
+        from unittest import mock
+
+        from mlflow.prompt.constants import IS_PROMPT_TAG_KEY
+
+        # Create mix of models and prompts, all with same timestamp
+        for name in ["m1", "m2", "m3", "m4"]:
+            with mock.patch(
+                "mlflow_dynamodbstore.registry_store.get_current_time_millis",
+                return_value=100,
+            ):
+                registry_store.create_registered_model(name)
+
+        # Mark two as prompts
+        registry_store.set_registered_model_tag("m2", RegisteredModelTag(IS_PROMPT_TAG_KEY, "true"))
+        registry_store.set_registered_model_tag("m4", RegisteredModelTag(IS_PROMPT_TAG_KEY, "true"))
+
+        # Search non-prompts with tiebreak ordering
+        all_names: list[str] = []
+        token = None
+        for _ in range(10):
+            result = registry_store.search_registered_models(
+                order_by=["last_updated_timestamp ASC", "name ASC"],
+                max_results=1,
+                page_token=token,
+            )
+            all_names.extend(m.name for m in result)
+            token = result.token
+            if not token:
+                break
+
+        # Only non-prompts: m1, m3
+        assert all_names == ["m1", "m3"]
+
     def test_pagination_tiebreak_with_filter_no_data_loss(self, registry_store):
         """When filter_fn is active with tiebreak, all items must be returned.
 
