@@ -70,13 +70,6 @@ test_create_model_version_with_model_id_and_no_run_id = _xfail_model_id(
     test_create_model_version_with_model_id_and_no_run_id
 )
 
-# --- Category 12: prompt filtering not implemented ---
-_xfail_prompts = pytest.mark.xfail(
-    reason="DynamoDB store does not filter prompts from search results"
-)
-test_search_prompts = _xfail_prompts(test_search_prompts)
-test_search_prompts_versions = _xfail_prompts(test_search_prompts_versions)
-
 # --- Category 13: search ordering and pagination broken ---
 _xfail_search_order = pytest.mark.xfail(
     reason="DynamoDB store search ordering and pagination incomplete"
