@@ -93,7 +93,7 @@ Adds `vendor/mlflow` to `sys.path` at conftest load time. This makes MLflow test
 
 Note: the project uses `--import-mode=importlib` in pytest. The `sys.path` insertion in conftest.py runs at import time before test collection, so the `tests.*` namespace from `vendor/mlflow` is available.
 
-MLflow's root `conftest.py` is NOT loaded by pytest because `vendor/mlflow/tests/` is not in `testpaths` and `confcutdir` prevents upward conftest discovery. Our conftest provides all needed fixtures.
+MLflow's root `conftest.py` is NOT loaded because pytest only collects tests from `testpaths = ["tests"]`. Since `vendor/mlflow/tests/` is never in `testpaths`, pytest never discovers or collects that directory, and its conftest files are never loaded. **Important:** `vendor/mlflow/tests/` must never be added to `testpaths` or `confcutdir` — doing so would activate MLflow's 17+ autouse fixtures (engine cache clearing, tracking URI mocking, telemetry cleanup, etc.) which would break the moto-based DynamoDB backend.
 
 ### AWS backend selection
 
@@ -133,6 +133,10 @@ Each compat test file gets its own conftest or fixture override appropriate to i
 **For Phase 2b workspace tests** — DynamoDB stores with workspaces enabled:
 
 ```python
+# These fixture names are LOAD-BEARING — they must exactly match the fixture names
+# used in MLflow's workspace test files (test_sqlalchemy_workspace_store.py).
+# Phase 2b imports test functions that request these fixtures by name.
+
 @pytest.fixture
 def workspace_tracking_store(monkeypatch, tracking_store):
     monkeypatch.setenv(MLFLOW_ENABLE_WORKSPACES.name, "true")
@@ -225,12 +229,13 @@ from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402
 
 Pytest discovers the imported functions and runs them with our conftest fixtures.
 
-**Excluded tests** (SQL-coupled):
+**Excluded tests** (SQL-coupled or fixture-incompatible):
 - Tests that access `store.engine`, `store.ManagedSessionMaker`, or `session.query()`
 - Tests that assert on SqlAlchemy ORM models (`SqlRegisteredModel`, etc.)
 - Tests checking dialect-specific behavior
 - Tests using `WorkspaceAwareSqlAlchemyStore` directly (covered by Phase 2b)
 - Tests that depend on autouse fixtures from MLflow's module (e.g., `workspaces_enabled`)
+- Tests whose signature directly requests MLflow-internal fixtures (`cached_db`, `db_uri`, `tmp_sqlite_uri`) — these are SQLite/SqlAlchemy setup fixtures that we don't provide
 
 **`test_workspace_compat.py`** imports from `tests.store.workspace.test_sqlalchemy_store` using the same pattern. Note that MLflow's workspace tests use a `workspace_store` fixture (not `store`), so our conftest must provide a `workspace_store` fixture aliased to our DynamoDB workspace store.
 
