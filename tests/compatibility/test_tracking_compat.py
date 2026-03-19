@@ -672,14 +672,6 @@ test_get_deleted_logged_models = _xfail_missing_method(test_get_deleted_logged_m
 test_legacy_start_and_end_trace_v2 = _xfail_missing_method(test_legacy_start_and_end_trace_v2)
 test_log_logged_model_params = _xfail_missing_method(test_log_logged_model_params)
 
-# --- Category 14: mlflow.runName tag not stored (4 tests) ---
-_xfail_run_name = pytest.mark.xfail(
-    reason="DynamoDB store does not persist mlflow.runName system tag"
-)
-test_create_run_sets_name = _xfail_run_name(test_create_run_sets_name)
-test_create_run_with_tags = _xfail_run_name(test_create_run_with_tags)
-test_get_run_with_name = _xfail_run_name(test_get_run_with_name)
-test_update_run_name = _xfail_run_name(test_update_run_name)
 
 # --- Category 15: DynamoDB key size/duplicate key constraints (4 tests) ---
 _xfail_ddb_key = pytest.mark.xfail(

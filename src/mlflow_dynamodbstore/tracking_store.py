@@ -236,7 +236,7 @@ def _item_to_run(
     )
 
     # Build RunInputs from input/dataset/input-tag items
-    run_inputs = None
+    run_inputs = RunInputs(dataset_inputs=[])
     if input_items:
         # Index datasets by name#digest
         ds_map: dict[str, dict[str, Any]] = {}
@@ -962,6 +962,22 @@ class DynamoDBTrackingStore(AbstractStore):
         run_id = ulid_from_timestamp(start_time)
         artifact_uri = f"{exp.artifact_location}/{run_id}/artifacts"
 
+        # Resolve run_name: use tag value, generate random name, or keep provided
+        from mlflow.utils.mlflow_tags import MLFLOW_RUN_NAME
+        from mlflow.utils.name_utils import _generate_random_name
+
+        run_name_tag = next((t for t in (tags or []) if t.key == MLFLOW_RUN_NAME), None)
+        if run_name and run_name_tag and run_name != run_name_tag.value:
+            raise MlflowException(
+                f"Both 'run_name' argument and 'mlflow.runName' tag are specified, but with "
+                f"different values (run_name='{run_name}', "
+                f"mlflow.runName='{run_name_tag.value}').",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        run_name = (
+            run_name or (run_name_tag.value if run_name_tag else None) or _generate_random_name()
+        )
+
         item: dict[str, Any] = {
             "PK": f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
             "SK": f"{SK_RUN_PREFIX}{run_id}",
@@ -988,6 +1004,15 @@ class DynamoDBTrackingStore(AbstractStore):
 
         self._table.put_item(item, condition="attribute_not_exists(PK)")
 
+        # Build the full tag list for the returned Run entity
+        all_tags: list[RunTag] = list(tags or [])
+
+        # Write mlflow.runName system tag
+        if run_name and not run_name_tag:
+            run_name_sys_tag = RunTag(MLFLOW_RUN_NAME, run_name)
+            self._write_run_tag(experiment_id, run_id, run_name_sys_tag)
+            all_tags.append(run_name_sys_tag)
+
         # Write tags if provided
         if tags:
             for tag in tags:
@@ -1008,7 +1033,7 @@ class DynamoDBTrackingStore(AbstractStore):
             if run_fts:
                 self._table.batch_write(run_fts)
 
-        return self._build_run(item, tags)
+        return self._build_run(item, all_tags)
 
     def get_run(self, run_id: str) -> Run:
         """Fetch a run by ID."""
@@ -1505,14 +1530,12 @@ class DynamoDBTrackingStore(AbstractStore):
 
         updates: dict[str, Any] = {
             "status": run_status,
-            "run_name": run_name,
             LSI3_SK: f"{run_status}#{run_id}",
         }
         removes: list[str] = []
         if run_name:
+            updates["run_name"] = run_name
             updates[LSI4_SK] = run_name.lower()
-        else:
-            removes.append(LSI4_SK)
 
         if end_time is not None:
             updates["end_time"] = end_time
@@ -1530,8 +1553,14 @@ class DynamoDBTrackingStore(AbstractStore):
 
         assert updated_item is not None  # update always returns ALL_NEW
 
-        # Update FTS for run name if it changed
+        # Update mlflow.runName tag when name changes
         old_run_name = current.get("run_name", "")
+        if run_name and run_name != old_run_name:
+            from mlflow.utils.mlflow_tags import MLFLOW_RUN_NAME
+
+            self._write_run_tag(experiment_id, run_id, RunTag(MLFLOW_RUN_NAME, run_name))
+
+        # Update FTS for run name if it changed
         if run_name and run_name != old_run_name:
             pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
             self._update_fts_for_rename(
@@ -1831,6 +1860,12 @@ class DynamoDBTrackingStore(AbstractStore):
             "value": tag.value,
         }
         self._table.put_item(item)
+        # Sync run_name field when mlflow.runName tag is written
+        from mlflow.utils.mlflow_tags import MLFLOW_RUN_NAME
+
+        if tag.key == MLFLOW_RUN_NAME and tag.value:
+            updates: dict[str, Any] = {"run_name": tag.value, LSI4_SK: tag.value.lower()}
+            self._table.update_item(pk=pk, sk=f"{SK_RUN_PREFIX}{run_id}", updates=updates)
         if self._config.should_denormalize(experiment_id, tag.key):
             self._denormalize_tag(pk, f"{SK_RUN_PREFIX}{run_id}", tag.key, tag.value)
         # Write FTS items for tag value if configured
@@ -1853,7 +1888,7 @@ class DynamoDBTrackingStore(AbstractStore):
             params=[],
             metrics=[],
         )
-        return Run(run_info=info, run_data=data)
+        return Run(run_info=info, run_data=data, run_inputs=RunInputs(dataset_inputs=[]))
 
     def _denormalize_tag(self, pk: str, sk: str, tag_key: str, tag_value: str) -> None:
         """Write tag value into the META item's nested `tags` map."""
