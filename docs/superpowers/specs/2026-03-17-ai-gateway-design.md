@@ -673,13 +673,13 @@ Before implementing any gateway methods, port MLflow's gateway store test suite 
    # ... all 53 store-method tests
    ```
 
-**Test inventory** (53 imported, 11 excluded):
+**Test inventory** (55 imported, 11 excluded):
 
 | Category | Imported | Unlocked By |
 |----------|----------|-------------|
 | Secrets | 13 | Phase 5a |
-| Model Definitions | 9 | Phase 5b |
-| Endpoints CRUD | 9 | Phase 5c |
+| Model Definitions | 10 | Phase 5b |
+| Endpoints CRUD | 10 | Phase 5c |
 | Attach/Detach | 4 | Phase 5c |
 | Bindings | 3 | Phase 5c |
 | Tags | 8 | Phase 5c |
@@ -689,7 +689,7 @@ Before implementing any gateway methods, port MLflow's gateway store test suite 
 | SQL column constraints | 1 | Uses `sqlalchemy.text()` + `ManagedSessionMaker` |
 | config_resolver | 10 | `isinstance(store, SqlAlchemyStore)` + ORM queries |
 
-**Verification**: `uv run pytest tests/compatibility/test_gateway_compat.py -v` — all 53 tests should collect and xfail (not error on import or collection).
+**Verification**: `uv run pytest tests/compatibility/test_gateway_compat.py -v` — all 110 tests (55 x 2 workspace params) should collect and xfail (not error on import or collection).
 
 ### Phase 5a: Secrets (5 methods)
 - `create_gateway_secret`, `get_secret_info`, `update_gateway_secret`, `delete_gateway_secret`, `list_secret_infos`
