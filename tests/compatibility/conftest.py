@@ -11,8 +11,18 @@ from moto import mock_aws
 # This enables `from tests.helper_functions import random_str`.
 # IMPORTANT: vendor/mlflow/tests/ must NEVER be added to pytest's testpaths.
 _VENDOR_MLFLOW = str(Path(__file__).parents[2] / "vendor" / "mlflow")
+_VENDOR_MLFLOW_TESTS = str(Path(__file__).parents[2] / "vendor" / "mlflow" / "tests")
 if _VENDOR_MLFLOW not in sys.path:
     sys.path.insert(0, _VENDOR_MLFLOW)
+
+# With --import-mode=importlib, pytest registers our local `tests/` package in
+# sys.modules before conftest runs, so `from tests.store.*` fails because our
+# `tests` package has no `store` subpackage. Fix: extend `tests.__path__` to
+# include vendor/mlflow/tests so that `tests.store.*` resolves to the vendor copy.
+import tests as _our_tests_pkg  # noqa: E402
+
+if _VENDOR_MLFLOW_TESTS not in _our_tests_pkg.__path__:
+    _our_tests_pkg.__path__.append(_VENDOR_MLFLOW_TESTS)
 
 from mlflow.environment_variables import MLFLOW_ENABLE_WORKSPACES  # noqa: E402
 from mlflow.store.model_registry.sqlalchemy_store import (  # noqa: E402
