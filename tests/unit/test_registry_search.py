@@ -538,6 +538,37 @@ class TestSearchRegisteredModelOrderBy:
         # ts=10 group sorted name DESC: A3, A2, A1; ts=20: B1; ts=30 name DESC: C2, C1
         assert all_names == ["A3", "A2", "A1", "B1", "C2", "C1"]
 
+    def test_pagination_consecutive_overflow_groups(self, registry_store):
+        """Two consecutive tie groups both larger than page size."""
+        # max_results=2, groups: x(t=10) has 4 items, y(t=20) has 3 items, z(t=30) has 1
+        self._create_models_with_timestamps(
+            registry_store,
+            [
+                ("x1", 10),
+                ("x2", 10),
+                ("x3", 10),
+                ("x4", 10),
+                ("y1", 20),
+                ("y2", 20),
+                ("y3", 20),
+                ("z0", 30),
+            ],
+        )
+        all_names: list[str] = []
+        token = None
+        for _ in range(20):
+            result = registry_store.search_registered_models(
+                order_by=["last_updated_timestamp ASC", "name ASC"],
+                max_results=2,
+                page_token=token,
+            )
+            all_names.extend(m.name for m in result)
+            token = result.token
+            if not token:
+                break
+
+        assert all_names == ["x1", "x2", "x3", "x4", "y1", "y2", "y3", "z0"]
+
 
 class TestSearchModelVersions:
     """Test search_model_versions with filter support."""
