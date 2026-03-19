@@ -11,6 +11,7 @@ from mlflow.entities.model_registry.model_version_tag import ModelVersionTag
 from mlflow.entities.model_registry.registered_model_alias import RegisteredModelAlias
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
+    INVALID_PARAMETER_VALUE,
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
     ErrorCode,
@@ -170,6 +171,7 @@ class DynamoDBRegistryStore(AbstractStore):
         deployment_job_id: str | None = None,
     ) -> RegisteredModel:
         """Create a new registered model."""
+        from mlflow.prompt.registry_utils import handle_resource_already_exist_error, has_prompt_tag
         from mlflow.utils.validation import _validate_model_name
 
         _validate_model_name(name)
@@ -180,9 +182,10 @@ class DynamoDBRegistryStore(AbstractStore):
             limit=1,
         )
         if existing:
-            raise MlflowException(
-                f"Registered Model (name={name}) already exists.",
-                error_code=RESOURCE_ALREADY_EXISTS,
+            existing_ulid = existing[0][GSI3_SK]
+            existing_tags = self._get_model_tags(existing_ulid)
+            handle_resource_already_exist_error(
+                name, has_prompt_tag(existing_tags), has_prompt_tag(tags)
             )
 
         now_ms = int(time.time() * 1000)
@@ -387,7 +390,11 @@ class DynamoDBRegistryStore(AbstractStore):
         page_token: str | None = None,
     ) -> list[RegisteredModel]:
         """Search registered models with filter and order_by support."""
-        from mlflow.utils.search_utils import SearchModelUtils
+        from mlflow.utils.search_utils import SearchModelUtils, SearchUtils
+
+        # Validate order_by clauses (raises on invalid columns/syntax)
+        for clause in order_by or []:
+            SearchUtils.parse_order_by_for_search_registered_models(clause)
 
         from mlflow_dynamodbstore.dynamodb.search import (
             FilterPredicate,
@@ -653,11 +660,19 @@ class DynamoDBRegistryStore(AbstractStore):
 
     def set_registered_model_tag(self, name: str, tag: RegisteredModelTag) -> None:
         """Set a tag on a registered model."""
+        from mlflow.utils.validation import _validate_model_name, _validate_registered_model_tag
+
+        _validate_model_name(name)
+        _validate_registered_model_tag(tag.key, tag.value)
         model_ulid = self._resolve_model_ulid(name)
         self._write_model_tag(model_ulid, tag)
 
     def delete_registered_model_tag(self, name: str, key: str) -> None:
         """Delete a tag from a registered model."""
+        from mlflow.utils.validation import _validate_model_name, _validate_registered_model_tag
+
+        _validate_model_name(name)
+        _validate_registered_model_tag(key, "")
         model_ulid = self._resolve_model_ulid(name)
         self._table.delete_item(
             pk=f"{PK_MODEL_PREFIX}{model_ulid}",
@@ -801,6 +816,8 @@ class DynamoDBRegistryStore(AbstractStore):
 
     def update_model_version(self, name: str, version: str, description: str) -> ModelVersion:
         """Update a model version's description."""
+        # Verify version exists (raises on deleted versions)
+        self.get_model_version(name, version)
         model_ulid = self._resolve_model_ulid(name)
         padded = _pad_version(version)
         now_ms = int(time.time() * 1000)
@@ -826,6 +843,8 @@ class DynamoDBRegistryStore(AbstractStore):
 
     def delete_model_version(self, name: str, version: str) -> None:
         """Delete a model version and its tags."""
+        # Verify version exists (raises on deleted/missing versions)
+        self.get_model_version(name, version)
         model_ulid = self._resolve_model_ulid(name)
         padded = _pad_version(version)
         pk = f"{PK_MODEL_PREFIX}{model_ulid}"
@@ -852,6 +871,12 @@ class DynamoDBRegistryStore(AbstractStore):
     ) -> list[ModelVersion]:
         """Search model versions with filter support."""
         import re as _re
+
+        from mlflow.utils.search_utils import SearchModelVersionUtils
+
+        # Validate order_by clauses (raises on invalid columns/syntax)
+        for clause in order_by or []:
+            SearchModelVersionUtils.parse_order_by_for_search_model_versions(clause)
 
         model_name: str | None = None
         run_id_filter: str | None = None
@@ -989,12 +1014,34 @@ class DynamoDBRegistryStore(AbstractStore):
 
     def set_model_version_tag(self, name: str, version: str, tag: Any) -> None:
         """Set a tag on a model version."""
+        from mlflow.utils.validation import (
+            _validate_model_name,
+            _validate_model_version,
+            _validate_model_version_tag,
+        )
+
+        _validate_model_name(name)
+        _validate_model_version(version)
+        _validate_model_version_tag(tag.key, tag.value)
+        # Verify version exists (raises on deleted versions)
+        self.get_model_version(name, version)
         model_ulid = self._resolve_model_ulid(name)
         padded = _pad_version(version)
         self._write_version_tag(model_ulid, padded, tag)
 
     def delete_model_version_tag(self, name: str, version: str, key: str) -> None:
         """Delete a tag from a model version."""
+        from mlflow.utils.validation import (
+            _validate_model_name,
+            _validate_model_version,
+            _validate_model_version_tag,
+        )
+
+        _validate_model_name(name)
+        _validate_model_version(version)
+        _validate_model_version_tag(key, "")
+        # Verify version exists (raises on deleted versions)
+        self.get_model_version(name, version)
         model_ulid = self._resolve_model_ulid(name)
         padded = _pad_version(version)
         self._table.delete_item(
@@ -1021,18 +1068,57 @@ class DynamoDBRegistryStore(AbstractStore):
         archive_existing_versions: bool,
     ) -> ModelVersion:
         """Transition a model version to a new stage."""
+        from mlflow.entities.model_registry.model_version_stages import (
+            DEFAULT_STAGES_FOR_GET_LATEST_VERSIONS,
+            get_canonical_stage,
+        )
+
+        canonical_stage = get_canonical_stage(stage)
+
+        is_active = canonical_stage in DEFAULT_STAGES_FOR_GET_LATEST_VERSIONS
+        if archive_existing_versions and not is_active:
+            raise MlflowException(
+                f"Model version transition cannot archive existing model versions "
+                f"because '{stage}' is not an Active stage. Valid stages are "
+                f"{', '.join(DEFAULT_STAGES_FOR_GET_LATEST_VERSIONS)}",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        # Verify version exists (raises on deleted versions)
+        self.get_model_version(name, version)
         model_ulid = self._resolve_model_ulid(name)
         padded = _pad_version(version)
         now_ms = int(time.time() * 1000)
+        pk = f"{PK_MODEL_PREFIX}{model_ulid}"
+
+        # Archive other versions in active stages if requested
+        if archive_existing_versions:
+            version_items = self._table.query(pk=pk, sk_prefix=SK_VERSION_PREFIX)
+            for vi in version_items:
+                vi_padded = vi["SK"].replace(SK_VERSION_PREFIX, "")
+                if vi_padded == padded:
+                    continue
+                vi_stage = vi.get("current_stage", "None")
+                if vi_stage == canonical_stage:
+                    self._table.update_item(
+                        pk=pk,
+                        sk=vi["SK"],
+                        updates={
+                            "current_stage": "Archived",
+                            "last_updated_timestamp": now_ms,
+                            LSI2_SK: now_ms,
+                            LSI3_SK: f"Archived#{vi_padded}",
+                        },
+                    )
 
         updated_item = self._table.update_item(
-            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            pk=pk,
             sk=f"{SK_VERSION_PREFIX}{padded}",
             updates={
-                "current_stage": stage,
+                "current_stage": canonical_stage,
                 "last_updated_timestamp": now_ms,
                 LSI2_SK: now_ms,
-                LSI3_SK: f"{stage}#{padded}",
+                LSI3_SK: f"{canonical_stage}#{padded}",
             },
         )
 

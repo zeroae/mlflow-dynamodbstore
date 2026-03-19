@@ -21,12 +21,6 @@ from tests.store.model_registry.test_sqlalchemy_workspace_store import (  # noqa
     test_webhook_operations_are_workspace_scoped,
 )
 
-# --- Cross-workspace model version error message mismatch ---
-test_model_version_operations_are_workspace_scoped = pytest.mark.xfail(
-    reason="DynamoDB store raises 'Registered Model not found' instead of 'Model Version not found'"
-)(test_model_version_operations_are_workspace_scoped)
-
-
 # --- Webhooks not implemented ---
 test_webhook_operations_are_workspace_scoped = pytest.mark.xfail(
     reason="DynamoDB store does not implement webhook operations"
