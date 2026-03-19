@@ -58,7 +58,7 @@ from mlflow.utils.mlflow_tags import MLFLOW_ARTIFACT_LOCATION
 from mlflow.utils.proto_json_utils import milliseconds_to_proto_timestamp
 from mlflow.utils.uri import append_to_uri_path
 
-from mlflow_dynamodbstore.cache import ResolutionCache
+from mlflow_dynamodbstore.cache import ResolutionCache, shared_trace_exp_get, shared_trace_exp_put
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
 from mlflow_dynamodbstore.dynamodb.fts import (
     fts_diff,
@@ -2301,10 +2301,19 @@ class DynamoDBTrackingStore(AbstractStore):
         return int(time.time()) + days * 86400
 
     def _resolve_trace_experiment(self, trace_id: str) -> str:
-        """Resolve trace_id to experiment_id, using cache then GSI1."""
+        """Resolve trace_id to experiment_id, using caches then GSI1."""
+        # Instance-level cache (fast path for same-instance lookups)
         cached = self._cache.get("trace_exp", trace_id)
         if cached:
             return cached
+
+        # Shared module-level cache (handles cross-instance lookups when
+        # a different store instance wrote start_trace but GSI1 hasn't
+        # propagated yet — DynamoDB GSI eventual consistency)
+        shared = shared_trace_exp_get(trace_id)
+        if shared:
+            self._cache.put("trace_exp", trace_id, shared)
+            return shared
 
         results = self._table.query(
             pk=f"{GSI1_TRACE_PREFIX}{trace_id}",
@@ -2321,6 +2330,7 @@ class DynamoDBTrackingStore(AbstractStore):
         gsi1sk: str = results[0][GSI1_SK]
         experiment_id = gsi1sk[len(PK_EXPERIMENT_PREFIX) :]
         self._cache.put("trace_exp", trace_id, experiment_id)
+        shared_trace_exp_put(trace_id, experiment_id)
         return experiment_id
 
     def start_trace(self, trace_info: TraceInfo) -> TraceInfo:
@@ -2377,8 +2387,9 @@ class DynamoDBTrackingStore(AbstractStore):
 
         self._table.put_item(item, condition="attribute_not_exists(PK)")
 
-        # Cache trace_id -> experiment_id
+        # Cache trace_id -> experiment_id (instance + shared)
         self._cache.put("trace_exp", trace_id, experiment_id)
+        shared_trace_exp_put(trace_id, experiment_id)
 
         # Write CLIENTPTR item if client_request_id is present
         if trace_info.client_request_id:

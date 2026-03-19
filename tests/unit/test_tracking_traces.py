@@ -1854,6 +1854,35 @@ class TestLinkPromptsToTrace:
         with pytest.raises(MlflowException, match="does not exist"):
             tracking_store.link_prompts_to_trace("nonexistent-trace", [pv])
 
+    def test_link_prompt_cross_instance_resolves_via_shared_cache(self, tracking_store):
+        """Simulate GSI eventual consistency: a second store instance can
+        resolve trace_id→experiment_id via the shared module-level cache
+        even before the GSI propagates."""
+        from mlflow.entities.model_registry import PromptVersion
+
+        from mlflow_dynamodbstore.tracking_store import DynamoDBTrackingStore
+
+        exp_id = _create_experiment(tracking_store)
+        trace_info = _make_trace_info(exp_id, trace_id="tr-cross-instance")
+        tracking_store.start_trace(trace_info)
+
+        # Create a second store instance (empty instance cache, simulating
+        # what happens when the model registry creates a new TracingClient)
+        store2 = DynamoDBTrackingStore(
+            store_uri="dynamodb://us-east-1/test-table?deploy=false",
+            artifact_uri="./mlartifacts",
+        )
+
+        # The second instance should resolve via the shared cache even though
+        # its own instance cache is empty
+        pv = PromptVersion(name="cross-prompt", version=1, template="t")
+        store2.link_prompts_to_trace("tr-cross-instance", [pv])
+
+        fetched = store2.get_trace_info("tr-cross-instance")
+        assert "mlflow.promptVersions" in fetched.tags
+        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        assert versions[0]["name"] == "cross-prompt"
+
 
 class TestUnlinkTracesFromRun:
     """Tests for unlink_traces_from_run."""
