@@ -5370,3 +5370,57 @@ class DynamoDBTrackingStore(AbstractStore):
             )
 
         return self._secret_item_to_entity(item)
+
+    def update_gateway_secret(
+        self,
+        secret_id: str,
+        secret_value: dict[str, str] | None = None,
+        auth_config: dict[str, str] | None = None,
+        updated_by: str | None = None,
+    ) -> GatewaySecretInfo:
+        import json as _json
+
+        # Fetch existing to verify it exists and get secret_name for AAD
+        item = self._get_secret_item(secret_id)
+        if item is None:
+            raise MlflowException(
+                f"Secret '{secret_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+        updates: dict[str, Any] = {"last_updated_at": now}
+        removes: list[str] = []
+
+        if secret_value is not None:
+            kek_manager = KEKManager()
+            value_to_encrypt = _json.dumps(secret_value)
+            encrypted = _encrypt_secret(
+                value_to_encrypt, kek_manager, secret_id, item["secret_name"]
+            )
+            updates["encrypted_value"] = encrypted.encrypted_value
+            updates["wrapped_dek"] = encrypted.wrapped_dek
+            updates["kek_version"] = encrypted.kek_version
+            updates["masked_value"] = _mask_secret_value(secret_value)
+
+        if auth_config is not None:
+            if auth_config:
+                updates["auth_config"] = auth_config
+            else:
+                # Empty dict means clear auth_config
+                removes.append("auth_config")
+
+        if updated_by is not None:
+            updates["last_updated_by"] = updated_by
+
+        self._table.update_item(
+            pk=f"{PK_GW_SECRET_PREFIX}{secret_id}",
+            sk=SK_GW_META,
+            updates=updates,
+            removes=removes if removes else None,
+        )
+
+        # Re-fetch to return the full updated entity
+        updated_item = self._get_secret_item(secret_id)
+        self._invalidate_secret_cache()
+        return self._secret_item_to_entity(updated_item)  # type: ignore[arg-type]
