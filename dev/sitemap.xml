@@ -93,6 +93,10 @@
          <lastmod>2026-03-19</lastmod>
     </url>
     <url>
+         <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/plans/2026-03-19-fts-bigram-search/</loc>
+         <lastmod>2026-03-19</lastmod>
+    </url>
+    <url>
          <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/plans/2026-03-19-native-sorting-pagination/</loc>
          <lastmod>2026-03-19</lastmod>
     </url>
@@ -134,6 +138,10 @@
     </url>
     <url>
          <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-17-scorers-design/</loc>
+         <lastmod>2026-03-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/mlflow-dynamodbstore/dev/superpowers/specs/2026-03-19-fts-bigram-support/</loc>
          <lastmod>2026-03-19</lastmod>
     </url>
     <url>
