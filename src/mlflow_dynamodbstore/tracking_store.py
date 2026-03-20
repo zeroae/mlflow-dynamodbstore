@@ -6015,3 +6015,93 @@ class DynamoDBTrackingStore(AbstractStore):
         # Return the full entity
         all_items = [meta_item] + mapping_items
         return self._endpoint_items_to_entity(endpoint_id, all_items)
+
+    def get_gateway_endpoint(
+        self,
+        endpoint_id: str | None = None,
+        name: str | None = None,
+    ) -> GatewayEndpoint:
+        if (endpoint_id is None) == (name is None):
+            raise MlflowException(
+                "Exactly one of `endpoint_id` or `name` must be specified",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        if name:
+            # Resolve name to endpoint_id via GSI3
+            results = self._table.query(
+                pk=f"{GSI3_GW_ENDPOINT_NAME_PREFIX}{self._workspace}#{name}",
+                index_name="gsi3",
+                limit=1,
+            )
+            if not results:
+                raise MlflowException(
+                    f"GatewayEndpoint not found (name='{name}')",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            endpoint_id = results[0]["gsi3sk"]
+
+        assert (
+            endpoint_id is not None
+        )  # guaranteed by the (endpoint_id is None) == (name is None) check
+        items = self._get_endpoint_items(endpoint_id)
+        if not items:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        return self._endpoint_items_to_entity(endpoint_id, items)
+
+    def list_gateway_endpoints(
+        self,
+        provider: str | None = None,
+        secret_id: str | None = None,
+    ) -> list[GatewayEndpoint]:
+        if secret_id:
+            # Targeted path: find model_defs by secret -> find endpoints by model_def -> deduplicate
+            md_items = self._table.query(
+                pk=f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}",
+                index_name="gsi4",
+            )
+            endpoint_ids: set[str] = set()
+            for md_item in md_items:
+                md_id = md_item["PK"].removeprefix(PK_GW_MODELDEF_PREFIX)
+                ep_items = self._table.query(
+                    pk=f"{GSI5_GW_ENDPOINT_MODELDEF_PREFIX}{md_id}",
+                    index_name="gsi5",
+                )
+                for ep_item in ep_items:
+                    endpoint_ids.add(ep_item["gsi5sk"])
+
+            endpoints = []
+            for ep_id in endpoint_ids:
+                items = self._get_endpoint_items(ep_id)
+                if items:
+                    endpoints.append(self._endpoint_items_to_entity(ep_id, items))
+            return endpoints
+
+        # Default path: list all endpoints via GSI2
+        gsi2_items = self._table.query(
+            pk=f"{GSI2_GW_ENDPOINTS_PREFIX}{self._workspace}",
+            index_name="gsi2",
+        )
+
+        endpoints = []
+        for gsi2_item in gsi2_items:
+            ep_id = gsi2_item["gsi2sk"]
+            items = self._get_endpoint_items(ep_id)
+            if items:
+                endpoints.append(self._endpoint_items_to_entity(ep_id, items))
+
+        if provider is not None:
+            endpoints = [
+                ep
+                for ep in endpoints
+                if any(
+                    m.model_definition and m.model_definition.provider == provider
+                    for m in ep.model_mappings
+                )
+            ]
+
+        return endpoints
