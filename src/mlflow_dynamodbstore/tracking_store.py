@@ -367,6 +367,39 @@ class DynamoDBTrackingStore(AbstractStore):
         return True
 
     # ------------------------------------------------------------------
+    # Validation helpers
+    # ------------------------------------------------------------------
+
+    def _validate_max_results_param(self, max_results: int, allow_null: bool = False) -> None:
+        from mlflow.store.tracking import SEARCH_MAX_RESULTS_THRESHOLD
+
+        if (not allow_null and max_results is None) or (
+            max_results is not None and max_results < 1
+        ):
+            raise MlflowException(
+                f"Invalid value {max_results} for parameter 'max_results' supplied. It must be "
+                "a positive integer",
+                INVALID_PARAMETER_VALUE,
+            )
+        if max_results is not None and max_results > SEARCH_MAX_RESULTS_THRESHOLD:
+            raise MlflowException(
+                f"Invalid value {max_results} for parameter 'max_results' supplied. It must be "
+                f"at most {SEARCH_MAX_RESULTS_THRESHOLD}",
+                INVALID_PARAMETER_VALUE,
+            )
+
+    def _check_run_is_active(self, run_id: str) -> None:
+        from mlflow.entities import LifecycleStage
+
+        run = self.get_run(run_id)
+        if run.info.lifecycle_stage != LifecycleStage.ACTIVE:
+            raise MlflowException(
+                f"The run {run_id} must be in the 'active' state. "
+                f"Current state is {run.info.lifecycle_stage}.",
+                INVALID_PARAMETER_VALUE,
+            )
+
+    # ------------------------------------------------------------------
     # Workspace helpers
     # ------------------------------------------------------------------
 
@@ -650,6 +683,7 @@ class DynamoDBTrackingStore(AbstractStore):
         page_token: str | None = None,
     ) -> list[Experiment]:
         """Search experiments with filter and order_by support."""
+        self._validate_max_results_param(max_results)
         from mlflow_dynamodbstore.dynamodb.search import parse_experiment_filter
 
         predicates = parse_experiment_filter(filter_string)
@@ -1134,6 +1168,9 @@ class DynamoDBTrackingStore(AbstractStore):
         model_type: str | None = None,
     ) -> LoggedModel:
         """Create a new logged model within an experiment."""
+        from mlflow.utils.validation import _validate_logged_model_name
+
+        _validate_logged_model_name(name)
         exp = self.get_experiment(experiment_id)
 
         now_ms = int(time.time() * 1000)
@@ -2057,12 +2094,42 @@ class DynamoDBTrackingStore(AbstractStore):
         tags: list[RunTag],
     ) -> None:
         """Log a batch of metrics, params, and tags for a run."""
-        from mlflow.utils.validation import _validate_batch_log_data
+        from mlflow.utils.validation import (
+            _validate_batch_log_data,
+            _validate_batch_log_limits,
+            _validate_param_keys_unique,
+            _validate_run_id,
+        )
 
+        _validate_run_id(run_id)
         metrics, params, tags = _validate_batch_log_data(metrics, params, tags)
+        _validate_batch_log_limits(metrics, params, tags)
+        _validate_param_keys_unique(params)
+        self._check_run_is_active(run_id)
 
         experiment_id = self._resolve_run_experiment(run_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        # Check for param overwrite (existing params with different values)
+        if params:
+            non_matching: list[dict[str, str]] = []
+            for param in params:
+                param_sk = f"{SK_RUN_PREFIX}{run_id}{SK_PARAM_PREFIX}{param.key}"
+                existing = self._table.get_item(pk=pk, sk=param_sk)
+                if existing is not None and existing.get("value") != param.value:
+                    non_matching.append(
+                        {
+                            "key": param.key,
+                            "old_value": existing["value"],
+                            "new_value": param.value,
+                        }
+                    )
+            if non_matching:
+                raise MlflowException(
+                    "Changing param values is not allowed. Params were already"
+                    f" logged='{non_matching}' for run ID='{run_id}'.",
+                    INVALID_PARAMETER_VALUE,
+                )
 
         items: list[dict[str, Any]] = []
 
@@ -2266,17 +2333,25 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def set_tag(self, run_id: str, tag: RunTag) -> None:
         """Set a tag on a run."""
-        from mlflow.utils.validation import _validate_tag_name
+        from mlflow.utils.validation import _validate_tag
 
-        _validate_tag_name(tag.key)
+        tag = _validate_tag(tag.key, tag.value)
+        self._check_run_is_active(run_id)
         experiment_id = self._resolve_run_experiment(run_id)
         self._write_run_tag(experiment_id, run_id, tag)
 
     def delete_tag(self, run_id: str, key: str) -> None:
         """Delete a tag from a run."""
+        self._check_run_is_active(run_id)
         experiment_id = self._resolve_run_experiment(run_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         sk = f"{SK_RUN_PREFIX}{run_id}{SK_TAG_PREFIX}{key}"
+        existing = self._table.get_item(pk=pk, sk=sk)
+        if existing is None:
+            raise MlflowException(
+                f"No tag with name: {key}",
+                INVALID_PARAMETER_VALUE,
+            )
         self._table.delete_item(pk=pk, sk=sk)
         if self._config.should_denormalize(experiment_id, key):
             self._remove_denormalized_tag(pk, f"{SK_RUN_PREFIX}{run_id}", key)
@@ -2291,6 +2366,15 @@ class DynamoDBTrackingStore(AbstractStore):
         models: Any = None,
     ) -> None:
         """Log dataset inputs for a run."""
+        from mlflow.utils.validation import _validate_dataset_inputs
+
+        if datasets is not None:
+            if not isinstance(datasets, list):
+                raise MlflowException(
+                    f"Argument 'datasets' should be a list, got '{type(datasets)}'",
+                    INVALID_PARAMETER_VALUE,
+                )
+            _validate_dataset_inputs(datasets)
         if not datasets:
             return
 
@@ -3156,6 +3240,8 @@ class DynamoDBTrackingStore(AbstractStore):
         2. Uncached traces are found via X-Ray filter expressions.
         3. Results are unioned and deduplicated.
         """
+        self._validate_max_results_param(max_results)
+
         from mlflow_dynamodbstore.dynamodb.pagination import (
             decode_page_token,
             encode_page_token,
@@ -3169,8 +3255,24 @@ class DynamoDBTrackingStore(AbstractStore):
         if not experiment_ids:
             experiment_ids = locations or []
 
-        # 1. Parse filter and split into span vs non-span predicates
+        # 1. Parse filter (validates syntax including prompt filter format)
         predicates = parse_trace_filter(filter_string)
+
+        # Validate prompt filter constraints
+        for pred in predicates:
+            if pred.key == TraceTagKey.LINKED_PROMPTS:
+                if pred.op != "=":
+                    raise MlflowException(
+                        f"Invalid comparator '{pred.op}' for prompts filter. "
+                        "Only '=' is supported with format: prompt = \"name/version\"",
+                        error_code=INVALID_PARAMETER_VALUE,
+                    )
+                if pred.value.count("/") != 1:
+                    raise MlflowException(
+                        f"Invalid prompts filter value '{pred.value}'. "
+                        'Expected format: prompt = "name/version"',
+                        error_code=INVALID_PARAMETER_VALUE,
+                    )
         span_predicates = [p for p in predicates if p.field_type == "span"]
         non_span_predicates = [p for p in predicates if p.field_type != "span"]
 
@@ -3612,10 +3714,9 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def set_trace_tag(self, trace_id: str, key: str, value: str) -> None:
         """Set a tag on a trace."""
-        from mlflow.utils.validation import _validate_length_limit, _validate_tag_name
+        from mlflow.utils.validation import _validate_trace_tag
 
-        _validate_tag_name(key)
-        _validate_length_limit("key", 250, key)
+        key, value = _validate_trace_tag(key, value)
         experiment_id = self._resolve_trace_experiment(trace_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         # Read TTL from the trace META item
@@ -3642,6 +3743,16 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def link_traces_to_run(self, trace_ids: list[str], run_id: str) -> None:
         """Link traces to a run by writing mlflow.sourceRun request metadata."""
+        max_trace_links = 100
+
+        if not trace_ids:
+            return
+        if len(trace_ids) > max_trace_links:
+            raise MlflowException(
+                f"Cannot link more than {max_trace_links} traces to a run in "
+                f"a single request. Provided {len(trace_ids)} traces.",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
         for trace_id in trace_ids:
             experiment_id = self._resolve_trace_experiment(trace_id)
             pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
@@ -4131,6 +4242,19 @@ class DynamoDBTrackingStore(AbstractStore):
     def register_scorer(
         self, experiment_id: str, name: str, serialized_scorer: str
     ) -> ScorerVersion:
+        import json
+
+        from mlflow.genai.scorers.scorer_utils import (
+            extract_model_from_serialized_scorer,
+            validate_scorer_model,
+            validate_scorer_name,
+        )
+
+        validate_scorer_name(name)
+        serialized_data = json.loads(serialized_scorer)
+        model = extract_model_from_serialized_scorer(serialized_data)
+        validate_scorer_model(model)
+
         self.get_experiment(experiment_id)  # verify exists
         now_ms = int(time.time() * 1000)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
@@ -4374,17 +4498,89 @@ class DynamoDBTrackingStore(AbstractStore):
                 f"sample_rate must be between 0.0 and 1.0, got {sample_rate}",
                 error_code=INVALID_PARAMETER_VALUE,
             )
-        if filter_string and not isinstance(filter_string, str):
-            raise MlflowException(
-                f"filter_string must be a string, got {type(filter_string).__name__}",
-                error_code=INVALID_PARAMETER_VALUE,
-            )
+        if filter_string:
+            if not isinstance(filter_string, str):
+                raise MlflowException(
+                    f"filter_string must be a string, got {type(filter_string).__name__}",
+                    error_code=INVALID_PARAMETER_VALUE,
+                )
+            from mlflow.utils.search_utils import SearchTraceUtils
+
+            SearchTraceUtils.parse_search_filter_for_search_traces(filter_string)
+
         scorer_id = self._resolve_scorer_id(experiment_id, scorer_name)
         if scorer_id is None:
             raise MlflowException(
                 f"Scorer '{scorer_name}' not found in experiment '{experiment_id}'.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
+
+        # Validate scorer compatibility for online scoring (only when enabling)
+        if sample_rate > 0:
+            import json
+
+            from mlflow.genai.scorers.scorer_utils import (
+                extract_model_from_serialized_scorer,
+                is_gateway_model,
+            )
+
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+            # Get latest scorer version
+            scorer_meta = self._table.query(
+                pk=f"{GSI1_SCOR_PREFIX}{scorer_id}",
+                index_name="gsi1",
+                limit=1,
+            )
+            if scorer_meta:
+                exp_pk = scorer_meta[0][GSI1_SK]
+                scorer_versions = self._table.query(
+                    pk=exp_pk,
+                    sk_prefix=f"{SK_SCORER_PREFIX}{scorer_id}#V#",
+                    scan_forward=False,
+                    limit=1,
+                )
+                if scorer_versions:
+                    serialized_data = json.loads(scorer_versions[0].get("serialized_scorer", "{}"))
+                    model = extract_model_from_serialized_scorer(serialized_data)
+                    if not is_gateway_model(model):
+                        raise MlflowException(
+                            f"Scorer '{scorer_name}' does not use a gateway model. "
+                            "Automatic evaluation is only supported for scorers that use "
+                            "gateway models.",
+                            INVALID_PARAMETER_VALUE,
+                        )
+
+                    # Check if scorer requires expectations
+                    try:
+                        from mlflow.genai.judges.instructions_judge import (
+                            EXPECTATIONS_FIELD,
+                            InstructionsJudge,
+                        )
+                        from mlflow.genai.scorers.base import Scorer
+
+                        scorer_obj = Scorer.model_validate_json(
+                            scorer_versions[0].get("serialized_scorer", "{}")
+                        )
+                        if (
+                            isinstance(scorer_obj, InstructionsJudge)
+                            and EXPECTATIONS_FIELD in scorer_obj.get_input_fields()
+                        ):
+                            raise MlflowException(
+                                f"Scorer '{scorer_name}' requires expectations, "
+                                "but scorers with expectations are not currently "
+                                "supported for automatic evaluation.",
+                                INVALID_PARAMETER_VALUE,
+                            )
+                    except Exception:
+                        # Fail open on deserialization errors — only re-raise
+                        # if it's our own expectations validation error
+                        import sys
+
+                        exc = sys.exc_info()[1]
+                        if isinstance(exc, MlflowException) and "requires expectations" in str(exc):
+                            raise
+                        # Otherwise swallow deserialization/import errors
+
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         config_id = generate_ulid()
         config_sk = f"{SK_SCORER_PREFIX}{scorer_id}{SK_SCORER_OSCFG_SUFFIX}"
@@ -4503,7 +4699,7 @@ class DynamoDBTrackingStore(AbstractStore):
             )
         return result
 
-    def delete_traces(
+    def _delete_traces(
         self,
         experiment_id: str,
         max_timestamp_millis: int | None = None,
