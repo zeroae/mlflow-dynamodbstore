@@ -4536,13 +4536,15 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=f"{SK_SCORER_PREFIX}{scorer_id}")
         scorer_name = meta["scorer_name"] if meta else name
         return [
-            _ScorerVersionCompat(
-                experiment_id=experiment_id,
-                scorer_name=scorer_name,
-                scorer_version=int(item["scorer_version"]),
-                serialized_scorer=item["serialized_scorer"],
-                creation_time=int(item["creation_time"]),
-                scorer_id=scorer_id,
+            self._resolve_endpoint_in_scorer(
+                _ScorerVersionCompat(
+                    experiment_id=experiment_id,
+                    scorer_name=scorer_name,
+                    scorer_version=int(item["scorer_version"]),
+                    serialized_scorer=item["serialized_scorer"],
+                    creation_time=int(item["creation_time"]),
+                    scorer_id=scorer_id,
+                )
             )
             for item in items
         ]
