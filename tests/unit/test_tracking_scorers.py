@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from mlflow.entities import ScorerVersion
 from mlflow.exceptions import MlflowException
 from mlflow.genai.scorers.online.entities import OnlineScoringConfig
+
+_GATEWAY_SCORER = json.dumps({"instructions_judge_pydantic_data": {"model": "gateway:/ep"}})
 
 
 def _create_experiment(tracking_store) -> str:
@@ -204,7 +208,7 @@ class TestUpsertOnlineScoringConfig:
     def test_create_config(self, tracking_store):
         """upsert creates a new config."""
         exp_id = _create_experiment(tracking_store)
-        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        tracking_store.register_scorer(exp_id, "accuracy", _GATEWAY_SCORER)
         config = tracking_store.upsert_online_scoring_config(exp_id, "accuracy", sample_rate=0.5)
         assert isinstance(config, OnlineScoringConfig)
         assert config.sample_rate == 0.5
@@ -213,7 +217,7 @@ class TestUpsertOnlineScoringConfig:
     def test_upsert_replaces_config(self, tracking_store):
         """upsert overwrites existing config atomically."""
         exp_id = _create_experiment(tracking_store)
-        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        tracking_store.register_scorer(exp_id, "accuracy", _GATEWAY_SCORER)
         c1 = tracking_store.upsert_online_scoring_config(exp_id, "accuracy", sample_rate=0.5)
         c2 = tracking_store.upsert_online_scoring_config(
             exp_id, "accuracy", sample_rate=0.8, filter_string="status = 'OK'"
@@ -225,7 +229,7 @@ class TestUpsertOnlineScoringConfig:
     def test_invalid_sample_rate_raises(self, tracking_store):
         """upsert rejects sample_rate outside [0.0, 1.0]."""
         exp_id = _create_experiment(tracking_store)
-        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        tracking_store.register_scorer(exp_id, "accuracy", _GATEWAY_SCORER)
         with pytest.raises(MlflowException, match="sample_rate"):
             tracking_store.upsert_online_scoring_config(exp_id, "accuracy", 1.5)
         with pytest.raises(MlflowException, match="sample_rate"):
@@ -240,7 +244,7 @@ class TestUpsertOnlineScoringConfig:
     def test_config_with_filter_string(self, tracking_store):
         """upsert stores filter_string."""
         exp_id = _create_experiment(tracking_store)
-        tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        tracking_store.register_scorer(exp_id, "accuracy", _GATEWAY_SCORER)
         config = tracking_store.upsert_online_scoring_config(
             exp_id, "accuracy", sample_rate=0.1, filter_string="tag.env = 'prod'"
         )
@@ -251,7 +255,7 @@ class TestGetOnlineScoringConfigs:
     def test_get_configs(self, tracking_store):
         """get_online_scoring_configs returns configs for given scorer_ids."""
         exp_id = _create_experiment(tracking_store)
-        s = tracking_store.register_scorer(exp_id, "accuracy", "{}")
+        s = tracking_store.register_scorer(exp_id, "accuracy", _GATEWAY_SCORER)
         tracking_store.upsert_online_scoring_config(exp_id, "accuracy", 0.5)
         configs = tracking_store.get_online_scoring_configs([s.scorer_id])
         assert len(configs) == 1
@@ -270,8 +274,8 @@ class TestGetActiveOnlineScorers:
     def test_active_scorers(self, tracking_store):
         """get_active_online_scorers returns scorers with sample_rate > 0."""
         exp_id = _create_experiment(tracking_store)
-        tracking_store.register_scorer(exp_id, "accuracy", '{"name": "acc"}')
-        tracking_store.register_scorer(exp_id, "relevance", '{"name": "rel"}')
+        tracking_store.register_scorer(exp_id, "accuracy", _GATEWAY_SCORER)
+        tracking_store.register_scorer(exp_id, "relevance", _GATEWAY_SCORER)
         tracking_store.upsert_online_scoring_config(exp_id, "accuracy", 0.5)
         tracking_store.upsert_online_scoring_config(exp_id, "relevance", 0.0)
         active = tracking_store.get_active_online_scorers()

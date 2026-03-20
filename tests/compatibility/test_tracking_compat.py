@@ -398,52 +398,15 @@ test_search_traces_with_tag_rlike_filters = _xfail_trace_filter(
     test_search_traces_with_tag_rlike_filters
 )
 
-# --- Category 2: missing input validation (37 tests) ---
-_xfail_validation = pytest.mark.xfail(
-    reason="DynamoDB store missing input validation (does not raise MlflowException)"
-)
-test_create_logged_model_invalid_name = _xfail_validation(test_create_logged_model_invalid_name)
-test_delete_tag = _xfail_validation(test_delete_tag)
-test_delete_traces_raises_error = _xfail_validation(test_delete_traces_raises_error)
-test_error_logging_to_deleted_run = _xfail_validation(test_error_logging_to_deleted_run)
-test_link_traces_to_run_100_limit = _xfail_validation(test_link_traces_to_run_100_limit)
-test_log_batch_internal_error = _xfail_validation(test_log_batch_internal_error)
-test_log_batch_param_overwrite_disallowed = _xfail_validation(
-    test_log_batch_param_overwrite_disallowed
-)
-test_log_batch_param_overwrite_disallowed_single_req = _xfail_validation(
-    test_log_batch_param_overwrite_disallowed_single_req
-)
-test_log_inputs_fails_with_missing_inputs = _xfail_validation(
-    test_log_inputs_fails_with_missing_inputs
-)
-test_log_param_uniqueness = _xfail_validation(test_log_param_uniqueness)
-test_register_scorer_validates_model = _xfail_validation(test_register_scorer_validates_model)
-test_register_scorer_validates_name = _xfail_validation(test_register_scorer_validates_name)
-test_search_experiments_max_results_validation = _xfail_validation(
-    test_search_experiments_max_results_validation
-)
-test_search_logged_models_order_by = _xfail_validation(test_search_logged_models_order_by)
-test_search_traces_raise_if_max_results_arg_is_invalid = _xfail_validation(
-    test_search_traces_raise_if_max_results_arg_is_invalid
-)
-test_set_tag = _xfail_validation(test_set_tag)
-test_set_tag_truncate_too_long_tag = _xfail_validation(test_set_tag_truncate_too_long_tag)
-test_upsert_online_scoring_config_rejects_non_gateway_model = _xfail_validation(
-    test_upsert_online_scoring_config_rejects_non_gateway_model
-)
-test_upsert_online_scoring_config_rejects_scorer_requiring_expectations = _xfail_validation(
-    test_upsert_online_scoring_config_rejects_scorer_requiring_expectations
-)
-test_upsert_online_scoring_config_validates_filter_string = _xfail_validation(
-    test_upsert_online_scoring_config_validates_filter_string
-)
-test_search_traces_with_prompts_filter_invalid_comparator = _xfail_validation(
-    test_search_traces_with_prompts_filter_invalid_comparator
-)
-test_search_traces_with_prompts_filter_invalid_format = _xfail_validation(
-    test_search_traces_with_prompts_filter_invalid_format
-)
+# --- Category 2: missing input validation (remaining xfails) ---
+# test_log_batch_internal_error: patches SqlAlchemy-specific internal methods (_log_metrics, etc.)
+test_log_batch_internal_error = pytest.mark.xfail(
+    reason="Test patches SqlAlchemy-specific internal methods, not applicable to DynamoDB store"
+)(test_log_batch_internal_error)
+# search_logged_models order_by: needs sorting feature implementation
+test_search_logged_models_order_by = pytest.mark.xfail(
+    reason="DynamoDB store does not yet support search_logged_models order_by"
+)(test_search_logged_models_order_by)
 
 # --- Category 3: experiment ID format mismatch (permanent) ---
 _xfail_error_msg = pytest.mark.xfail(reason="DynamoDB store uses ULID experiment IDs, not integers")
@@ -520,12 +483,10 @@ test_batch_get_traces_with_incomplete_trace = _xfail_trace_persist(
 test_concurrent_log_spans_spans_location_tag = _xfail_trace_persist(
     test_concurrent_log_spans_spans_location_tag
 )
-test_log_spans_cost = _xfail_trace_persist(test_log_spans_cost)
 test_log_spans_session_id_handling = _xfail_trace_persist(test_log_spans_session_id_handling)
 test_log_spans_then_start_trace_preserves_tag = _xfail_trace_persist(
     test_log_spans_then_start_trace_preserves_tag
 )
-test_log_spans_token_usage = _xfail_trace_persist(test_log_spans_token_usage)
 test_set_and_delete_tags = _xfail_trace_persist(test_set_and_delete_tags)
 test_start_trace_with_assessments_missing_trace_id = _xfail_trace_persist(
     test_start_trace_with_assessments_missing_trace_id
@@ -593,7 +554,6 @@ _xfail_batch_spans = pytest.mark.xfail(
     reason="DynamoDB store batch_get_traces ordering or token usage issues"
 )
 test_batch_get_traces_ordering = _xfail_batch_spans(test_batch_get_traces_ordering)
-test_batch_get_traces_token_usage = _xfail_batch_spans(test_batch_get_traces_token_usage)
 
 # --- Category 12: trace tag/artifact path issues (6 tests) ---
 _xfail_trace_path = pytest.mark.xfail(
@@ -603,6 +563,10 @@ test_start_trace = _xfail_trace_path(test_start_trace)
 test_start_trace_then_log_spans_adds_tag = _xfail_trace_path(
     test_start_trace_then_log_spans_adds_tag
 )
+# NOTE: test_get_trace_with_partial_trace is parametrized [True/False].
+# [True] passes (trace creation via log_spans works), but [False] fails because
+# our store doesn't raise MlflowException for missing traces in get_trace.
+# We xfail the whole test; [True] will show as xpassed which is fine.
 test_get_trace_with_partial_trace = _xfail_trace_path(test_get_trace_with_partial_trace)
 test_find_completed_sessions = _xfail_trace_path(test_find_completed_sessions)
 test_find_completed_sessions_aggregates_across_all_traces = _xfail_trace_path(
