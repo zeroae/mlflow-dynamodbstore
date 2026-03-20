@@ -22,7 +22,16 @@ from mlflow.entities import (
     EvaluationDataset,
     Experiment,
     ExperimentTag,
+    FallbackConfig,
+    FallbackStrategy,
+    GatewayEndpoint,
+    GatewayEndpointBinding,
+    GatewayEndpointModelConfig,
+    GatewayEndpointModelMapping,
+    GatewayEndpointTag,
     GatewayModelDefinition,
+    GatewayModelLinkageType,
+    GatewayResourceType,
     GatewaySecretInfo,
     InputTag,
     LoggedModel,
@@ -31,6 +40,7 @@ from mlflow.entities import (
     LoggedModelTag,
     Metric,
     Param,
+    RoutingStrategy,
     Run,
     RunData,
     RunInfo,
@@ -58,7 +68,12 @@ from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow.tracing.analysis import TraceFilterCorrelationResult
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
 from mlflow.utils.crypto import KEKManager, _encrypt_secret, _mask_secret_value
-from mlflow.utils.mlflow_tags import MLFLOW_ARTIFACT_LOCATION
+from mlflow.utils.mlflow_tags import (
+    MLFLOW_ARTIFACT_LOCATION,
+    MLFLOW_EXPERIMENT_IS_GATEWAY,
+    MLFLOW_EXPERIMENT_SOURCE_ID,
+    MLFLOW_EXPERIMENT_SOURCE_TYPE,
+)
 from mlflow.utils.proto_json_utils import milliseconds_to_proto_timestamp
 from mlflow.utils.time import get_current_time_millis
 from mlflow.utils.uri import append_to_uri_path
@@ -87,6 +102,8 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_DS_LIST_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
+    GSI2_GW_BIND_PREFIX,
+    GSI2_GW_ENDPOINTS_PREFIX,
     GSI2_GW_MODELDEFS_PREFIX,
     GSI2_GW_SECRETS_PREFIX,
     GSI2_PK,
@@ -94,6 +111,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_SK,
     GSI3_DS_NAME_PREFIX,
     GSI3_EXP_NAME_PREFIX,
+    GSI3_GW_ENDPOINT_NAME_PREFIX,
     GSI3_GW_MODELDEF_NAME_PREFIX,
     GSI3_PK,
     GSI3_SCOR_NAME_PREFIX,
@@ -110,6 +128,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI5_SK,
     PK_DATASET_PREFIX,
     PK_EXPERIMENT_PREFIX,
+    PK_GW_ENDPOINT_PREFIX,
     PK_GW_MODELDEF_PREFIX,
     PK_GW_SECRET_PREFIX,
     SK_DATASET_EXP_PREFIX,
@@ -123,7 +142,10 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_EXPERIMENT_TAG_PREFIX,
     SK_FTS_PREFIX,
     SK_FTS_REV_PREFIX,
+    SK_GW_BIND_PREFIX,
+    SK_GW_MAP_PREFIX,
     SK_GW_META,
+    SK_GW_TAG_PREFIX,
     SK_INPUT_PREFIX,
     SK_INPUT_TAG_SUFFIX,
     SK_LM_METRIC_PREFIX,
@@ -5963,3 +5985,816 @@ class DynamoDBTrackingStore(AbstractStore):
             sk=SK_GW_META,
         )
         self._invalidate_secret_cache()
+
+    # -----------------------------------------------------------------------
+    # Gateway Endpoints
+    # -----------------------------------------------------------------------
+
+    def _get_endpoint_items(self, endpoint_id: str) -> list[dict[str, Any]]:
+        """Query all items in an endpoint partition (META + mappings + bindings + tags)."""
+        return self._table.query(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+        )
+
+    def _endpoint_items_to_entity(
+        self, endpoint_id: str, items: list[dict[str, Any]]
+    ) -> GatewayEndpoint:
+        """Convert a list of raw DynamoDB items from an endpoint partition to a GatewayEndpoint."""
+        meta: dict[str, Any] | None = None
+        mapping_items: list[dict[str, Any]] = []
+        tag_items: list[dict[str, Any]] = []
+
+        for item in items:
+            sk = item["SK"]
+            if sk == SK_GW_META:
+                meta = item
+            elif sk.startswith(SK_GW_MAP_PREFIX):
+                mapping_items.append(item)
+            elif sk.startswith(SK_GW_TAG_PREFIX):
+                tag_items.append(item)
+
+        if meta is None:
+            raise MlflowException(
+                f"Endpoint '{endpoint_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Resolve model definitions for mappings (deduplicate to avoid redundant fetches)
+        model_def_ids = {m["model_definition_id"] for m in mapping_items}
+        model_def_cache: dict[str, GatewayModelDefinition] = {}
+        for md_id in model_def_ids:
+            md_item = self._get_model_def_item(md_id)
+            if md_item is not None:
+                model_def_cache[md_id] = self._model_def_item_to_entity(md_item)
+
+        model_mappings = []
+        for m_item in mapping_items:
+            md_id = m_item["model_definition_id"]
+            model_mappings.append(
+                GatewayEndpointModelMapping(
+                    mapping_id=m_item["mapping_id"],
+                    endpoint_id=endpoint_id,
+                    model_definition_id=md_id,
+                    model_definition=model_def_cache.get(md_id),
+                    weight=float(m_item["weight"]),
+                    linkage_type=GatewayModelLinkageType(m_item["linkage_type"]),
+                    fallback_order=int(m_item["fallback_order"])
+                    if m_item.get("fallback_order") is not None
+                    else None,
+                    created_at=int(m_item["created_at"]),
+                    created_by=m_item.get("created_by"),
+                )
+            )
+
+        tags = [
+            GatewayEndpointTag(
+                key=t["key"],
+                value=t.get("value"),
+            )
+            for t in tag_items
+        ]
+
+        # Reconstruct routing_strategy
+        routing_strategy = None
+        if meta.get("routing_strategy"):
+            routing_strategy = RoutingStrategy(meta["routing_strategy"])
+
+        # Reconstruct fallback_config
+        fallback_config = None
+        if meta.get("fallback_config"):
+            fc = meta["fallback_config"]
+            fallback_config = FallbackConfig(
+                strategy=FallbackStrategy(fc["strategy"]) if fc.get("strategy") else None,
+                max_attempts=int(fc["max_attempts"])
+                if fc.get("max_attempts") is not None
+                else None,
+            )
+
+        return GatewayEndpoint(
+            endpoint_id=endpoint_id,
+            name=meta.get("name"),
+            created_at=int(meta["created_at"]),
+            last_updated_at=int(meta["last_updated_at"]),
+            model_mappings=model_mappings,
+            tags=tags,
+            created_by=meta.get("created_by"),
+            last_updated_by=meta.get("last_updated_by"),
+            routing_strategy=routing_strategy,
+            fallback_config=fallback_config,
+            experiment_id=str(meta["experiment_id"])
+            if meta.get("experiment_id") is not None
+            else None,
+            usage_tracking=bool(meta.get("usage_tracking", False)),
+            workspace=meta.get("workspace"),
+        )
+
+    def _build_mapping_item(
+        self,
+        endpoint_id: str,
+        config: GatewayEndpointModelConfig,
+        mapping_id: str,
+        now: int,
+        created_by: str | None,
+    ) -> dict[str, Any]:
+        """Build a DynamoDB mapping item from a GatewayEndpointModelConfig."""
+        item: dict[str, Any] = {
+            "PK": f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            "SK": f"{SK_GW_MAP_PREFIX}{config.model_definition_id}#{config.linkage_type.value}",
+            "model_definition_id": config.model_definition_id,
+            "weight": Decimal(str(config.weight)),
+            "linkage_type": config.linkage_type.value,
+            "created_at": now,
+            "mapping_id": mapping_id,
+            # GSI5 projection for RESTRICT delete checks
+            "gsi5pk": f"{GSI5_GW_ENDPOINT_MODELDEF_PREFIX}{config.model_definition_id}",
+            "gsi5sk": endpoint_id,
+        }
+        if config.fallback_order is not None:
+            item["fallback_order"] = config.fallback_order
+        if created_by is not None:
+            item["created_by"] = created_by
+        return item
+
+    def create_gateway_endpoint(
+        self,
+        name: str,
+        model_configs: list[GatewayEndpointModelConfig],
+        created_by: str | None = None,
+        routing_strategy: RoutingStrategy | None = None,
+        fallback_config: FallbackConfig | None = None,
+        experiment_id: str | None = None,
+        usage_tracking: bool = False,
+    ) -> GatewayEndpoint:
+        if not model_configs:
+            raise MlflowException(
+                "Endpoint must have at least one model configuration",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        # Check name uniqueness via GSI3
+        existing = self._table.query(
+            pk=f"{GSI3_GW_ENDPOINT_NAME_PREFIX}{self._workspace}#{name}",
+            index_name="gsi3",
+            limit=1,
+        )
+        if existing:
+            raise MlflowException(
+                f"Endpoint with name '{name}' already exists",
+                error_code=RESOURCE_ALREADY_EXISTS,
+            )
+
+        # Validate all model definitions exist
+        for config in model_configs:
+            md_item = self._get_model_def_item(config.model_definition_id)
+            if md_item is None:
+                raise MlflowException(
+                    f"Model definitions not found: {config.model_definition_id}",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+
+        endpoint_id = f"e-{generate_ulid()}"
+        now = get_current_time_millis()
+
+        # Auto-create experiment if usage_tracking is enabled and no experiment_id provided
+        if usage_tracking and experiment_id is None:
+            exp_name = f"gateway/{name}"
+            existing_exp = self.get_experiment_by_name(exp_name)
+            experiment_id = (
+                existing_exp.experiment_id if existing_exp else self.create_experiment(exp_name)
+            )
+            self.set_experiment_tag(
+                experiment_id, ExperimentTag(MLFLOW_EXPERIMENT_SOURCE_TYPE, "GATEWAY")
+            )
+            self.set_experiment_tag(
+                experiment_id, ExperimentTag(MLFLOW_EXPERIMENT_SOURCE_ID, endpoint_id)
+            )
+            self.set_experiment_tag(
+                experiment_id, ExperimentTag(MLFLOW_EXPERIMENT_IS_GATEWAY, "true")
+            )
+
+        # Build META item
+        meta_item: dict[str, Any] = {
+            "PK": f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            "SK": SK_GW_META,
+            "name": name,
+            "created_at": now,
+            "last_updated_at": now,
+            "workspace": self._workspace,
+            "usage_tracking": usage_tracking,
+            "tags": {},
+            # GSI projections
+            "gsi2pk": f"{GSI2_GW_ENDPOINTS_PREFIX}{self._workspace}",
+            "gsi2sk": endpoint_id,
+            "gsi3pk": f"{GSI3_GW_ENDPOINT_NAME_PREFIX}{self._workspace}#{name}",
+            "gsi3sk": endpoint_id,
+        }
+        if routing_strategy is not None:
+            meta_item["routing_strategy"] = routing_strategy.value
+        if fallback_config is not None:
+            meta_item["fallback_config"] = {
+                "strategy": fallback_config.strategy.value if fallback_config.strategy else None,
+                "max_attempts": fallback_config.max_attempts,
+            }
+        if experiment_id is not None:
+            meta_item["experiment_id"] = experiment_id
+        if created_by is not None:
+            meta_item["created_by"] = created_by
+            meta_item["last_updated_by"] = created_by
+
+        # Build mapping items
+        mapping_items = []
+        for config in model_configs:
+            mapping_id = f"m-{generate_ulid()}"
+            mapping_items.append(
+                self._build_mapping_item(endpoint_id, config, mapping_id, now, created_by)
+            )
+
+        # Write META
+        self._table.put_item(meta_item)
+
+        # Batch write mapping items
+        if mapping_items:
+            self._table.batch_write(mapping_items)
+
+        # Return the full entity
+        all_items = [meta_item] + mapping_items
+        return self._endpoint_items_to_entity(endpoint_id, all_items)
+
+    def get_gateway_endpoint(
+        self,
+        endpoint_id: str | None = None,
+        name: str | None = None,
+    ) -> GatewayEndpoint:
+        if (endpoint_id is None) == (name is None):
+            raise MlflowException(
+                "Exactly one of `endpoint_id` or `name` must be specified",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        if name:
+            # Resolve name to endpoint_id via GSI3
+            results = self._table.query(
+                pk=f"{GSI3_GW_ENDPOINT_NAME_PREFIX}{self._workspace}#{name}",
+                index_name="gsi3",
+                limit=1,
+            )
+            if not results:
+                raise MlflowException(
+                    f"GatewayEndpoint not found (name='{name}')",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            endpoint_id = results[0]["gsi3sk"]
+
+        assert (
+            endpoint_id is not None
+        )  # guaranteed by the (endpoint_id is None) == (name is None) check
+        items = self._get_endpoint_items(endpoint_id)
+        if not items:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        return self._endpoint_items_to_entity(endpoint_id, items)
+
+    def list_gateway_endpoints(
+        self,
+        provider: str | None = None,
+        secret_id: str | None = None,
+    ) -> list[GatewayEndpoint]:
+        if secret_id:
+            # Targeted path: find model_defs by secret -> find endpoints by model_def -> deduplicate
+            md_items = self._table.query(
+                pk=f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}",
+                index_name="gsi4",
+            )
+            endpoint_ids: set[str] = set()
+            for md_item in md_items:
+                md_id = md_item["PK"].removeprefix(PK_GW_MODELDEF_PREFIX)
+                ep_items = self._table.query(
+                    pk=f"{GSI5_GW_ENDPOINT_MODELDEF_PREFIX}{md_id}",
+                    index_name="gsi5",
+                )
+                for ep_item in ep_items:
+                    endpoint_ids.add(ep_item["gsi5sk"])
+
+            endpoints = []
+            for ep_id in endpoint_ids:
+                items = self._get_endpoint_items(ep_id)
+                if items:
+                    endpoints.append(self._endpoint_items_to_entity(ep_id, items))
+            return endpoints
+
+        # Default path: list all endpoints via GSI2
+        gsi2_items = self._table.query(
+            pk=f"{GSI2_GW_ENDPOINTS_PREFIX}{self._workspace}",
+            index_name="gsi2",
+        )
+
+        endpoints = []
+        for gsi2_item in gsi2_items:
+            ep_id = gsi2_item["gsi2sk"]
+            items = self._get_endpoint_items(ep_id)
+            if items:
+                endpoints.append(self._endpoint_items_to_entity(ep_id, items))
+
+        if provider is not None:
+            endpoints = [
+                ep
+                for ep in endpoints
+                if any(
+                    m.model_definition and m.model_definition.provider == provider
+                    for m in ep.model_mappings
+                )
+            ]
+
+        return endpoints
+
+    def update_gateway_endpoint(
+        self,
+        endpoint_id: str,
+        name: str | None = None,
+        updated_by: str | None = None,
+        routing_strategy: RoutingStrategy | None = None,
+        fallback_config: FallbackConfig | None = None,
+        model_configs: list[GatewayEndpointModelConfig] | None = None,
+        experiment_id: str | None = None,
+        usage_tracking: bool | None = None,
+    ) -> GatewayEndpoint:
+        # Get existing endpoint items
+        items = self._get_endpoint_items(endpoint_id)
+        meta = next((i for i in items if i["SK"] == SK_GW_META), None)
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+        updates: dict[str, Any] = {"last_updated_at": now}
+        removes: list[str] = []
+
+        if name is not None:
+            # Check new name uniqueness
+            existing = self._table.query(
+                pk=f"{GSI3_GW_ENDPOINT_NAME_PREFIX}{self._workspace}#{name}",
+                index_name="gsi3",
+                limit=1,
+            )
+            if existing and existing[0]["gsi3sk"] != endpoint_id:
+                raise MlflowException(
+                    f"Endpoint with name '{name}' already exists",
+                    error_code=RESOURCE_ALREADY_EXISTS,
+                )
+            updates["name"] = name
+            updates["gsi3pk"] = f"{GSI3_GW_ENDPOINT_NAME_PREFIX}{self._workspace}#{name}"
+
+        # Handle usage_tracking update
+        if usage_tracking is not None:
+            updates["usage_tracking"] = usage_tracking
+
+        # Auto-create experiment if usage_tracking is enabled and no experiment_id provided
+        if usage_tracking and experiment_id is None and meta.get("experiment_id") is None:
+            endpoint_name = name if name is not None else meta.get("name")
+            exp_name = f"gateway/{endpoint_name}"
+            existing_exp = self.get_experiment_by_name(exp_name)
+            experiment_id = (
+                existing_exp.experiment_id if existing_exp else self.create_experiment(exp_name)
+            )
+            self.set_experiment_tag(
+                experiment_id, ExperimentTag(MLFLOW_EXPERIMENT_SOURCE_TYPE, "GATEWAY")
+            )
+            self.set_experiment_tag(
+                experiment_id, ExperimentTag(MLFLOW_EXPERIMENT_SOURCE_ID, endpoint_id)
+            )
+            self.set_experiment_tag(
+                experiment_id, ExperimentTag(MLFLOW_EXPERIMENT_IS_GATEWAY, "true")
+            )
+
+        if experiment_id is not None:
+            updates["experiment_id"] = experiment_id
+
+        if routing_strategy is not None:
+            updates["routing_strategy"] = routing_strategy.value
+
+        if updated_by is not None:
+            updates["last_updated_by"] = updated_by
+
+        # Replace model configs if provided (full replacement)
+        if model_configs is not None:
+            # Validate all model definitions exist
+            for config in model_configs:
+                md_item = self._get_model_def_item(config.model_definition_id)
+                if md_item is None:
+                    raise MlflowException(
+                        f"Model definition '{config.model_definition_id}' not found",
+                        error_code=RESOURCE_DOES_NOT_EXIST,
+                    )
+
+            # Delete existing mapping items
+            existing_mappings = [i for i in items if i["SK"].startswith(SK_GW_MAP_PREFIX)]
+            if existing_mappings:
+                self._table.batch_delete(
+                    [{"PK": m["PK"], "SK": m["SK"]} for m in existing_mappings]
+                )
+
+            # Write new mapping items
+            new_mapping_items = []
+            for config in model_configs:
+                mapping_id = f"m-{generate_ulid()}"
+                new_mapping_items.append(
+                    self._build_mapping_item(endpoint_id, config, mapping_id, now, updated_by)
+                )
+            if new_mapping_items:
+                self._table.batch_write(new_mapping_items)
+
+            # Update fallback_config with new model config info
+            fallback_model_def_ids = [
+                config.model_definition_id
+                for config in model_configs
+                if config.linkage_type == GatewayModelLinkageType.FALLBACK
+            ]
+            if fallback_config or fallback_model_def_ids:
+                updates["fallback_config"] = {
+                    "strategy": fallback_config.strategy.value
+                    if fallback_config and fallback_config.strategy
+                    else None,
+                    "max_attempts": fallback_config.max_attempts if fallback_config else None,
+                }
+            else:
+                # No fallback models and no explicit fallback_config, clear it
+                updates["fallback_config"] = {
+                    "strategy": None,
+                    "max_attempts": None,
+                }
+
+        elif fallback_config is not None:
+            # Update fallback_config without replacing model configs
+            updates["fallback_config"] = {
+                "strategy": fallback_config.strategy.value if fallback_config.strategy else None,
+                "max_attempts": fallback_config.max_attempts,
+            }
+
+        self._table.update_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+            updates=updates,
+            removes=removes if removes else None,
+        )
+
+        self._invalidate_secret_cache()
+
+        # Re-fetch to return the full updated entity
+        updated_items = self._get_endpoint_items(endpoint_id)
+        return self._endpoint_items_to_entity(endpoint_id, updated_items)
+
+    def delete_gateway_endpoint(self, endpoint_id: str) -> None:
+        # Query all items in partition
+        items = self._get_endpoint_items(endpoint_id)
+        if not items:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Batch delete all items (META, mappings, bindings, tags)
+        self._table.batch_delete([{"PK": item["PK"], "SK": item["SK"]} for item in items])
+        self._invalidate_secret_cache()
+
+    def attach_model_to_endpoint(
+        self,
+        endpoint_id: str,
+        model_config: GatewayEndpointModelConfig,
+        created_by: str | None = None,
+    ) -> GatewayEndpointModelMapping:
+        # Verify endpoint exists
+        meta = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+        )
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Verify model definition exists
+        md_item = self._get_model_def_item(model_config.model_definition_id)
+        if md_item is None:
+            raise MlflowException(
+                f"Model definition '{model_config.model_definition_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        mapping_id = f"m-{generate_ulid()}"
+        now = get_current_time_millis()
+
+        mapping_item = self._build_mapping_item(
+            endpoint_id, model_config, mapping_id, now, created_by
+        )
+
+        # Conditional put for atomic uniqueness
+        from botocore.exceptions import ClientError
+
+        try:
+            self._table.put_item(mapping_item, condition="attribute_not_exists(SK)")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise MlflowException(
+                    f"Model definition '{model_config.model_definition_id}' is already attached to "
+                    f"endpoint '{endpoint_id}'",
+                    error_code=RESOURCE_ALREADY_EXISTS,
+                ) from e
+            raise
+
+        # Update endpoint META last_updated_at
+        update_fields: dict[str, Any] = {"last_updated_at": now}
+        if created_by:
+            update_fields["last_updated_by"] = created_by
+        self._table.update_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+            updates=update_fields,
+        )
+
+        self._invalidate_secret_cache()
+
+        # Return the mapping entity
+        model_def = self._model_def_item_to_entity(md_item)
+        return GatewayEndpointModelMapping(
+            mapping_id=mapping_id,
+            endpoint_id=endpoint_id,
+            model_definition_id=model_config.model_definition_id,
+            model_definition=model_def,
+            weight=float(model_config.weight),
+            linkage_type=model_config.linkage_type,
+            fallback_order=model_config.fallback_order,
+            created_at=now,
+            created_by=created_by,
+        )
+
+    def detach_model_from_endpoint(
+        self,
+        endpoint_id: str,
+        model_definition_id: str,
+        linkage_type: str | None = None,
+    ) -> None:
+        # Verify endpoint exists
+        meta = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+        )
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        if linkage_type:
+            # Deterministic SK — direct delete
+            sk = f"{SK_GW_MAP_PREFIX}{model_definition_id}#{linkage_type}"
+            existing = self._table.get_item(
+                pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+                sk=sk,
+            )
+            if existing is None:
+                raise MlflowException(
+                    f"Model definition '{model_definition_id}' is not attached to "
+                    f"endpoint '{endpoint_id}' with linkage type '{linkage_type}'",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            self._table.delete_item(
+                pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+                sk=sk,
+            )
+        else:
+            # Query all linkage variants for this model_def
+            mapping_items = self._table.query(
+                pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+                sk_prefix=f"{SK_GW_MAP_PREFIX}{model_definition_id}#",
+            )
+            if not mapping_items:
+                raise MlflowException(
+                    f"Model definition '{model_definition_id}' is not attached to "
+                    f"endpoint '{endpoint_id}'",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            self._table.batch_delete([{"PK": m["PK"], "SK": m["SK"]} for m in mapping_items])
+
+        # Update endpoint META last_updated_at
+        now = get_current_time_millis()
+        self._table.update_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+            updates={"last_updated_at": now},
+        )
+        self._invalidate_secret_cache()
+
+    def create_endpoint_binding(
+        self,
+        endpoint_id: str,
+        resource_type: str,
+        resource_id: str,
+        created_by: str | None = None,
+    ) -> GatewayEndpointBinding:
+        # Verify endpoint exists
+        meta = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+        )
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+
+        item: dict[str, Any] = {
+            "PK": f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            "SK": f"{SK_GW_BIND_PREFIX}{resource_type}#{resource_id}",
+            "endpoint_id": endpoint_id,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "created_at": now,
+            "last_updated_at": now,
+            # GSI2 projection for reverse lookup (AP25)
+            "gsi2pk": f"{GSI2_GW_BIND_PREFIX}{resource_type}#{resource_id}",
+            "gsi2sk": endpoint_id,
+        }
+        if created_by is not None:
+            item["created_by"] = created_by
+            item["last_updated_by"] = created_by
+
+        self._table.put_item(item)
+        self._invalidate_secret_cache()
+
+        return GatewayEndpointBinding(
+            endpoint_id=endpoint_id,
+            resource_type=GatewayResourceType(resource_type),
+            resource_id=resource_id,
+            created_at=now,
+            last_updated_at=now,
+            created_by=created_by,
+            last_updated_by=created_by,
+        )
+
+    def delete_endpoint_binding(
+        self,
+        endpoint_id: str,
+        resource_type: str,
+        resource_id: str,
+    ) -> None:
+        # Verify binding exists
+        sk = f"{SK_GW_BIND_PREFIX}{resource_type}#{resource_id}"
+        existing = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=sk,
+        )
+        if existing is None:
+            raise MlflowException(
+                f"GatewayEndpointBinding not found (endpoint_id='{endpoint_id}', "
+                f"resource_type='{resource_type}', resource_id='{resource_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        self._table.delete_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=sk,
+        )
+        self._invalidate_secret_cache()
+
+    def _binding_item_to_entity(self, item: dict[str, Any]) -> GatewayEndpointBinding:
+        """Convert a raw DynamoDB binding item to a GatewayEndpointBinding entity."""
+        return GatewayEndpointBinding(
+            endpoint_id=item["endpoint_id"],
+            resource_type=GatewayResourceType(item["resource_type"]),
+            resource_id=item["resource_id"],
+            created_at=int(item["created_at"]),
+            last_updated_at=int(item["last_updated_at"]),
+            created_by=item.get("created_by"),
+            last_updated_by=item.get("last_updated_by"),
+            display_name=item.get("display_name"),
+        )
+
+    def list_endpoint_bindings(
+        self,
+        endpoint_id: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+    ) -> list[GatewayEndpointBinding]:
+        if endpoint_id is not None:
+            # Direct query within endpoint partition
+            sk_prefix = SK_GW_BIND_PREFIX
+            if resource_type is not None:
+                sk_prefix = f"{SK_GW_BIND_PREFIX}{resource_type}#"
+                if resource_id is not None:
+                    sk_prefix = f"{SK_GW_BIND_PREFIX}{resource_type}#{resource_id}"
+
+            items = self._table.query(
+                pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+                sk_prefix=sk_prefix,
+            )
+            return [self._binding_item_to_entity(item) for item in items]
+
+        if resource_type is not None and resource_id is not None:
+            # Reverse lookup via GSI2
+            gsi2_items = self._table.query(
+                pk=f"{GSI2_GW_BIND_PREFIX}{resource_type}#{resource_id}",
+                index_name="gsi2",
+            )
+            bindings = []
+            for gsi2_item in gsi2_items:
+                ep_id = gsi2_item["gsi2sk"]
+                sk = f"{SK_GW_BIND_PREFIX}{resource_type}#{resource_id}"
+                bind_item = self._table.get_item(
+                    pk=f"{PK_GW_ENDPOINT_PREFIX}{ep_id}",
+                    sk=sk,
+                )
+                if bind_item:
+                    bindings.append(self._binding_item_to_entity(bind_item))
+            return bindings
+
+        # No endpoint_id and no resource filter: list all endpoints, query bindings per endpoint
+        gsi2_items = self._table.query(
+            pk=f"{GSI2_GW_ENDPOINTS_PREFIX}{self._workspace}",
+            index_name="gsi2",
+        )
+        bindings = []
+        for gsi2_item in gsi2_items:
+            ep_id = gsi2_item["gsi2sk"]
+            bind_items = self._table.query(
+                pk=f"{PK_GW_ENDPOINT_PREFIX}{ep_id}",
+                sk_prefix=SK_GW_BIND_PREFIX,
+            )
+            bindings.extend(self._binding_item_to_entity(item) for item in bind_items)
+        return bindings
+
+    def set_gateway_endpoint_tag(
+        self,
+        endpoint_id: str,
+        tag: GatewayEndpointTag,
+    ) -> None:
+        # Verify endpoint exists
+        meta = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+        )
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+
+        # Write the tag item (upsert)
+        tag_item: dict[str, Any] = {
+            "PK": f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            "SK": f"{SK_GW_TAG_PREFIX}{tag.key}",
+            "key": tag.key,
+            "value": tag.value,
+        }
+        self._table.put_item(tag_item)
+
+        # Update denormalized tags on META
+        tags_dict = dict(meta.get("tags", {}))
+        tags_dict[tag.key] = tag.value
+        self._table.update_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+            updates={"tags": tags_dict, "last_updated_at": now},
+        )
+
+    def delete_gateway_endpoint_tag(
+        self,
+        endpoint_id: str,
+        key: str,
+    ) -> None:
+        # Verify endpoint exists
+        meta = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+        )
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+
+        # Delete the tag item (no-op if it doesn't exist)
+        self._table.delete_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=f"{SK_GW_TAG_PREFIX}{key}",
+        )
+
+        # Update denormalized tags on META
+        tags_dict = dict(meta.get("tags", {}))
+        tags_dict.pop(key, None)
+        self._table.update_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+            updates={"tags": tags_dict, "last_updated_at": now},
+        )
