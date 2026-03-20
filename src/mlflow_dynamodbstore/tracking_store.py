@@ -2042,6 +2042,13 @@ class DynamoDBTrackingStore(AbstractStore):
                 new_fts_items.append({"PK": pk, "SK": reverse_sk})
             self._table.batch_write(new_fts_items)
 
+    def log_metric(self, run_id: str, metric: Metric) -> None:
+        """Log a single metric, validating before batch."""
+        from mlflow.utils.validation import _validate_metric
+
+        _validate_metric(metric.key, metric.value, metric.timestamp, metric.step)
+        self.log_batch(run_id, metrics=[metric], params=[], tags=[])
+
     def log_batch(
         self,
         run_id: str,
@@ -2050,6 +2057,10 @@ class DynamoDBTrackingStore(AbstractStore):
         tags: list[RunTag],
     ) -> None:
         """Log a batch of metrics, params, and tags for a run."""
+        from mlflow.utils.validation import _validate_batch_log_data
+
+        metrics, params, tags = _validate_batch_log_data(metrics, params, tags)
+
         experiment_id = self._resolve_run_experiment(run_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
 
