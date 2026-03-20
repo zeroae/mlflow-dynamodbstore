@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from unittest.mock import MagicMock
 
@@ -2141,7 +2142,7 @@ class TestCalculateTraceFilterCorrelation:
             filter_string2="tag.y = 'b'",
         )
         assert result.total_count == 0
-        assert result.npmi == 0.0
+        assert math.isnan(result.npmi)
 
     def test_joint_count_zero_returns_negative_one(self, tracking_store):
         """Filters never co-occur -> NPMI = -1.0."""
@@ -2172,7 +2173,7 @@ class TestCalculateTraceFilterCorrelation:
             filter_string2="tag.x = '2'",
         )
         assert result.filter2_count == 0
-        assert result.npmi == 0.0
+        assert math.isnan(result.npmi)
 
     def test_perfect_correlation(self, tracking_store):
         """All traces match both filters -> NPMI = 1.0."""
