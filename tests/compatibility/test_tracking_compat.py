@@ -474,19 +474,14 @@ test_log_inputs_with_large_inputs_limit_check = _xfail_dataset(
 _xfail_trace_persist = pytest.mark.xfail(
     reason="DynamoDB store trace persistence issues (handler, incomplete, tags, sessions)"
 )
-test_batch_get_traces_integration_with_trace_handler = _xfail_trace_persist(
-    test_batch_get_traces_integration_with_trace_handler
-)
 test_batch_get_traces_with_incomplete_trace = _xfail_trace_persist(
     test_batch_get_traces_with_incomplete_trace
 )
+# Concurrent log_spans race: multiple threads writing spansLocation tag can lose writes
 test_concurrent_log_spans_spans_location_tag = _xfail_trace_persist(
     test_concurrent_log_spans_spans_location_tag
 )
 test_log_spans_session_id_handling = _xfail_trace_persist(test_log_spans_session_id_handling)
-test_log_spans_then_start_trace_preserves_tag = _xfail_trace_persist(
-    test_log_spans_then_start_trace_preserves_tag
-)
 test_set_and_delete_tags = _xfail_trace_persist(test_set_and_delete_tags)
 test_start_trace_with_assessments_missing_trace_id = _xfail_trace_persist(
     test_start_trace_with_assessments_missing_trace_id
@@ -555,13 +550,9 @@ _xfail_batch_spans = pytest.mark.xfail(
 )
 test_batch_get_traces_ordering = _xfail_batch_spans(test_batch_get_traces_ordering)
 
-# --- Category 12: trace tag/artifact path issues (6 tests) ---
+# --- Category 12: trace tag/artifact path issues (remaining) ---
 _xfail_trace_path = pytest.mark.xfail(
-    reason="DynamoDB store missing spansLocation tag and wrong trace artifact URI path"
-)
-test_start_trace = _xfail_trace_path(test_start_trace)
-test_start_trace_then_log_spans_adds_tag = _xfail_trace_path(
-    test_start_trace_then_log_spans_adds_tag
+    reason="DynamoDB store trace artifact path or session tracking issues"
 )
 # NOTE: test_get_trace_with_partial_trace is parametrized [True/False].
 # [True] passes (trace creation via log_spans works), but [False] fails because
