@@ -633,20 +633,6 @@ test_search_logged_models_order_by_dataset = _xfail_ddb_key(
     test_search_logged_models_order_by_dataset
 )
 
-# --- Category 16: calculate_trace_filter_correlation returns wrong values (3 tests) ---
-_xfail_correlation = pytest.mark.xfail(
-    reason="DynamoDB store returns 0.0/None instead of NaN for correlation edge cases"
-)
-test_calculate_trace_filter_correlation_empty_experiment_list = _xfail_correlation(
-    test_calculate_trace_filter_correlation_empty_experiment_list
-)
-test_calculate_trace_filter_correlation_perfect = _xfail_correlation(
-    test_calculate_trace_filter_correlation_perfect
-)
-test_calculate_trace_filter_correlation_zero_counts = _xfail_correlation(
-    test_calculate_trace_filter_correlation_zero_counts
-)
-
 # --- Category 17: misc run/experiment/trace/scorer lifecycle bugs (7 tests) ---
 _xfail_misc = pytest.mark.xfail(reason="DynamoDB store misc lifecycle bugs")
 test_update_run_info = _xfail_misc(test_update_run_info)
