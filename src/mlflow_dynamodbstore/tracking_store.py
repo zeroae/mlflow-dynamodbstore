@@ -5666,7 +5666,7 @@ class DynamoDBTrackingStore(AbstractStore):
         self,
         model_definition_id: str,
         name: str | None = None,
-        secret_id: str | None = None,
+        secret_id: Any = _UNSET,
         model_name: str | None = None,
         updated_by: str | None = None,
         provider: str | None = None,
@@ -5697,17 +5697,21 @@ class DynamoDBTrackingStore(AbstractStore):
             updates["name"] = name
             updates["gsi3pk"] = f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}"
 
-        if secret_id is not None:
-            # Verify new secret exists
-            secret_item = self._get_secret_item(secret_id)
-            if secret_item is None:
-                raise MlflowException(
-                    f"Secret '{secret_id}' not found",
-                    error_code=RESOURCE_DOES_NOT_EXIST,
-                )
-            updates["secret_id"] = secret_id
-            updates["gsi4pk"] = f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}"
-            updates["gsi4sk"] = model_definition_id
+        if secret_id is not _UNSET:
+            if secret_id is None:
+                # Intentional orphan — remove secret_id and GSI4 projection
+                removes.extend(["secret_id", "gsi4pk", "gsi4sk"])
+            else:
+                # Verify new secret exists
+                secret_item = self._get_secret_item(secret_id)
+                if secret_item is None:
+                    raise MlflowException(
+                        f"Secret '{secret_id}' not found",
+                        error_code=RESOURCE_DOES_NOT_EXIST,
+                    )
+                updates["secret_id"] = secret_id
+                updates["gsi4pk"] = f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}"
+                updates["gsi4sk"] = model_definition_id
 
         if model_name is not None:
             updates["model_name"] = model_name
