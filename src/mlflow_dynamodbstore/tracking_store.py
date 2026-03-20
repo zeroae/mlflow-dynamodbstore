@@ -6220,7 +6220,7 @@ class DynamoDBTrackingStore(AbstractStore):
                     else None,
                     "max_attempts": fallback_config.max_attempts if fallback_config else None,
                 }
-            elif not fallback_model_def_ids and "fallback_config" not in updates:
+            else:
                 # No fallback models and no explicit fallback_config, clear it
                 updates["fallback_config"] = {
                     "strategy": None,
