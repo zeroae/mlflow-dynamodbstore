@@ -4210,9 +4210,19 @@ class DynamoDBTrackingStore(AbstractStore):
     ) -> OnlineScoringConfig:
         from mlflow.genai.scorers.online.entities import OnlineScoringConfig
 
+        if not isinstance(sample_rate, int | float):
+            raise MlflowException(
+                f"sample_rate must be a number, got {type(sample_rate).__name__}",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
         if not (0.0 <= sample_rate <= 1.0):
             raise MlflowException(
-                f"sample_rate must be in [0.0, 1.0], got {sample_rate}.",
+                f"sample_rate must be between 0.0 and 1.0, got {sample_rate}",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        if filter_string and not isinstance(filter_string, str):
+            raise MlflowException(
+                f"filter_string must be a string, got {type(filter_string).__name__}",
                 error_code=INVALID_PARAMETER_VALUE,
             )
         scorer_id = self._resolve_scorer_id(experiment_id, scorer_name)
