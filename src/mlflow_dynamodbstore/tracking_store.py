@@ -6256,3 +6256,132 @@ class DynamoDBTrackingStore(AbstractStore):
         # Batch delete all items (META, mappings, bindings, tags)
         self._table.batch_delete([{"PK": item["PK"], "SK": item["SK"]} for item in items])
         self._invalidate_secret_cache()
+
+    def attach_model_to_endpoint(
+        self,
+        endpoint_id: str,
+        model_config: GatewayEndpointModelConfig,
+        created_by: str | None = None,
+    ) -> GatewayEndpointModelMapping:
+        # Verify endpoint exists
+        meta = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+        )
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Verify model definition exists
+        md_item = self._get_model_def_item(model_config.model_definition_id)
+        if md_item is None:
+            raise MlflowException(
+                f"Model definition '{model_config.model_definition_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        mapping_id = f"m-{generate_ulid()}"
+        now = get_current_time_millis()
+
+        mapping_item = self._build_mapping_item(
+            endpoint_id, model_config, mapping_id, now, created_by
+        )
+
+        # Conditional put for atomic uniqueness
+        from botocore.exceptions import ClientError
+
+        try:
+            self._table.put_item(mapping_item, condition="attribute_not_exists(SK)")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise MlflowException(
+                    f"Model definition '{model_config.model_definition_id}' is already attached to "
+                    f"endpoint '{endpoint_id}'",
+                    error_code=RESOURCE_ALREADY_EXISTS,
+                ) from e
+            raise
+
+        # Update endpoint META last_updated_at
+        update_fields: dict[str, Any] = {"last_updated_at": now}
+        if created_by:
+            update_fields["last_updated_by"] = created_by
+        self._table.update_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+            updates=update_fields,
+        )
+
+        self._invalidate_secret_cache()
+
+        # Return the mapping entity
+        model_def = self._model_def_item_to_entity(md_item)
+        return GatewayEndpointModelMapping(
+            mapping_id=mapping_id,
+            endpoint_id=endpoint_id,
+            model_definition_id=model_config.model_definition_id,
+            model_definition=model_def,
+            weight=float(model_config.weight),
+            linkage_type=model_config.linkage_type,
+            fallback_order=model_config.fallback_order,
+            created_at=now,
+            created_by=created_by,
+        )
+
+    def detach_model_from_endpoint(
+        self,
+        endpoint_id: str,
+        model_definition_id: str,
+        linkage_type: str | None = None,
+    ) -> None:
+        # Verify endpoint exists
+        meta = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+        )
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        if linkage_type:
+            # Deterministic SK — direct delete
+            sk = f"{SK_GW_MAP_PREFIX}{model_definition_id}#{linkage_type}"
+            existing = self._table.get_item(
+                pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+                sk=sk,
+            )
+            if existing is None:
+                raise MlflowException(
+                    f"Model definition '{model_definition_id}' is not attached to "
+                    f"endpoint '{endpoint_id}' with linkage type '{linkage_type}'",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            self._table.delete_item(
+                pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+                sk=sk,
+            )
+        else:
+            # Query all linkage variants for this model_def
+            mapping_items = self._table.query(
+                pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+                sk_prefix=f"{SK_GW_MAP_PREFIX}{model_definition_id}#",
+            )
+            if not mapping_items:
+                raise MlflowException(
+                    f"Model definition '{model_definition_id}' is not attached to "
+                    f"endpoint '{endpoint_id}'",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            self._table.batch_delete([{"PK": m["PK"], "SK": m["SK"]} for m in mapping_items])
+
+        # Update endpoint META last_updated_at
+        now = get_current_time_millis()
+        self._table.update_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+            updates={"last_updated_at": now},
+        )
+        self._invalidate_secret_cache()
