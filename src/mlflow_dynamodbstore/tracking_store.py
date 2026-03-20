@@ -2215,8 +2215,17 @@ class DynamoDBTrackingStore(AbstractStore):
                 }
             )
 
-            # RANK item for param
-            rank_sk = f"{SK_RANK_PREFIX}p#{param.key}#{param.value}#{run_id}"
+            # RANK item for param (truncate value to stay within 1024-byte SK limit)
+            ddb_sk_max = 1024
+            rank_prefix = f"{SK_RANK_PREFIX}p#{param.key}#"
+            rank_suffix = f"#{run_id}"
+            max_val_bytes = ddb_sk_max - len(rank_prefix.encode()) - len(rank_suffix.encode())
+            rank_val = param.value
+            if len(rank_val.encode()) > max_val_bytes:
+                # Truncate by bytes (UTF-8 safe); client-side re-sort fixes ordering
+                rank_val = rank_val.encode()[:max_val_bytes].decode("utf-8", errors="ignore")
+
+            rank_sk = f"{rank_prefix}{rank_val}{rank_suffix}"
             items.append(
                 {
                     "PK": pk,
@@ -2404,8 +2413,14 @@ class DynamoDBTrackingStore(AbstractStore):
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         items: list[dict[str, Any]] = []
 
+        # Deduplicate datasets by (name, digest) to avoid duplicate keys in batch_write
+        seen_datasets: set[tuple[str, str]] = set()
         for dataset_input in datasets:
             ds = dataset_input.dataset
+            ds_key = (ds.name, ds.digest)
+            if ds_key in seen_datasets:
+                continue
+            seen_datasets.add(ds_key)
             ds_uuid = generate_ulid()
 
             # Dataset item: PK=EXP#<exp_id>, SK=D#<name>#<digest>

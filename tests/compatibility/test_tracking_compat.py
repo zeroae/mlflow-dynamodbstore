@@ -584,18 +584,11 @@ test_legacy_start_and_end_trace_v2 = _xfail_missing_method(test_legacy_start_and
 test_log_logged_model_params = _xfail_missing_method(test_log_logged_model_params)
 
 
-# --- Category 15: DynamoDB key size/duplicate key constraints (4 tests) ---
-_xfail_ddb_key = pytest.mark.xfail(
-    reason="DynamoDB range key size limit exceeded or duplicate keys in BatchWriteItem"
-)
-test_log_batch_params_max_length_value = _xfail_ddb_key(test_log_batch_params_max_length_value)
-test_log_param_max_length_value = _xfail_ddb_key(test_log_param_max_length_value)
-test_log_inputs_with_duplicates_in_single_request = _xfail_ddb_key(
-    test_log_inputs_with_duplicates_in_single_request
-)
-test_search_logged_models_order_by_dataset = _xfail_ddb_key(
-    test_search_logged_models_order_by_dataset
-)
+# --- Category 15: DynamoDB key size/duplicate key constraints (remaining) ---
+# search_logged_models order_by_dataset: needs sorting feature implementation (same as Cat 2)
+test_search_logged_models_order_by_dataset = pytest.mark.xfail(
+    reason="DynamoDB store does not yet support search_logged_models order_by"
+)(test_search_logged_models_order_by_dataset)
 
 # --- Category 17: misc run/experiment/trace/scorer lifecycle bugs (7 tests) ---
 _xfail_misc = pytest.mark.xfail(reason="DynamoDB store misc lifecycle bugs")
