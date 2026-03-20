@@ -1109,7 +1109,7 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         if not results:
             raise MlflowException(
-                f"LoggedModel '{model_id}' does not exist.",
+                f"Logged model with ID '{model_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         gsi1sk: str = results[0][GSI1_SK]
@@ -1200,13 +1200,13 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=sk)
         if meta is None:
             raise MlflowException(
-                f"LoggedModel '{model_id}' does not exist.",
+                f"Logged model with ID '{model_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
         if meta.get("lifecycle_stage") == "deleted" and not allow_deleted:
             raise MlflowException(
-                f"LoggedModel '{model_id}' does not exist.",
+                f"Logged model with ID '{model_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -2420,7 +2420,7 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         if not results:
             raise MlflowException(
-                f"Trace '{trace_id}' does not exist.",
+                f"Trace with ID {trace_id} is not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -2555,7 +2555,7 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=sk)
         if meta is None:
             raise MlflowException(
-                f"Trace '{trace_id}' does not exist.",
+                f"Trace with ID {trace_id} is not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -3454,7 +3454,7 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
         if meta is None:
             raise MlflowException(
-                f"Trace '{trace_id}' does not exist.",
+                f"Trace with ID {trace_id} is not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
@@ -3510,7 +3510,7 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
         if meta is None:
             raise MlflowException(
-                f"Trace '{trace_id}' does not exist.",
+                f"Trace with ID {trace_id} is not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
@@ -3777,7 +3777,7 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
         if meta is None:
             raise MlflowException(
-                f"Trace '{trace_id}' does not exist.",
+                f"Trace with ID {trace_id} is not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()

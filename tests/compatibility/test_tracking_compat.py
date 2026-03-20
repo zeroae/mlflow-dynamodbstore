@@ -445,20 +445,15 @@ test_search_traces_with_prompts_filter_invalid_format = _xfail_validation(
     test_search_traces_with_prompts_filter_invalid_format
 )
 
-# --- Category 3: error message wording mismatch (16 tests) ---
+# --- Category 3: error message wording or validation mismatch ---
 _xfail_error_msg = pytest.mark.xfail(
-    reason="DynamoDB store uses different error message format than SqlAlchemy"
+    reason="DynamoDB store uses different error message format or missing validation"
 )
-test_delete_logged_model = _xfail_error_msg(test_delete_logged_model)
 test_delete_logged_model_tag = _xfail_error_msg(test_delete_logged_model_tag)
-test_finalize_logged_model = _xfail_error_msg(test_finalize_logged_model)
 test_get_experiment_invalid_id = _xfail_error_msg(test_get_experiment_invalid_id)
-test_get_logged_model = _xfail_error_msg(test_get_logged_model)
-test_get_trace_not_found = _xfail_error_msg(test_get_trace_not_found)
 test_search_logged_models_invalid_filter_string = _xfail_error_msg(
     test_search_logged_models_invalid_filter_string
 )
-test_set_logged_model_tags = _xfail_error_msg(test_set_logged_model_tags)
 test_upsert_online_scoring_config_validates_sample_rate = _xfail_error_msg(
     test_upsert_online_scoring_config_validates_sample_rate
 )
