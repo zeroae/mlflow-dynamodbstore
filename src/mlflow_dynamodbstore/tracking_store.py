@@ -5551,3 +5551,64 @@ class DynamoDBTrackingStore(AbstractStore):
             last_updated_by=created_by,
             workspace=self._workspace,
         )
+
+    def _get_model_def_item(self, model_definition_id: str) -> dict[str, Any] | None:
+        """Fetch raw DynamoDB item for a model definition by ID. Returns None if not found."""
+        return self._table.get_item(
+            pk=f"{PK_GW_MODELDEF_PREFIX}{model_definition_id}",
+            sk=SK_GW_META,
+        )
+
+    def _model_def_item_to_entity(self, item: dict[str, Any]) -> GatewayModelDefinition:
+        """Convert a raw DynamoDB model definition item to a GatewayModelDefinition entity."""
+        model_definition_id = item["PK"].removeprefix(PK_GW_MODELDEF_PREFIX)
+        secret_id = item.get("secret_id")
+        return GatewayModelDefinition(
+            model_definition_id=model_definition_id,
+            name=item["name"],
+            secret_id=secret_id,
+            secret_name=self._resolve_secret_name(secret_id),
+            provider=item["provider"],
+            model_name=item["model_name"],
+            created_at=int(item["created_at"]),
+            last_updated_at=int(item["last_updated_at"]),
+            created_by=item.get("created_by"),
+            last_updated_by=item.get("last_updated_by"),
+            workspace=item.get("workspace"),
+        )
+
+    def get_gateway_model_definition(
+        self,
+        model_definition_id: str | None = None,
+        name: str | None = None,
+    ) -> GatewayModelDefinition:
+        if (model_definition_id is None) == (name is None):
+            raise MlflowException(
+                "Exactly one of `model_definition_id` or `name` must be specified",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        if model_definition_id:
+            item = self._get_model_def_item(model_definition_id)
+        else:
+            results = self._table.query(
+                pk=f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}",
+                index_name="gsi3",
+                limit=1,
+            )
+            if not results:
+                raise MlflowException(
+                    f"Model definition with name '{name}' not found",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            found_id = results[0]["gsi3sk"]
+            item = self._get_model_def_item(found_id)
+
+        if item is None:
+            identifier = model_definition_id if model_definition_id else name
+            raise MlflowException(
+                f"Model definition '{identifier}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        return self._model_def_item_to_entity(item)
