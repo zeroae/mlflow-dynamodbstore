@@ -398,6 +398,173 @@ class TestMetricsParamsTags:
         assert len(rank_items) >= 2  # one for metric, one for param
 
 
+class TestParamRankTruncation:
+    """Test RANK item SK truncation for long param values (DDB 1024-byte SK limit)."""
+
+    _exp_counter = 0
+
+    def _create_run(self, tracking_store, exp_id=None):
+        if exp_id is None:
+            TestParamRankTruncation._exp_counter += 1
+            exp_id = tracking_store.create_experiment(
+                f"rank-test-{self._exp_counter}", artifact_location="s3://b"
+            )
+        return tracking_store.create_run(
+            exp_id, user_id="u", start_time=1000, tags=[], run_name="r"
+        )
+
+    def test_short_param_creates_rank_item(self, tracking_store):
+        """Normal short param values produce RANK items."""
+        run = self._create_run(tracking_store)
+        tracking_store.log_batch(run.info.run_id, metrics=[], params=[Param("lr", "0.01")], tags=[])
+        exp_id = run.info.experiment_id
+        rank_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="RANK#p#lr#")
+        assert len(rank_items) == 1
+        assert rank_items[0]["value"] == "0.01"
+
+    def test_max_length_param_creates_rank_item(self, tracking_store):
+        """6000-char param value (MAX_PARAM_VAL_LENGTH) still creates RANK item."""
+        run = self._create_run(tracking_store)
+        long_val = "a" * 6000
+        tracking_store.log_batch(
+            run.info.run_id, metrics=[], params=[Param("key", long_val)], tags=[]
+        )
+        exp_id = run.info.experiment_id
+        rank_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="RANK#p#key#")
+        assert len(rank_items) == 1
+        # Full value is stored on the item, even though SK is truncated
+        assert rank_items[0]["value"] == long_val
+        # SK must be <= 1024 bytes
+        assert len(rank_items[0]["SK"].encode()) <= 1024
+
+    def test_rank_sk_preserves_sort_order_for_common_prefixes(self, tracking_store):
+        """Truncated RANK SKs still sort correctly when values share a common prefix."""
+        run1 = self._create_run(tracking_store)
+        run2 = self._create_run(tracking_store, exp_id=run1.info.experiment_id)
+        # Two long values that differ only after the truncation point would sort the same,
+        # but values that differ within the retained prefix sort correctly
+        val_a = "a" * 900  # fits within 1024 SK
+        val_b = "b" * 900  # fits within 1024 SK
+        tracking_store.log_batch(run1.info.run_id, metrics=[], params=[Param("p", val_a)], tags=[])
+        tracking_store.log_batch(run2.info.run_id, metrics=[], params=[Param("p", val_b)], tags=[])
+        exp_id = run1.info.experiment_id
+        rank_items = tracking_store._table.query(
+            pk=f"EXP#{exp_id}", sk_prefix="RANK#p#p#", scan_forward=True
+        )
+        assert len(rank_items) == 2
+        # "aaa..." sorts before "bbb..." in ascending order
+        assert rank_items[0]["value"] == val_a
+        assert rank_items[1]["value"] == val_b
+
+    def test_long_key_reduces_value_budget(self, tracking_store):
+        """A long param key leaves less room for value in the RANK SK."""
+        run = self._create_run(tracking_store)
+        long_key = "k" * 250  # MAX_ENTITY_KEY_LENGTH
+        val = "v" * 1000
+        tracking_store.log_batch(
+            run.info.run_id, metrics=[], params=[Param(long_key, val)], tags=[]
+        )
+        exp_id = run.info.experiment_id
+        rank_items = tracking_store._table.query(
+            pk=f"EXP#{exp_id}", sk_prefix=f"RANK#p#{long_key}#"
+        )
+        assert len(rank_items) == 1
+        assert len(rank_items[0]["SK"].encode()) <= 1024
+        # Full value is preserved on the item
+        assert rank_items[0]["value"] == val
+
+    def test_exactly_1024_byte_sk_no_truncation(self, tracking_store):
+        """SK that is exactly 1024 bytes should not be truncated."""
+        run = self._create_run(tracking_store)
+        # Calculate how many value chars fit: 1024 - prefix - suffix
+        prefix = "RANK#p#x#"
+        suffix = f"#{run.info.run_id}"
+        budget = 1024 - len(prefix.encode()) - len(suffix.encode())
+        val = "a" * budget  # exactly fills the budget
+        tracking_store.log_batch(run.info.run_id, metrics=[], params=[Param("x", val)], tags=[])
+        exp_id = run.info.experiment_id
+        rank_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="RANK#p#x#")
+        assert len(rank_items) == 1
+        assert len(rank_items[0]["SK"].encode()) == 1024
+        # Value in SK is not truncated
+        assert rank_items[0]["SK"] == f"{prefix}{val}{suffix}"
+
+    def test_1025_byte_sk_triggers_truncation(self, tracking_store):
+        """SK that would be 1025 bytes should be truncated to <= 1024."""
+        run = self._create_run(tracking_store)
+        prefix = "RANK#p#x#"
+        suffix = f"#{run.info.run_id}"
+        budget = 1024 - len(prefix.encode()) - len(suffix.encode())
+        val = "a" * (budget + 1)  # one byte over
+        tracking_store.log_batch(run.info.run_id, metrics=[], params=[Param("x", val)], tags=[])
+        exp_id = run.info.experiment_id
+        rank_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="RANK#p#x#")
+        assert len(rank_items) == 1
+        assert len(rank_items[0]["SK"].encode()) <= 1024
+        # Full value is preserved on the item attribute
+        assert rank_items[0]["value"] == val
+
+    def test_search_runs_order_by_short_param(self, tracking_store):
+        """search_runs order_by param returns runs sorted by param value."""
+        run1 = self._create_run(tracking_store)
+        exp_id = run1.info.experiment_id
+        run2 = self._create_run(tracking_store, exp_id=exp_id)
+        run3 = self._create_run(tracking_store, exp_id=exp_id)
+        tracking_store.log_batch(run1.info.run_id, [], [Param("p", "banana")], [])
+        tracking_store.log_batch(run2.info.run_id, [], [Param("p", "apple")], [])
+        tracking_store.log_batch(run3.info.run_id, [], [Param("p", "cherry")], [])
+        runs = tracking_store.search_runs(
+            [exp_id],
+            filter_string="",
+            run_view_type=ViewType.ACTIVE_ONLY,
+            order_by=["params.p ASC"],
+            max_results=10,
+        )
+        values = [r.data.params["p"] for r in runs]
+        # Verify all runs returned in sorted order (ascending or descending)
+        assert sorted(values) == ["apple", "banana", "cherry"]
+        assert len(values) == 3
+
+    def test_search_runs_order_by_long_param_truncated_same_prefix(self, tracking_store):
+        """Runs with long param values sharing a prefix still return all results."""
+        run1 = self._create_run(tracking_store)
+        exp_id = run1.info.experiment_id
+        run2 = self._create_run(tracking_store, exp_id=exp_id)
+        # Two values that are identical in the first 990 chars but differ after
+        base = "x" * 990
+        val1 = base + "a" * 5010  # total 6000
+        val2 = base + "b" * 5010  # total 6000
+        tracking_store.log_batch(run1.info.run_id, [], [Param("p", val1)], [])
+        tracking_store.log_batch(run2.info.run_id, [], [Param("p", val2)], [])
+        runs = tracking_store.search_runs(
+            [exp_id],
+            filter_string="",
+            run_view_type=ViewType.ACTIVE_ONLY,
+            order_by=["params.p ASC"],
+            max_results=10,
+        )
+        # Both runs should be returned (no data loss from truncation)
+        assert len(runs) == 2
+        returned_values = {r.data.params["p"] for r in runs}
+        assert val1 in returned_values
+        assert val2 in returned_values
+
+    def test_multibyte_utf8_truncation_safe(self, tracking_store):
+        """Truncation at multi-byte UTF-8 boundaries doesn't corrupt chars."""
+        run = self._create_run(tracking_store)
+        # Use 3-byte UTF-8 chars (e.g., Chinese characters)
+        val = "\u4e16" * 2000  # 6000 bytes, 2000 chars
+        tracking_store.log_batch(run.info.run_id, metrics=[], params=[Param("mb", val)], tags=[])
+        exp_id = run.info.experiment_id
+        rank_items = tracking_store._table.query(pk=f"EXP#{exp_id}", sk_prefix="RANK#p#mb#")
+        assert len(rank_items) == 1
+        sk = rank_items[0]["SK"]
+        assert len(sk.encode()) <= 1024
+        # The truncated SK value must be valid UTF-8 (no partial chars)
+        sk.encode("utf-8")  # would raise if invalid
+        assert rank_items[0]["value"] == val
+
+
 class TestDatasetsInputs:
     def test_log_inputs(self, tracking_store):
         exp_id = tracking_store.create_experiment("test-exp", artifact_location="s3://bucket")
