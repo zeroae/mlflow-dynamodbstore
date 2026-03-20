@@ -22,6 +22,7 @@ from mlflow.entities import (
     EvaluationDataset,
     Experiment,
     ExperimentTag,
+    GatewaySecretInfo,
     InputTag,
     LoggedModel,
     LoggedModelOutput,
@@ -54,8 +55,10 @@ from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.tracking.abstract_store import AbstractStore
 from mlflow.tracing.analysis import TraceFilterCorrelationResult
 from mlflow.tracing.constant import TraceMetadataKey, TraceTagKey
+from mlflow.utils.crypto import KEKManager, _encrypt_secret, _mask_secret_value
 from mlflow.utils.mlflow_tags import MLFLOW_ARTIFACT_LOCATION
 from mlflow.utils.proto_json_utils import milliseconds_to_proto_timestamp
+from mlflow.utils.time import get_current_time_millis
 from mlflow.utils.uri import append_to_uri_path
 
 from mlflow_dynamodbstore.cache import ResolutionCache
@@ -71,6 +74,7 @@ from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_CLIENT_PREFIX,
     GSI1_DS_EXP_PREFIX,
+    GSI1_GW_SECRET_NAME_PREFIX,
     GSI1_LM_PREFIX,
     GSI1_PK,
     GSI1_RUN_PREFIX,
@@ -81,6 +85,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_DS_LIST_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
+    GSI2_GW_SECRETS_PREFIX,
     GSI2_PK,
     GSI2_SESSIONS_PREFIX,
     GSI2_SK,
@@ -89,6 +94,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI3_PK,
     GSI3_SCOR_NAME_PREFIX,
     GSI3_SK,
+    GSI4_GW_MODELDEF_SECRET_PREFIX,
     GSI5_EXP_NAMES_PREFIX,
     GSI5_PK,
     GSI5_SK,
@@ -99,6 +105,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI5_SK,
     PK_DATASET_PREFIX,
     PK_EXPERIMENT_PREFIX,
+    PK_GW_SECRET_PREFIX,
     SK_DATASET_EXP_PREFIX,
     SK_DATASET_META,
     SK_DATASET_PREFIX,
@@ -110,6 +117,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_EXPERIMENT_TAG_PREFIX,
     SK_FTS_PREFIX,
     SK_FTS_REV_PREFIX,
+    SK_GW_META,
     SK_INPUT_PREFIX,
     SK_INPUT_TAG_SUFFIX,
     SK_LM_METRIC_PREFIX,
@@ -5222,3 +5230,239 @@ class DynamoDBTrackingStore(AbstractStore):
             else None
         )
         return PagedList(page, next_token)  # type: ignore[arg-type]
+
+    # -----------------------------------------------------------------------
+    # Gateway Secrets
+    # -----------------------------------------------------------------------
+
+    def _invalidate_secret_cache(self) -> None:
+        """Invalidate the gateway secret cache. No-op until cache is implemented."""
+        pass
+
+    def create_gateway_secret(
+        self,
+        secret_name: str,
+        secret_value: dict[str, str],
+        provider: str | None = None,
+        auth_config: dict[str, str] | None = None,
+        created_by: str | None = None,
+    ) -> GatewaySecretInfo:
+        import json as _json
+
+        # Check name uniqueness via GSI1
+        existing = self._table.query(
+            pk=f"{GSI1_GW_SECRET_NAME_PREFIX}{self._workspace}#{secret_name}",
+            index_name="gsi1",
+            limit=1,
+        )
+        if existing:
+            raise MlflowException(
+                f"Secret with name '{secret_name}' already exists",
+                error_code=RESOURCE_ALREADY_EXISTS,
+            )
+
+        secret_id = f"s-{generate_ulid()}"
+        now = get_current_time_millis()
+
+        # Encrypt
+        kek_manager = KEKManager()
+        value_to_encrypt = _json.dumps(secret_value)
+        encrypted = _encrypt_secret(value_to_encrypt, kek_manager, secret_id, secret_name)
+        masked_value = _mask_secret_value(secret_value)
+
+        item = {
+            "PK": f"{PK_GW_SECRET_PREFIX}{secret_id}",
+            "SK": SK_GW_META,
+            "secret_name": secret_name,
+            "encrypted_value": encrypted.encrypted_value,
+            "wrapped_dek": encrypted.wrapped_dek,
+            "kek_version": encrypted.kek_version,
+            "masked_value": masked_value,
+            "created_at": now,
+            "last_updated_at": now,
+            "workspace": self._workspace,
+            # GSI projections
+            "gsi1pk": f"{GSI1_GW_SECRET_NAME_PREFIX}{self._workspace}#{secret_name}",
+            "gsi1sk": secret_id,
+            "gsi2pk": f"{GSI2_GW_SECRETS_PREFIX}{self._workspace}",
+            "gsi2sk": secret_id,
+        }
+        if provider is not None:
+            item["provider"] = provider
+        if auth_config is not None:
+            item["auth_config"] = auth_config
+        if created_by is not None:
+            item["created_by"] = created_by
+            item["last_updated_by"] = created_by
+
+        self._table.put_item(item)
+        self._invalidate_secret_cache()
+
+        return GatewaySecretInfo(
+            secret_id=secret_id,
+            secret_name=secret_name,
+            masked_values=masked_value,
+            created_at=now,
+            last_updated_at=now,
+            provider=provider,
+            auth_config=auth_config,
+            workspace=self._workspace,
+            created_by=created_by,
+            last_updated_by=created_by,
+        )
+
+    def _get_secret_item(self, secret_id: str) -> dict[str, Any] | None:
+        """Fetch raw DynamoDB item for a secret by ID. Returns None if not found."""
+        return self._table.get_item(
+            pk=f"{PK_GW_SECRET_PREFIX}{secret_id}",
+            sk=SK_GW_META,
+        )
+
+    def _secret_item_to_entity(self, item: dict[str, Any]) -> GatewaySecretInfo:
+        """Convert a raw DynamoDB secret item to a GatewaySecretInfo entity."""
+        secret_id = item["PK"].removeprefix(PK_GW_SECRET_PREFIX)
+        return GatewaySecretInfo(
+            secret_id=secret_id,
+            secret_name=item["secret_name"],
+            masked_values=item["masked_value"],
+            created_at=int(item["created_at"]),
+            last_updated_at=int(item["last_updated_at"]),
+            provider=item.get("provider"),
+            auth_config=item.get("auth_config"),
+            workspace=item.get("workspace"),
+            created_by=item.get("created_by"),
+            last_updated_by=item.get("last_updated_by"),
+        )
+
+    def get_secret_info(
+        self,
+        secret_id: str | None = None,
+        secret_name: str | None = None,
+    ) -> GatewaySecretInfo:
+        # Validate exactly one of secret_id or secret_name
+        if (secret_id is None) == (secret_name is None):
+            raise MlflowException(
+                "Exactly one of `secret_id` or `secret_name` must be specified",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        if secret_id:
+            item = self._get_secret_item(secret_id)
+        else:
+            # Look up by name via GSI1
+            results = self._table.query(
+                pk=f"{GSI1_GW_SECRET_NAME_PREFIX}{self._workspace}#{secret_name}",
+                index_name="gsi1",
+                limit=1,
+            )
+            if not results:
+                raise MlflowException(
+                    f"Secret with name '{secret_name}' not found",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            found_secret_id = results[0]["gsi1sk"]
+            item = self._get_secret_item(found_secret_id)
+
+        if item is None:
+            identifier = secret_id if secret_id else secret_name
+            raise MlflowException(
+                f"Secret '{identifier}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        return self._secret_item_to_entity(item)
+
+    def update_gateway_secret(
+        self,
+        secret_id: str,
+        secret_value: dict[str, str] | None = None,
+        auth_config: dict[str, str] | None = None,
+        updated_by: str | None = None,
+    ) -> GatewaySecretInfo:
+        import json as _json
+
+        # Fetch existing to verify it exists and get secret_name for AAD
+        item = self._get_secret_item(secret_id)
+        if item is None:
+            raise MlflowException(
+                f"Secret '{secret_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+        updates: dict[str, Any] = {"last_updated_at": now}
+        removes: list[str] = []
+
+        if secret_value is not None:
+            kek_manager = KEKManager()
+            value_to_encrypt = _json.dumps(secret_value)
+            encrypted = _encrypt_secret(
+                value_to_encrypt, kek_manager, secret_id, item["secret_name"]
+            )
+            updates["encrypted_value"] = encrypted.encrypted_value
+            updates["wrapped_dek"] = encrypted.wrapped_dek
+            updates["kek_version"] = encrypted.kek_version
+            updates["masked_value"] = _mask_secret_value(secret_value)
+
+        if auth_config is not None:
+            if auth_config:
+                updates["auth_config"] = auth_config
+            else:
+                # Empty dict means clear auth_config
+                removes.append("auth_config")
+
+        if updated_by is not None:
+            updates["last_updated_by"] = updated_by
+
+        self._table.update_item(
+            pk=f"{PK_GW_SECRET_PREFIX}{secret_id}",
+            sk=SK_GW_META,
+            updates=updates,
+            removes=removes if removes else None,
+        )
+
+        # Re-fetch to return the full updated entity
+        updated_item = self._get_secret_item(secret_id)
+        self._invalidate_secret_cache()
+        return self._secret_item_to_entity(updated_item)  # type: ignore[arg-type]
+
+    def delete_gateway_secret(self, secret_id: str) -> None:
+        item = self._get_secret_item(secret_id)
+        if item is None:
+            raise MlflowException(
+                f"Secret '{secret_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Orphan model definitions that reference this secret (SET NULL behavior)
+        model_defs = self._table.query(
+            pk=f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}",
+            index_name="gsi4",
+        )
+        for md_item in model_defs:
+            self._table.update_item(
+                pk=md_item["PK"],
+                sk=md_item["SK"],
+                removes=["secret_id", "gsi4pk", "gsi4sk"],
+            )
+
+        self._table.delete_item(
+            pk=f"{PK_GW_SECRET_PREFIX}{secret_id}",
+            sk=SK_GW_META,
+        )
+        self._invalidate_secret_cache()
+
+    def list_secret_infos(self, provider: str | None = None) -> list[GatewaySecretInfo]:
+        from boto3.dynamodb.conditions import Attr
+
+        filter_expr = Attr("provider").eq(provider) if provider else None
+
+        items = self._table.query(
+            pk=f"{GSI2_GW_SECRETS_PREFIX}{self._workspace}",
+            index_name="gsi2",
+            filter_expression=filter_expr,
+        )
+
+        # GSI2 has ALL projection — items include all base table attributes
+        # (PK, SK, secret_name, masked_value, etc.), no re-fetch needed.
+        return [self._secret_item_to_entity(item) for item in items]

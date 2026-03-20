@@ -161,3 +161,16 @@ SK_TMCACHE_RESULT = "RESULT"
 # Pagination overflow cache
 PK_OVERFLOW_PREFIX = "OVERFLOW#"
 SK_OVERFLOW_PAGE_PREFIX = "PAGE#"
+
+# --- Phase 5: Gateway ---
+
+# Gateway partition prefixes
+PK_GW_SECRET_PREFIX = "GW_SECRET#"
+
+# Gateway sort keys
+SK_GW_META = "GW#META"
+
+# GSI prefixes for gateway
+GSI1_GW_SECRET_NAME_PREFIX = "GW_SECRET_NAME#"
+GSI2_GW_SECRETS_PREFIX = "GW_SECRETS#"
+GSI4_GW_MODELDEF_SECRET_PREFIX = "GW_MODELDEF_SECRET#"

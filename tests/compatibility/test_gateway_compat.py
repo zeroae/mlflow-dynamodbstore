@@ -130,33 +130,6 @@ _xfail_gateway = pytest.mark.xfail(
     reason="Gateway store methods not yet implemented (Phase 5)",
 )
 
-# Secrets
-test_create_gateway_secret = _xfail_gateway(test_create_gateway_secret)
-test_create_gateway_secret_duplicate_name_raises = _xfail_gateway(
-    test_create_gateway_secret_duplicate_name_raises
-)
-test_create_gateway_secret_with_auth_config = _xfail_gateway(
-    test_create_gateway_secret_with_auth_config
-)
-test_create_gateway_secret_with_dict_value = _xfail_gateway(
-    test_create_gateway_secret_with_dict_value
-)
-test_delete_gateway_secret = _xfail_gateway(test_delete_gateway_secret)
-test_get_gateway_secret_info_by_id = _xfail_gateway(test_get_gateway_secret_info_by_id)
-test_get_gateway_secret_info_by_name = _xfail_gateway(test_get_gateway_secret_info_by_name)
-test_get_gateway_secret_info_not_found = _xfail_gateway(test_get_gateway_secret_info_not_found)
-test_get_gateway_secret_info_requires_one_of_id_or_name = _xfail_gateway(
-    test_get_gateway_secret_info_requires_one_of_id_or_name
-)
-test_list_gateway_secret_infos = _xfail_gateway(test_list_gateway_secret_infos)
-test_update_gateway_secret = _xfail_gateway(test_update_gateway_secret)
-test_update_gateway_secret_clear_auth_config = _xfail_gateway(
-    test_update_gateway_secret_clear_auth_config
-)
-test_update_gateway_secret_with_auth_config = _xfail_gateway(
-    test_update_gateway_secret_with_auth_config
-)
-
 # Model Definitions
 test_create_gateway_model_definition = _xfail_gateway(test_create_gateway_model_definition)
 test_create_gateway_model_definition_duplicate_name_raises = _xfail_gateway(
