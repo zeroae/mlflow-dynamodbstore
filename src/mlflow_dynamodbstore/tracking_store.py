@@ -1315,7 +1315,14 @@ class DynamoDBTrackingStore(AbstractStore):
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         now_ms = int(time.time() * 1000)
 
-        self._table.delete_item(pk=pk, sk=f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}{key}")
+        tag_sk = f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}{key}"
+        existing = self._table.get_item(pk=pk, sk=tag_sk)
+        if existing is None:
+            raise MlflowException(
+                f"No tag with key '{key}' for logged model '{model_id}'.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        self._table.delete_item(pk=pk, sk=tag_sk)
 
         # Update denormalized tags on META item
         meta = self._table.get_item(pk=pk, sk=f"{SK_LM_PREFIX}{model_id}") or {}
@@ -2232,6 +2239,9 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def set_tag(self, run_id: str, tag: RunTag) -> None:
         """Set a tag on a run."""
+        from mlflow.utils.validation import _validate_tag_name
+
+        _validate_tag_name(tag.key)
         experiment_id = self._resolve_run_experiment(run_id)
         self._write_run_tag(experiment_id, run_id, tag)
 
@@ -3448,6 +3458,10 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def set_trace_tag(self, trace_id: str, key: str, value: str) -> None:
         """Set a tag on a trace."""
+        from mlflow.utils.validation import _validate_length_limit, _validate_tag_name
+
+        _validate_tag_name(key)
+        _validate_length_limit("key", 250, key)
         experiment_id = self._resolve_trace_experiment(trace_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         # Read TTL from the trace META item

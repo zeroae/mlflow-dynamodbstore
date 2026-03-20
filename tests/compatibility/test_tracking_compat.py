@@ -445,11 +445,8 @@ test_search_traces_with_prompts_filter_invalid_format = _xfail_validation(
     test_search_traces_with_prompts_filter_invalid_format
 )
 
-# --- Category 3: error message wording or validation mismatch ---
-_xfail_error_msg = pytest.mark.xfail(
-    reason="DynamoDB store uses different error message format or missing validation"
-)
-test_delete_logged_model_tag = _xfail_error_msg(test_delete_logged_model_tag)
+# --- Category 3: error message or validation mismatch (remaining) ---
+_xfail_error_msg = pytest.mark.xfail(reason="DynamoDB store uses different error/validation format")
 test_get_experiment_invalid_id = _xfail_error_msg(test_get_experiment_invalid_id)
 test_search_logged_models_invalid_filter_string = _xfail_error_msg(
     test_search_logged_models_invalid_filter_string
@@ -457,7 +454,6 @@ test_search_logged_models_invalid_filter_string = _xfail_error_msg(
 test_upsert_online_scoring_config_validates_sample_rate = _xfail_error_msg(
     test_upsert_online_scoring_config_validates_sample_rate
 )
-test_set_invalid_tag = _xfail_error_msg(test_set_invalid_tag)
 
 # --- Category 4: StopIteration leaking from async coroutine (16 tests) ---
 _xfail_stopiter = pytest.mark.xfail(
