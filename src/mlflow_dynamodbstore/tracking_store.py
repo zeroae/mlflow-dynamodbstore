@@ -25,11 +25,13 @@ from mlflow.entities import (
     FallbackConfig,
     FallbackStrategy,
     GatewayEndpoint,
+    GatewayEndpointBinding,
     GatewayEndpointModelConfig,
     GatewayEndpointModelMapping,
     GatewayEndpointTag,
     GatewayModelDefinition,
     GatewayModelLinkageType,
+    GatewayResourceType,
     GatewaySecretInfo,
     InputTag,
     LoggedModel,
@@ -100,6 +102,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_DS_LIST_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
+    GSI2_GW_BIND_PREFIX,
     GSI2_GW_ENDPOINTS_PREFIX,
     GSI2_GW_MODELDEFS_PREFIX,
     GSI2_GW_SECRETS_PREFIX,
@@ -6385,3 +6388,165 @@ class DynamoDBTrackingStore(AbstractStore):
             updates={"last_updated_at": now},
         )
         self._invalidate_secret_cache()
+
+    def create_endpoint_binding(
+        self,
+        endpoint_id: str,
+        resource_type: str,
+        resource_id: str,
+        created_by: str | None = None,
+    ) -> GatewayEndpointBinding:
+        # Verify endpoint exists
+        meta = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+        )
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+
+        item: dict[str, Any] = {
+            "PK": f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            "SK": f"{SK_GW_BIND_PREFIX}{resource_type}#{resource_id}",
+            "endpoint_id": endpoint_id,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "created_at": now,
+            "last_updated_at": now,
+            # GSI2 projection for reverse lookup (AP25)
+            "gsi2pk": f"{GSI2_GW_BIND_PREFIX}{resource_type}#{resource_id}",
+            "gsi2sk": endpoint_id,
+        }
+        if created_by is not None:
+            item["created_by"] = created_by
+            item["last_updated_by"] = created_by
+
+        self._table.put_item(item)
+        self._invalidate_secret_cache()
+
+        return GatewayEndpointBinding(
+            endpoint_id=endpoint_id,
+            resource_type=GatewayResourceType(resource_type),
+            resource_id=resource_id,
+            created_at=now,
+            last_updated_at=now,
+            created_by=created_by,
+            last_updated_by=created_by,
+        )
+
+    def delete_endpoint_binding(
+        self,
+        endpoint_id: str,
+        resource_type: str,
+        resource_id: str,
+    ) -> None:
+        # Verify binding exists
+        sk = f"{SK_GW_BIND_PREFIX}{resource_type}#{resource_id}"
+        existing = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=sk,
+        )
+        if existing is None:
+            raise MlflowException(
+                f"GatewayEndpointBinding not found (endpoint_id='{endpoint_id}', "
+                f"resource_type='{resource_type}', resource_id='{resource_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        self._table.delete_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=sk,
+        )
+        self._invalidate_secret_cache()
+
+    def list_endpoint_bindings(
+        self,
+        endpoint_id: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+    ) -> list[GatewayEndpointBinding]:
+        if endpoint_id is not None:
+            # Direct query within endpoint partition
+            sk_prefix = SK_GW_BIND_PREFIX
+            if resource_type is not None:
+                sk_prefix = f"{SK_GW_BIND_PREFIX}{resource_type}#"
+                if resource_id is not None:
+                    sk_prefix = f"{SK_GW_BIND_PREFIX}{resource_type}#{resource_id}"
+
+            items = self._table.query(
+                pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+                sk_prefix=sk_prefix,
+            )
+            return [
+                GatewayEndpointBinding(
+                    endpoint_id=item["endpoint_id"],
+                    resource_type=GatewayResourceType(item["resource_type"]),
+                    resource_id=item["resource_id"],
+                    created_at=int(item["created_at"]),
+                    last_updated_at=int(item["last_updated_at"]),
+                    created_by=item.get("created_by"),
+                    last_updated_by=item.get("last_updated_by"),
+                    display_name=item.get("display_name"),
+                )
+                for item in items
+            ]
+
+        if resource_type is not None and resource_id is not None:
+            # Reverse lookup via GSI2
+            gsi2_items = self._table.query(
+                pk=f"{GSI2_GW_BIND_PREFIX}{resource_type}#{resource_id}",
+                index_name="gsi2",
+            )
+            bindings = []
+            for gsi2_item in gsi2_items:
+                ep_id = gsi2_item["gsi2sk"]
+                sk = f"{SK_GW_BIND_PREFIX}{resource_type}#{resource_id}"
+                bind_item = self._table.get_item(
+                    pk=f"{PK_GW_ENDPOINT_PREFIX}{ep_id}",
+                    sk=sk,
+                )
+                if bind_item:
+                    bindings.append(
+                        GatewayEndpointBinding(
+                            endpoint_id=bind_item["endpoint_id"],
+                            resource_type=GatewayResourceType(bind_item["resource_type"]),
+                            resource_id=bind_item["resource_id"],
+                            created_at=int(bind_item["created_at"]),
+                            last_updated_at=int(bind_item["last_updated_at"]),
+                            created_by=bind_item.get("created_by"),
+                            last_updated_by=bind_item.get("last_updated_by"),
+                            display_name=bind_item.get("display_name"),
+                        )
+                    )
+            return bindings
+
+        # No endpoint_id and no resource filter: list all endpoints, query bindings per endpoint
+        gsi2_items = self._table.query(
+            pk=f"{GSI2_GW_ENDPOINTS_PREFIX}{self._workspace}",
+            index_name="gsi2",
+        )
+        bindings = []
+        for gsi2_item in gsi2_items:
+            ep_id = gsi2_item["gsi2sk"]
+            bind_items = self._table.query(
+                pk=f"{PK_GW_ENDPOINT_PREFIX}{ep_id}",
+                sk_prefix=SK_GW_BIND_PREFIX,
+            )
+            for item in bind_items:
+                bindings.append(
+                    GatewayEndpointBinding(
+                        endpoint_id=item["endpoint_id"],
+                        resource_type=GatewayResourceType(item["resource_type"]),
+                        resource_id=item["resource_id"],
+                        created_at=int(item["created_at"]),
+                        last_updated_at=int(item["last_updated_at"]),
+                        created_by=item.get("created_by"),
+                        last_updated_by=item.get("last_updated_by"),
+                        display_name=item.get("display_name"),
+                    )
+                )
+        return bindings
