@@ -517,11 +517,10 @@ test_log_inputs_with_large_inputs_limit_check = _xfail_dataset(
     test_log_inputs_with_large_inputs_limit_check
 )
 
-# --- Category 7: trace does not exist after log_spans/start_trace (11 tests) ---
+# --- Category 7: trace persistence remaining issues ---
 _xfail_trace_persist = pytest.mark.xfail(
-    reason="DynamoDB store fails to persist traces correctly via log_spans/start_trace"
+    reason="DynamoDB store trace persistence issues (handler, incomplete, tags, sessions)"
 )
-test_batch_get_traces_basic = _xfail_trace_persist(test_batch_get_traces_basic)
 test_batch_get_traces_integration_with_trace_handler = _xfail_trace_persist(
     test_batch_get_traces_integration_with_trace_handler
 )
@@ -531,7 +530,6 @@ test_batch_get_traces_with_incomplete_trace = _xfail_trace_persist(
 test_concurrent_log_spans_spans_location_tag = _xfail_trace_persist(
     test_concurrent_log_spans_spans_location_tag
 )
-test_get_trace_basic = _xfail_trace_persist(test_get_trace_basic)
 test_log_spans_cost = _xfail_trace_persist(test_log_spans_cost)
 test_log_spans_session_id_handling = _xfail_trace_persist(test_log_spans_session_id_handling)
 test_log_spans_then_start_trace_preserves_tag = _xfail_trace_persist(
@@ -602,20 +600,12 @@ test_search_logged_models_pagination = _xfail_logged_model(test_search_logged_mo
 test_log_batch_logged_model = _xfail_logged_model(test_log_batch_logged_model)
 test_log_outputs = _xfail_logged_model(test_log_outputs)
 
-# --- Category 11: batch_get_traces returns empty span lists (6 tests) ---
+# --- Category 11: batch_get_traces remaining issues ---
 _xfail_batch_spans = pytest.mark.xfail(
-    reason="DynamoDB store batch_get_traces returns empty span lists"
+    reason="DynamoDB store batch_get_traces ordering or token usage issues"
 )
-test_batch_get_trace_infos_ordering = _xfail_batch_spans(test_batch_get_trace_infos_ordering)
-test_batch_get_traces_multiple_traces = _xfail_batch_spans(test_batch_get_traces_multiple_traces)
 test_batch_get_traces_ordering = _xfail_batch_spans(test_batch_get_traces_ordering)
-test_batch_get_traces_preserves_json_serialization = _xfail_batch_spans(
-    test_batch_get_traces_preserves_json_serialization
-)
 test_batch_get_traces_token_usage = _xfail_batch_spans(test_batch_get_traces_token_usage)
-test_batch_get_traces_with_complex_attributes = _xfail_batch_spans(
-    test_batch_get_traces_with_complex_attributes
-)
 
 # --- Category 12: trace tag/artifact path issues (6 tests) ---
 _xfail_trace_path = pytest.mark.xfail(
