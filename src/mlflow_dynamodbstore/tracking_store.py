@@ -49,6 +49,7 @@ from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
     INVALID_PARAMETER_VALUE,
+    INVALID_STATE,
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
@@ -99,6 +100,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI3_SK,
     GSI4_GW_MODELDEF_SECRET_PREFIX,
     GSI5_EXP_NAMES_PREFIX,
+    GSI5_GW_ENDPOINT_MODELDEF_PREFIX,
     GSI5_PK,
     GSI5_SK,
     LSI1_SK,
@@ -5707,3 +5709,29 @@ class DynamoDBTrackingStore(AbstractStore):
         assert updated_item is not None  # just wrote it
         self._invalidate_secret_cache()
         return self._model_def_item_to_entity(updated_item)
+
+    def delete_gateway_model_definition(self, model_definition_id: str) -> None:
+        item = self._get_model_def_item(model_definition_id)
+        if item is None:
+            raise MlflowException(
+                f"Model definition '{model_definition_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # RESTRICT: check if any endpoints use this model def via GSI5
+        endpoints = self._table.query(
+            pk=f"{GSI5_GW_ENDPOINT_MODELDEF_PREFIX}{model_definition_id}",
+            index_name="gsi5",
+        )
+        if endpoints:
+            raise MlflowException(
+                "Cannot delete model definition that is currently in use by endpoints. "
+                "Detach it from all endpoints first.",
+                error_code=INVALID_STATE,
+            )
+
+        self._table.delete_item(
+            pk=f"{PK_GW_MODELDEF_PREFIX}{model_definition_id}",
+            sk=SK_GW_META,
+        )
+        self._invalidate_secret_cache()
