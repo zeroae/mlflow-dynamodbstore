@@ -1261,6 +1261,15 @@ class DynamoDBRegistryStore(AbstractStore):
         model_id: str | None = None,
     ) -> ModelVersion:
         """Create a new model version under the given registered model."""
+        # Resolve models:/<name>/<version> URI to actual storage location
+        storage_location = source
+        if source and source.startswith("models:/"):
+            # Parse models:/<model_name>/<version>
+            parts = source[len("models:/") :].split("/")
+            if len(parts) >= 2:
+                src_name, src_version = parts[0], parts[1]
+                storage_location = self.get_model_version_download_uri(src_name, src_version)
+
         if not run_id and model_id:
             model = MlflowClient().get_logged_model(model_id)
             run_id = model.source_run_id
@@ -1281,6 +1290,7 @@ class DynamoDBRegistryStore(AbstractStore):
             "name": name,
             "version": padded,
             "source": source or "",
+            "storage_location": storage_location or "",
             "run_id": run_id or "",
             "run_link": run_link or "",
             "description": description or "",
@@ -1906,9 +1916,29 @@ class DynamoDBRegistryStore(AbstractStore):
             )
 
     def get_model_version_download_uri(self, name: str, version: str) -> str:
-        """Return the source URI for a model version."""
-        mv = self.get_model_version(name, version)
-        return mv.source or ""
+        """Return the download URI for a model version.
+
+        Returns ``storage_location`` if set (resolved from ``models:/`` URI),
+        otherwise falls back to ``source``.
+        """
+        try:
+            model_ulid = self._resolve_model_ulid(name)
+        except MlflowException:
+            raise MlflowException(
+                f"Model Version (name={name}, version={version}) not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            ) from None
+        padded = _pad_version(version)
+        item = self._table.get_item(
+            pk=f"{PK_MODEL_PREFIX}{model_ulid}",
+            sk=f"{SK_VERSION_PREFIX}{padded}",
+        )
+        if item is None or item.get("current_stage") == STAGE_DELETED_INTERNAL:
+            raise MlflowException(
+                f"Model Version (name={name}, version={version}) not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        return item.get("storage_location") or item.get("source") or ""
 
     def transition_model_version_stage(
         self,
@@ -1984,15 +2014,6 @@ class DynamoDBRegistryStore(AbstractStore):
 
         tags = self._get_version_tags(model_ulid, padded)
         return _item_to_model_version(updated_item, tags)
-
-    def copy_model_version(self, src_mv: ModelVersion, dst_name: str) -> ModelVersion:
-        """Copy a model version to another registered model."""
-        return self.create_model_version(
-            name=dst_name,
-            source=src_mv.source or "",
-            run_id=src_mv.run_id,
-            description=src_mv.description,
-        )
 
     # ------------------------------------------------------------------
     # Model Version Tags

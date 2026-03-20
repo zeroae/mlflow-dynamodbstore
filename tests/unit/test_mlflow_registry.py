@@ -321,4 +321,5 @@ class TestRegistryCompatibility:
         copied = store.copy_model_version(v1, "dst-model")
         assert isinstance(copied, ModelVersion)
         assert copied.name == "dst-model"
-        assert copied.source == "s3://original"
+        assert copied.source == "models:/src-model/1"
+        assert store.get_model_version_download_uri("dst-model", copied.version) == "s3://original"
