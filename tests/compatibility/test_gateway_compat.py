@@ -124,88 +124,10 @@ from tests.store.tracking.test_gateway_sql_store import (  # noqa: E402, F401
     test_update_gateway_secret_with_auth_config,
 )
 
-# --- Gateway store methods not yet implemented ---
-_xfail_gateway = pytest.mark.xfail(
-    raises=NotImplementedError,
-    reason="Gateway store methods not yet implemented (Phase 5)",
-)
-
-# Model Definitions — in_use_raises depends on create_gateway_endpoint (Phase 5c)
-test_delete_gateway_model_definition_in_use_raises = pytest.mark.xfail(
-    raises=NotImplementedError,
-    reason="Depends on create_gateway_endpoint (Phase 5c)",
-)(test_delete_gateway_model_definition_in_use_raises)
-
-# Endpoints
-test_create_gateway_endpoint = _xfail_gateway(test_create_gateway_endpoint)
-test_create_gateway_endpoint_auto_creates_experiment = _xfail_gateway(
-    test_create_gateway_endpoint_auto_creates_experiment
-)
-test_create_gateway_endpoint_empty_models_raises = _xfail_gateway(
-    test_create_gateway_endpoint_empty_models_raises
-)
-test_create_gateway_endpoint_nonexistent_model_raises = _xfail_gateway(
-    test_create_gateway_endpoint_nonexistent_model_raises
-)
-test_delete_gateway_endpoint = _xfail_gateway(test_delete_gateway_endpoint)
-test_get_gateway_endpoint_by_id = _xfail_gateway(test_get_gateway_endpoint_by_id)
-test_get_gateway_endpoint_by_name = _xfail_gateway(test_get_gateway_endpoint_by_name)
-test_get_gateway_endpoint_requires_one_of_id_or_name = _xfail_gateway(
-    test_get_gateway_endpoint_requires_one_of_id_or_name
-)
-test_list_gateway_endpoints = _xfail_gateway(test_list_gateway_endpoints)
-test_update_gateway_endpoint = _xfail_gateway(test_update_gateway_endpoint)
-
-# Model Attachment
-test_attach_duplicate_model_raises = _xfail_gateway(test_attach_duplicate_model_raises)
-test_attach_model_to_gateway_endpoint = _xfail_gateway(test_attach_model_to_gateway_endpoint)
-test_detach_model_from_gateway_endpoint = _xfail_gateway(test_detach_model_from_gateway_endpoint)
-test_detach_nonexistent_mapping_raises = _xfail_gateway(test_detach_nonexistent_mapping_raises)
-
-# Bindings
-test_create_gateway_endpoint_binding = _xfail_gateway(test_create_gateway_endpoint_binding)
-test_delete_gateway_endpoint_binding = _xfail_gateway(test_delete_gateway_endpoint_binding)
-test_list_gateway_endpoint_bindings = _xfail_gateway(test_list_gateway_endpoint_bindings)
-
-# Tags
-test_delete_gateway_endpoint_tag = _xfail_gateway(test_delete_gateway_endpoint_tag)
-test_delete_gateway_endpoint_tag_nonexistent_endpoint_raises = _xfail_gateway(
-    test_delete_gateway_endpoint_tag_nonexistent_endpoint_raises
-)
-test_delete_gateway_endpoint_tag_nonexistent_key_no_op = _xfail_gateway(
-    test_delete_gateway_endpoint_tag_nonexistent_key_no_op
-)
-test_endpoint_tags_deleted_with_endpoint = _xfail_gateway(test_endpoint_tags_deleted_with_endpoint)
-test_set_gateway_endpoint_tag = _xfail_gateway(test_set_gateway_endpoint_tag)
-test_set_gateway_endpoint_tag_nonexistent_endpoint_raises = _xfail_gateway(
-    test_set_gateway_endpoint_tag_nonexistent_endpoint_raises
-)
-test_set_gateway_endpoint_tag_update_existing = _xfail_gateway(
-    test_set_gateway_endpoint_tag_update_existing
-)
-test_set_multiple_endpoint_tags = _xfail_gateway(test_set_multiple_endpoint_tags)
-
-# Scorer Integration
-test_get_scorer_resolves_endpoint_id_to_name = _xfail_gateway(
-    test_get_scorer_resolves_endpoint_id_to_name
-)
-test_get_scorer_with_deleted_endpoint_sets_model_to_null = _xfail_gateway(
-    test_get_scorer_with_deleted_endpoint_sets_model_to_null
-)
-test_list_scorers_batch_resolves_endpoint_ids = _xfail_gateway(
-    test_list_scorers_batch_resolves_endpoint_ids
-)
-test_register_scorer_resolves_endpoint_name_to_id = _xfail_gateway(
-    test_register_scorer_resolves_endpoint_name_to_id
-)
+# --- Scorer-gateway integration gaps ---
 test_register_scorer_with_nonexistent_endpoint_raises = pytest.mark.xfail(
     reason="DynamoDB store register_scorer does not validate gateway endpoint existence"
 )(test_register_scorer_with_nonexistent_endpoint_raises)
-
-# Fallback / Traffic Routing
-test_create_gateway_endpoint_with_fallback_routing = _xfail_gateway(
-    test_create_gateway_endpoint_with_fallback_routing
-)
-test_create_gateway_endpoint_with_traffic_split = _xfail_gateway(
-    test_create_gateway_endpoint_with_traffic_split
-)
+test_get_scorer_with_deleted_endpoint_sets_model_to_null = pytest.mark.xfail(
+    reason="DynamoDB store get_scorer does not null out model when endpoint is deleted"
+)(test_get_scorer_with_deleted_endpoint_sets_model_to_null)
