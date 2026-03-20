@@ -2880,11 +2880,15 @@ class DynamoDBTrackingStore(AbstractStore):
             span_types: set[str] = set()
             span_statuses: set[str] = set()
             span_names: set[str] = set()
-            # Accumulators for trace-level token usage
+            # Accumulators for trace-level token usage and cost
             total_input_tokens = 0
             total_output_tokens = 0
             total_total_tokens = 0
             has_token_usage = False
+            total_input_cost = 0.0
+            total_output_cost = 0.0
+            total_total_cost = 0.0
+            has_cost = False
 
             for span in trace_spans:
                 sd = span.to_dict()
@@ -2993,6 +2997,11 @@ class DynamoDBTrackingStore(AbstractStore):
                                 if ttl is not None:
                                     cost_item["ttl"] = ttl
                                 extra_items.append(cost_item)
+                        # Accumulate trace-level cost
+                        total_input_cost += float(cost.get("input_cost", 0) or 0)
+                        total_output_cost += float(cost.get("output_cost", 0) or 0)
+                        total_total_cost += float(cost.get("total_cost", 0) or 0)
+                        has_cost = True
                     except (TypeError, _json.JSONDecodeError, ValueError):
                         pass
 
@@ -3014,6 +3023,60 @@ class DynamoDBTrackingStore(AbstractStore):
                     if ttl is not None:
                         tmetric_item["ttl"] = ttl
                     extra_items.append(tmetric_item)
+
+            # --- Write trace-level token_usage and cost as RMETA items ---
+            # Accumulate with existing values (log_spans may be called multiple times)
+            if has_token_usage:
+                existing_token = self._table.get_item(
+                    pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#mlflow.trace.tokenUsage"
+                )
+                if existing_token:
+                    prev = _json.loads(existing_token["value"])
+                    total_input_tokens += int(prev.get("input_tokens", 0))
+                    total_output_tokens += int(prev.get("output_tokens", 0))
+                    total_total_tokens += int(prev.get("total_tokens", 0))
+                token_data = _json.dumps(
+                    {
+                        "input_tokens": total_input_tokens,
+                        "output_tokens": total_output_tokens,
+                        "total_tokens": total_total_tokens,
+                    }
+                )
+                rmeta_token: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#mlflow.trace.tokenUsage",
+                    "key": "mlflow.trace.tokenUsage",
+                    "value": token_data,
+                }
+                if ttl is not None:
+                    rmeta_token["ttl"] = ttl
+                extra_items.append(rmeta_token)
+
+            if has_cost:
+                existing_cost = self._table.get_item(
+                    pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#mlflow.trace.cost"
+                )
+                if existing_cost:
+                    prev = _json.loads(existing_cost["value"])
+                    total_input_cost += float(prev.get("input_cost", 0))
+                    total_output_cost += float(prev.get("output_cost", 0))
+                    total_total_cost += float(prev.get("total_cost", 0))
+                cost_data = _json.dumps(
+                    {
+                        "input_cost": total_input_cost,
+                        "output_cost": total_output_cost,
+                        "total_cost": total_total_cost,
+                    }
+                )
+                rmeta_cost: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#mlflow.trace.cost",
+                    "key": "mlflow.trace.cost",
+                    "value": cost_data,
+                }
+                if ttl is not None:
+                    rmeta_cost["ttl"] = ttl
+                extra_items.append(rmeta_cost)
 
             # Write all extra items in batch
             if extra_items:

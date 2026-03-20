@@ -449,16 +449,6 @@ test_search_traces_with_prompts_filter_invalid_format = _xfail_validation(
 _xfail_error_msg = pytest.mark.xfail(reason="DynamoDB store uses ULID experiment IDs, not integers")
 test_get_experiment_invalid_id = _xfail_error_msg(test_get_experiment_invalid_id)
 
-# --- Category 4: log_spans cost/token metric incremental updates ---
-_xfail_span_metrics = pytest.mark.xfail(
-    reason="DynamoDB store log_spans cost/token incremental updates incomplete"
-)
-test_log_spans_update_cost_incrementally = _xfail_span_metrics(
-    test_log_spans_update_cost_incrementally
-)
-test_log_spans_update_token_usage_incrementally = _xfail_span_metrics(
-    test_log_spans_update_token_usage_incrementally
-)
 
 # --- Category 5: search runs ordering/pagination/filtering broken (15 tests) ---
 _xfail_search_runs = pytest.mark.xfail(
