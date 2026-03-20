@@ -3846,7 +3846,7 @@ class DynamoDBTrackingStore(AbstractStore):
         item = self._table.get_item(pk=pk, sk=sk)
         if item is None:
             raise MlflowException(
-                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                f"Assessment '{assessment_id}' for trace '{trace_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -3870,7 +3870,7 @@ class DynamoDBTrackingStore(AbstractStore):
         item = self._table.get_item(pk=pk, sk=sk)
         if item is None:
             raise MlflowException(
-                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                f"Assessment '{assessment_id}' for trace '{trace_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         ttl = int(item["ttl"]) if "ttl" in item else self._get_trace_ttl()
@@ -3955,7 +3955,7 @@ class DynamoDBTrackingStore(AbstractStore):
         item = self._table.get_item(pk=pk, sk=sk)
         if item is None:
             raise MlflowException(
-                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                f"Assessment '{assessment_id}' for trace '{trace_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
