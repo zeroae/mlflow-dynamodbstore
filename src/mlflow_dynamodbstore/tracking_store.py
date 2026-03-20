@@ -6550,3 +6550,72 @@ class DynamoDBTrackingStore(AbstractStore):
                     )
                 )
         return bindings
+
+    def set_gateway_endpoint_tag(
+        self,
+        endpoint_id: str,
+        tag: GatewayEndpointTag,
+    ) -> None:
+        # Verify endpoint exists
+        meta = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+        )
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+
+        # Write the tag item (upsert)
+        tag_item: dict[str, Any] = {
+            "PK": f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            "SK": f"{SK_GW_TAG_PREFIX}{tag.key}",
+            "key": tag.key,
+            "value": tag.value,
+        }
+        self._table.put_item(tag_item)
+
+        # Update denormalized tags on META
+        tags_dict = dict(meta.get("tags", {}))
+        tags_dict[tag.key] = tag.value
+        self._table.update_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+            updates={"tags": tags_dict, "last_updated_at": now},
+        )
+
+    def delete_gateway_endpoint_tag(
+        self,
+        endpoint_id: str,
+        key: str,
+    ) -> None:
+        # Verify endpoint exists
+        meta = self._table.get_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+        )
+        if meta is None:
+            raise MlflowException(
+                f"GatewayEndpoint not found (endpoint_id='{endpoint_id}')",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+
+        # Delete the tag item (no-op if it doesn't exist)
+        self._table.delete_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=f"{SK_GW_TAG_PREFIX}{key}",
+        )
+
+        # Update denormalized tags on META
+        tags_dict = dict(meta.get("tags", {}))
+        tags_dict.pop(key, None)
+        self._table.update_item(
+            pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
+            sk=SK_GW_META,
+            updates={"tags": tags_dict, "last_updated_at": now},
+        )
