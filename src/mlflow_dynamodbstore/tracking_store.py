@@ -5639,3 +5639,71 @@ class DynamoDBTrackingStore(AbstractStore):
             model_defs = [md for md in model_defs if md.provider == provider]
 
         return model_defs
+
+    def update_gateway_model_definition(
+        self,
+        model_definition_id: str,
+        name: str | None = None,
+        secret_id: str | None = None,
+        model_name: str | None = None,
+        updated_by: str | None = None,
+        provider: str | None = None,
+    ) -> GatewayModelDefinition:
+        item = self._get_model_def_item(model_definition_id)
+        if item is None:
+            raise MlflowException(
+                f"Model definition '{model_definition_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+        updates: dict[str, Any] = {"last_updated_at": now}
+        removes: list[str] = []
+
+        if name is not None:
+            # Check new name uniqueness
+            existing = self._table.query(
+                pk=f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}",
+                index_name="gsi3",
+                limit=1,
+            )
+            if existing and existing[0]["gsi3sk"] != model_definition_id:
+                raise MlflowException(
+                    f"Model definition with name '{name}' already exists",
+                    error_code=RESOURCE_ALREADY_EXISTS,
+                )
+            updates["name"] = name
+            updates["gsi3pk"] = f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}"
+
+        if secret_id is not None:
+            # Verify new secret exists
+            secret_item = self._get_secret_item(secret_id)
+            if secret_item is None:
+                raise MlflowException(
+                    f"Secret '{secret_id}' not found",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            updates["secret_id"] = secret_id
+            updates["gsi4pk"] = f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}"
+            updates["gsi4sk"] = model_definition_id
+
+        if model_name is not None:
+            updates["model_name"] = model_name
+
+        if provider is not None:
+            updates["provider"] = provider
+
+        if updated_by is not None:
+            updates["last_updated_by"] = updated_by
+
+        self._table.update_item(
+            pk=f"{PK_GW_MODELDEF_PREFIX}{model_definition_id}",
+            sk=SK_GW_META,
+            updates=updates,
+            removes=removes if removes else None,
+        )
+
+        updated_item = self._get_model_def_item(model_definition_id)
+        assert updated_item is not None  # just wrote it
+        self._invalidate_secret_cache()
+        return self._model_def_item_to_entity(updated_item)
