@@ -41,6 +41,23 @@ def convert_decimals(obj: Any) -> Any:
     return obj
 
 
+def convert_floats(obj: Any) -> Any:
+    """Recursively convert float values to Decimal for DynamoDB storage.
+
+    DynamoDB's boto3 resource API rejects Python ``float`` values.
+    This converts them to ``Decimal`` before writing.
+    """
+    from decimal import Decimal
+
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    if isinstance(obj, dict):
+        return {k: convert_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [convert_floats(v) for v in obj]
+    return obj
+
+
 # Attributes that must be numeric (DynamoDB N type) per table schema.
 # All other index key attributes are String (S).
 _NUMERIC_ATTRS: frozenset[str] = frozenset({"lsi2sk"})
@@ -87,6 +104,7 @@ class DynamoDBTable:
     def put_item(self, item: dict[str, Any], condition: str | None = None) -> None:
         """Write an item, with optional ConditionExpression."""
         _validate_index_key_types(item)
+        item = convert_floats(item)
         kwargs: dict[str, Any] = {"Item": item}
         if condition:
             kwargs["ConditionExpression"] = condition
@@ -253,7 +271,7 @@ class DynamoDBTable:
             _validate_index_key_types(item)
         with self._table.batch_writer() as batch:
             for item in items:
-                batch.put_item(Item=item)
+                batch.put_item(Item=convert_floats(item))
 
     def batch_delete(self, keys: list[dict[str, Any]]) -> None:
         """Batch delete items by PK+SK key dicts."""

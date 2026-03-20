@@ -564,8 +564,6 @@ test_dataset_schema_and_profile_incremental_updates = _xfail_decimal(
     test_dataset_schema_and_profile_incremental_updates
 )
 test_dataset_digest_updates_with_changes = _xfail_decimal(test_dataset_digest_updates_with_changes)
-test_log_null_metric = _xfail_decimal(test_log_null_metric)
-test_log_batch_null_metrics = _xfail_decimal(test_log_batch_null_metrics)
 test_log_metric_allows_multiple_values_at_same_ts_and_run_data_uses_max_ts_value = _xfail_decimal(
     test_log_metric_allows_multiple_values_at_same_ts_and_run_data_uses_max_ts_value
 )
