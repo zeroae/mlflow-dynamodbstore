@@ -326,6 +326,9 @@ def _item_to_logged_model(
     )
 
 
+_UNSET = object()  # sentinel for optional parameters where None is a valid value
+
+
 class DynamoDBTrackingStore(AbstractStore):
     """MLflow tracking store backed by DynamoDB."""
 
@@ -5561,15 +5564,24 @@ class DynamoDBTrackingStore(AbstractStore):
             sk=SK_GW_META,
         )
 
-    def _model_def_item_to_entity(self, item: dict[str, Any]) -> GatewayModelDefinition:
-        """Convert a raw DynamoDB model definition item to a GatewayModelDefinition entity."""
+    def _model_def_item_to_entity(
+        self, item: dict[str, Any], *, secret_name: Any = _UNSET
+    ) -> GatewayModelDefinition:
+        """Convert a raw DynamoDB model definition item to a GatewayModelDefinition entity.
+
+        Args:
+            item: Raw DynamoDB item.
+            secret_name: Pre-resolved secret name. If not provided, resolved via GetItem.
+        """
         model_definition_id = item["PK"].removeprefix(PK_GW_MODELDEF_PREFIX)
         secret_id = item.get("secret_id")
+        if secret_name is _UNSET:
+            secret_name = self._resolve_secret_name(secret_id)
         return GatewayModelDefinition(
             model_definition_id=model_definition_id,
             name=item["name"],
             secret_id=secret_id,
-            secret_name=self._resolve_secret_name(secret_id),
+            secret_name=secret_name,
             provider=item["provider"],
             model_name=item["model_name"],
             created_at=int(item["created_at"]),
@@ -5633,8 +5645,16 @@ class DynamoDBTrackingStore(AbstractStore):
                 index_name="gsi2",
             )
 
-        # GSI has ALL projection — items include all base table attributes
-        model_defs = [self._model_def_item_to_entity(item) for item in items]
+        # GSI has ALL projection — items include all base table attributes.
+        # Batch-resolve secret_names to avoid N+1 GetItem calls.
+        unique_secret_ids = {item.get("secret_id") for item in items if item.get("secret_id")}
+        secret_names = {sid: self._resolve_secret_name(sid) for sid in unique_secret_ids}
+        model_defs = [
+            self._model_def_item_to_entity(
+                item, secret_name=secret_names.get(item.get("secret_id"))
+            )
+            for item in items
+        ]
 
         # Apply provider filter in-memory if specified
         if provider is not None:
