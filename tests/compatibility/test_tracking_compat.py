@@ -449,32 +449,6 @@ test_search_traces_with_prompts_filter_invalid_format = _xfail_validation(
 _xfail_error_msg = pytest.mark.xfail(reason="DynamoDB store uses ULID experiment IDs, not integers")
 test_get_experiment_invalid_id = _xfail_error_msg(test_get_experiment_invalid_id)
 
-# --- Category 4: StopIteration leaking from async coroutine (16 tests) ---
-_xfail_stopiter = pytest.mark.xfail(
-    reason="DynamoDB store leaks StopIteration from bare next() in async coroutine"
-)
-test_log_spans_default_trace_status_in_progress = _xfail_stopiter(
-    test_log_spans_default_trace_status_in_progress
-)
-test_log_spans_does_not_update_finalized_trace_status = _xfail_stopiter(
-    test_log_spans_does_not_update_finalized_trace_status
-)
-test_log_spans_sets_trace_status_from_root_span = _xfail_stopiter(
-    test_log_spans_sets_trace_status_from_root_span
-)
-test_log_spans_unset_root_span_status_defaults_to_ok = _xfail_stopiter(
-    test_log_spans_unset_root_span_status_defaults_to_ok
-)
-test_log_spans_update_cost_incrementally = _xfail_stopiter(test_log_spans_update_cost_incrementally)
-test_log_spans_update_token_usage_incrementally = _xfail_stopiter(
-    test_log_spans_update_token_usage_incrementally
-)
-test_log_spans_updates_in_progress_trace_status_from_root_span = _xfail_stopiter(
-    test_log_spans_updates_in_progress_trace_status_from_root_span
-)
-test_log_spans_updates_state_unspecified_trace_status_from_root_span = _xfail_stopiter(
-    test_log_spans_updates_state_unspecified_trace_status_from_root_span
-)
 
 # --- Category 5: search runs ordering/pagination/filtering broken (15 tests) ---
 _xfail_search_runs = pytest.mark.xfail(
@@ -533,11 +507,10 @@ test_log_inputs_with_large_inputs_limit_check = _xfail_dataset(
     test_log_inputs_with_large_inputs_limit_check
 )
 
-# --- Category 7: trace does not exist after log_spans/start_trace (11 tests) ---
+# --- Category 7: trace persistence remaining issues ---
 _xfail_trace_persist = pytest.mark.xfail(
-    reason="DynamoDB store fails to persist traces correctly via log_spans/start_trace"
+    reason="DynamoDB store trace persistence issues (handler, incomplete, tags, sessions)"
 )
-test_batch_get_traces_basic = _xfail_trace_persist(test_batch_get_traces_basic)
 test_batch_get_traces_integration_with_trace_handler = _xfail_trace_persist(
     test_batch_get_traces_integration_with_trace_handler
 )
@@ -547,7 +520,6 @@ test_batch_get_traces_with_incomplete_trace = _xfail_trace_persist(
 test_concurrent_log_spans_spans_location_tag = _xfail_trace_persist(
     test_concurrent_log_spans_spans_location_tag
 )
-test_get_trace_basic = _xfail_trace_persist(test_get_trace_basic)
 test_log_spans_cost = _xfail_trace_persist(test_log_spans_cost)
 test_log_spans_session_id_handling = _xfail_trace_persist(test_log_spans_session_id_handling)
 test_log_spans_then_start_trace_preserves_tag = _xfail_trace_persist(
@@ -618,20 +590,12 @@ test_search_logged_models_pagination = _xfail_logged_model(test_search_logged_mo
 test_log_batch_logged_model = _xfail_logged_model(test_log_batch_logged_model)
 test_log_outputs = _xfail_logged_model(test_log_outputs)
 
-# --- Category 11: batch_get_traces returns empty span lists (6 tests) ---
+# --- Category 11: batch_get_traces remaining issues ---
 _xfail_batch_spans = pytest.mark.xfail(
-    reason="DynamoDB store batch_get_traces returns empty span lists"
+    reason="DynamoDB store batch_get_traces ordering or token usage issues"
 )
-test_batch_get_trace_infos_ordering = _xfail_batch_spans(test_batch_get_trace_infos_ordering)
-test_batch_get_traces_multiple_traces = _xfail_batch_spans(test_batch_get_traces_multiple_traces)
 test_batch_get_traces_ordering = _xfail_batch_spans(test_batch_get_traces_ordering)
-test_batch_get_traces_preserves_json_serialization = _xfail_batch_spans(
-    test_batch_get_traces_preserves_json_serialization
-)
 test_batch_get_traces_token_usage = _xfail_batch_spans(test_batch_get_traces_token_usage)
-test_batch_get_traces_with_complex_attributes = _xfail_batch_spans(
-    test_batch_get_traces_with_complex_attributes
-)
 
 # --- Category 12: trace tag/artifact path issues (6 tests) ---
 _xfail_trace_path = pytest.mark.xfail(

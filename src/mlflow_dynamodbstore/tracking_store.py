@@ -2423,6 +2423,22 @@ class DynamoDBTrackingStore(AbstractStore):
     # Trace CRUD
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _get_trace_status_from_spans(spans: list[Any]) -> str | None:
+        """Infer trace status from root span if present."""
+        from mlflow.entities import SpanStatusCode, TraceState
+
+        for span in spans:
+            parent_id = getattr(span, "parent_id", None)
+            if parent_id is None:
+                status = getattr(span, "status", None)
+                if status is not None:
+                    code = getattr(status, "status_code", None)
+                    if code == SpanStatusCode.ERROR:
+                        return TraceState.ERROR.value
+                    return TraceState.OK.value
+        return None
+
     def _get_trace_ttl(self) -> int | None:
         """Compute TTL epoch from CONFIG#TTL_POLICY.trace_retention_days (default 30).
 
@@ -2508,7 +2524,12 @@ class DynamoDBTrackingStore(AbstractStore):
         if trace_info.client_request_id:
             item["client_request_id"] = trace_info.client_request_id
 
-        self._table.put_item(item, condition="attribute_not_exists(PK)")
+        try:
+            self._table.put_item(item, condition="attribute_not_exists(PK)")
+        except Exception:
+            # Trace META may already exist (created by log_spans) — update instead
+            update_fields = {k: v for k, v in item.items() if k not in ("PK", "SK")}
+            self._table.update_item(pk=pk, sk=sk, updates=update_fields)
 
         # Cache trace_id -> experiment_id
         self._cache.put("trace_exp", trace_id, experiment_id)
@@ -2782,9 +2803,54 @@ class DynamoDBTrackingStore(AbstractStore):
             pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
             sk = f"{SK_TRACE_PREFIX}{trace_id}"
 
-            # Read TTL from trace META
+            # Read TTL from trace META, create if not exists
             meta = self._table.get_item(pk=pk, sk=sk)
             ttl = int(meta["ttl"]) if meta and "ttl" in meta else self._get_trace_ttl()
+
+            if meta is None:
+                # Trace doesn't exist yet — create META from span data
+                from mlflow.entities import TraceState
+
+                min_start_ns = min(
+                    getattr(s, "start_time_ns", None) or s.to_dict().get("start_time_ns", 0)
+                    for s in trace_spans
+                )
+                request_time = min_start_ns // 1_000_000
+
+                end_times = [
+                    getattr(s, "end_time_ns", None) or s.to_dict().get("end_time_ns")
+                    for s in trace_spans
+                ]
+                end_times = [t for t in end_times if t is not None and t > 0]
+                max_end_ms = (max(end_times) // 1_000_000) if end_times else None
+                execution_duration = (max_end_ms - request_time) if max_end_ms else 0
+
+                root_status = self._get_trace_status_from_spans(trace_spans)
+                state_str = root_status or TraceState.IN_PROGRESS.value
+
+                meta_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": sk,
+                    "trace_id": trace_id,
+                    "experiment_id": experiment_id,
+                    "request_time": request_time,
+                    "execution_duration": execution_duration,
+                    "state": state_str,
+                    "tags": {},
+                    LSI1_SK: f"{request_time:020d}",
+                    LSI2_SK: request_time + execution_duration,
+                    LSI3_SK: f"{state_str}#{request_time:020d}",
+                    LSI5_SK: f"{execution_duration:020d}",
+                    GSI1_PK: f"{GSI1_TRACE_PREFIX}{trace_id}",
+                    GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+                }
+                if ttl is not None:
+                    meta_item["ttl"] = ttl
+                self._table.put_item(meta_item)
+                meta = meta_item
+
+                # Cache trace_id -> experiment_id
+                self._cache.put("trace_exp", trace_id, experiment_id)
 
             span_dicts = [s.to_dict() for s in trace_spans]
 
@@ -2814,11 +2880,15 @@ class DynamoDBTrackingStore(AbstractStore):
             span_types: set[str] = set()
             span_statuses: set[str] = set()
             span_names: set[str] = set()
-            # Accumulators for trace-level token usage
+            # Accumulators for trace-level token usage and cost
             total_input_tokens = 0
             total_output_tokens = 0
             total_total_tokens = 0
             has_token_usage = False
+            total_input_cost = 0.0
+            total_output_cost = 0.0
+            total_total_cost = 0.0
+            has_cost = False
 
             for span in trace_spans:
                 sd = span.to_dict()
@@ -2927,6 +2997,11 @@ class DynamoDBTrackingStore(AbstractStore):
                                 if ttl is not None:
                                     cost_item["ttl"] = ttl
                                 extra_items.append(cost_item)
+                        # Accumulate trace-level cost
+                        total_input_cost += float(cost.get("input_cost", 0) or 0)
+                        total_output_cost += float(cost.get("output_cost", 0) or 0)
+                        total_total_cost += float(cost.get("total_cost", 0) or 0)
+                        has_cost = True
                     except (TypeError, _json.JSONDecodeError, ValueError):
                         pass
 
@@ -2949,6 +3024,60 @@ class DynamoDBTrackingStore(AbstractStore):
                         tmetric_item["ttl"] = ttl
                     extra_items.append(tmetric_item)
 
+            # --- Write trace-level token_usage and cost as RMETA items ---
+            # Accumulate with existing values (log_spans may be called multiple times)
+            if has_token_usage:
+                existing_token = self._table.get_item(
+                    pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#mlflow.trace.tokenUsage"
+                )
+                if existing_token:
+                    prev = _json.loads(existing_token["value"])
+                    total_input_tokens += int(prev.get("input_tokens", 0))
+                    total_output_tokens += int(prev.get("output_tokens", 0))
+                    total_total_tokens += int(prev.get("total_tokens", 0))
+                token_data = _json.dumps(
+                    {
+                        "input_tokens": total_input_tokens,
+                        "output_tokens": total_output_tokens,
+                        "total_tokens": total_total_tokens,
+                    }
+                )
+                rmeta_token: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#mlflow.trace.tokenUsage",
+                    "key": "mlflow.trace.tokenUsage",
+                    "value": token_data,
+                }
+                if ttl is not None:
+                    rmeta_token["ttl"] = ttl
+                extra_items.append(rmeta_token)
+
+            if has_cost:
+                existing_cost = self._table.get_item(
+                    pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}#RMETA#mlflow.trace.cost"
+                )
+                if existing_cost:
+                    prev = _json.loads(existing_cost["value"])
+                    total_input_cost += float(prev.get("input_cost", 0))
+                    total_output_cost += float(prev.get("output_cost", 0))
+                    total_total_cost += float(prev.get("total_cost", 0))
+                cost_data = _json.dumps(
+                    {
+                        "input_cost": total_input_cost,
+                        "output_cost": total_output_cost,
+                        "total_cost": total_total_cost,
+                    }
+                )
+                rmeta_cost: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": f"{SK_TRACE_PREFIX}{trace_id}#RMETA#mlflow.trace.cost",
+                    "key": "mlflow.trace.cost",
+                    "value": cost_data,
+                }
+                if ttl is not None:
+                    rmeta_cost["ttl"] = ttl
+                extra_items.append(rmeta_cost)
+
             # Write all extra items in batch
             if extra_items:
                 self._table.batch_write(extra_items)
@@ -2962,11 +3091,19 @@ class DynamoDBTrackingStore(AbstractStore):
             if span_names:
                 updates["span_names"] = span_names
 
-            if updates and meta:
-                # Only denormalize if META item exists (log_spans may be called
-                # before start_trace in the V3 async path; update_item would
-                # create a partial META item, causing start_trace's
-                # condition=attribute_not_exists(PK) to fail).
+            # Update trace state from root span if status changed
+            root_status = self._get_trace_status_from_spans(trace_spans)
+            current_state = meta.get("state", "")
+            if root_status and root_status != current_state:
+                from mlflow.entities import TraceState
+
+                finalized = {TraceState.OK.value, TraceState.ERROR.value}
+                if current_state not in finalized:
+                    updates["state"] = root_status
+                    request_time = int(meta.get("request_time", 0))
+                    updates[LSI3_SK] = f"{root_status}#{request_time:020d}"
+
+            if updates:
                 self._table.update_item(pk=pk, sk=sk, updates=updates)
 
             # Write FTS items for span names
