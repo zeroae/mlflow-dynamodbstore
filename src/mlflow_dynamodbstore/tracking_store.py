@@ -3285,7 +3285,6 @@ class DynamoDBTrackingStore(AbstractStore):
         base_filter: str | None = None,
     ) -> TraceFilterCorrelationResult:
         """Calculate NPMI correlation between two trace filters."""
-        import math
 
         from mlflow_dynamodbstore.dynamodb.search import (
             _apply_trace_post_filter,
@@ -3341,28 +3340,19 @@ class DynamoDBTrackingStore(AbstractStore):
                 if not page_token:
                     break
 
-        # Compute NPMI
-        if total_count == 0:
-            npmi = 0.0
-        elif filter1_count == 0 or filter2_count == 0:
-            npmi = 0.0
-        elif joint_count == 0:
-            npmi = -1.0
-        elif (
-            joint_count == total_count
-            and filter1_count == total_count
-            and filter2_count == total_count
-        ):
-            npmi = 1.0
-        else:
-            p1 = filter1_count / total_count
-            p2 = filter2_count / total_count
-            p_joint = joint_count / total_count
-            pmi = math.log(p_joint / (p1 * p2))
-            npmi = pmi / -math.log(p_joint)
+        # Compute NPMI using MLflow's standard implementation
+        from mlflow.store.analytics.trace_correlation import calculate_npmi_from_counts
+
+        npmi_result = calculate_npmi_from_counts(
+            joint_count=joint_count,
+            filter1_count=filter1_count,
+            filter2_count=filter2_count,
+            total_count=total_count,
+        )
 
         return TraceFilterCorrelationResult(
-            npmi=npmi,
+            npmi=npmi_result.npmi,
+            npmi_smoothed=npmi_result.npmi_smoothed,
             filter1_count=filter1_count,
             filter2_count=filter2_count,
             joint_count=joint_count,
