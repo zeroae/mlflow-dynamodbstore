@@ -508,7 +508,7 @@ class TestGetTraceInfo:
 
     def test_get_trace_info_not_found(self, tracking_store):
         """get_trace_info raises for nonexistent trace."""
-        with pytest.raises(MlflowException, match="does not exist"):
+        with pytest.raises(MlflowException, match="not found"):
             tracking_store.get_trace_info("tr-nonexistent")
 
 
@@ -711,7 +711,7 @@ class TestDeleteAssessment:
         """Delete nonexistent assessment raises error."""
         _, trace_id = _setup_trace(tracking_store)
 
-        with pytest.raises(MlflowException, match="does not exist"):
+        with pytest.raises(MlflowException, match="not found"):
             tracking_store.delete_assessment(trace_id, "nonexistent-id")
 
 
@@ -744,7 +744,7 @@ class TestGetAssessment:
         """Get nonexistent assessment raises error."""
         _, trace_id = _setup_trace(tracking_store)
 
-        with pytest.raises(MlflowException, match="does not exist"):
+        with pytest.raises(MlflowException, match="not found"):
             tracking_store.get_assessment(trace_id, "nonexistent-id")
 
 
@@ -1851,7 +1851,7 @@ class TestLinkPromptsToTrace:
         from mlflow.entities.model_registry import PromptVersion
 
         pv = PromptVersion(name="p", version=1, template="t")
-        with pytest.raises(MlflowException, match="does not exist"):
+        with pytest.raises(MlflowException, match="not found"):
             tracking_store.link_prompts_to_trace("nonexistent-trace", [pv])
 
 
