@@ -22,6 +22,7 @@ from mlflow.entities import (
     EvaluationDataset,
     Experiment,
     ExperimentTag,
+    GatewayModelDefinition,
     GatewaySecretInfo,
     InputTag,
     LoggedModel,
@@ -85,12 +86,14 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_DS_LIST_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
+    GSI2_GW_MODELDEFS_PREFIX,
     GSI2_GW_SECRETS_PREFIX,
     GSI2_PK,
     GSI2_SESSIONS_PREFIX,
     GSI2_SK,
     GSI3_DS_NAME_PREFIX,
     GSI3_EXP_NAME_PREFIX,
+    GSI3_GW_MODELDEF_NAME_PREFIX,
     GSI3_PK,
     GSI3_SCOR_NAME_PREFIX,
     GSI3_SK,
@@ -105,6 +108,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI5_SK,
     PK_DATASET_PREFIX,
     PK_EXPERIMENT_PREFIX,
+    PK_GW_MODELDEF_PREFIX,
     PK_GW_SECRET_PREFIX,
     SK_DATASET_EXP_PREFIX,
     SK_DATASET_META,
@@ -5466,3 +5470,84 @@ class DynamoDBTrackingStore(AbstractStore):
         # GSI2 has ALL projection — items include all base table attributes
         # (PK, SK, secret_name, masked_value, etc.), no re-fetch needed.
         return [self._secret_item_to_entity(item) for item in items]
+
+    # -----------------------------------------------------------------------
+    # Gateway Model Definitions
+    # -----------------------------------------------------------------------
+
+    def _resolve_secret_name(self, secret_id: str | None) -> str | None:
+        """Resolve secret_name from secret_id. Returns None if secret_id is None or not found."""
+        if not secret_id:
+            return None
+        item = self._get_secret_item(secret_id)
+        return item["secret_name"] if item else None
+
+    def create_gateway_model_definition(
+        self,
+        name: str,
+        secret_id: str,
+        provider: str,
+        model_name: str,
+        created_by: str | None = None,
+    ) -> GatewayModelDefinition:
+        # Check name uniqueness via GSI3
+        existing = self._table.query(
+            pk=f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}",
+            index_name="gsi3",
+            limit=1,
+        )
+        if existing:
+            raise MlflowException(
+                f"Model definition with name '{name}' already exists",
+                error_code=RESOURCE_ALREADY_EXISTS,
+            )
+
+        # Verify secret exists
+        secret_item = self._get_secret_item(secret_id)
+        if secret_item is None:
+            raise MlflowException(
+                f"Secret '{secret_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        secret_name = secret_item["secret_name"]
+
+        model_definition_id = f"d-{generate_ulid()}"
+        now = get_current_time_millis()
+
+        item = {
+            "PK": f"{PK_GW_MODELDEF_PREFIX}{model_definition_id}",
+            "SK": SK_GW_META,
+            "name": name,
+            "secret_id": secret_id,
+            "provider": provider,
+            "model_name": model_name,
+            "created_at": now,
+            "last_updated_at": now,
+            "workspace": self._workspace,
+            # GSI projections
+            "gsi2pk": f"{GSI2_GW_MODELDEFS_PREFIX}{self._workspace}",
+            "gsi2sk": model_definition_id,
+            "gsi3pk": f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}",
+            "gsi3sk": model_definition_id,
+            "gsi4pk": f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}",
+            "gsi4sk": model_definition_id,
+        }
+        if created_by is not None:
+            item["created_by"] = created_by
+            item["last_updated_by"] = created_by
+
+        self._table.put_item(item)
+
+        return GatewayModelDefinition(
+            model_definition_id=model_definition_id,
+            name=name,
+            secret_id=secret_id,
+            secret_name=secret_name,
+            provider=provider,
+            model_name=model_name,
+            created_at=now,
+            last_updated_at=now,
+            created_by=created_by,
+            last_updated_by=created_by,
+            workspace=self._workspace,
+        )
