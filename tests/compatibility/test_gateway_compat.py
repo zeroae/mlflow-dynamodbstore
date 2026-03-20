@@ -123,11 +123,3 @@ from tests.store.tracking.test_gateway_sql_store import (  # noqa: E402, F401
     test_update_gateway_secret_clear_auth_config,
     test_update_gateway_secret_with_auth_config,
 )
-
-# --- Scorer-gateway integration gaps ---
-test_register_scorer_with_nonexistent_endpoint_raises = pytest.mark.xfail(
-    reason="DynamoDB store register_scorer does not validate gateway endpoint existence"
-)(test_register_scorer_with_nonexistent_endpoint_raises)
-test_get_scorer_with_deleted_endpoint_sets_model_to_null = pytest.mark.xfail(
-    reason="DynamoDB store get_scorer does not null out model when endpoint is deleted"
-)(test_get_scorer_with_deleted_endpoint_sets_model_to_null)

@@ -4305,6 +4305,29 @@ class DynamoDBTrackingStore(AbstractStore):
         validate_scorer_model(model)
 
         self.get_experiment(experiment_id)  # verify exists
+
+        # Resolve gateway endpoint references (name → ID)
+        import json as _json
+
+        from mlflow.genai.scorers.scorer_utils import (
+            build_gateway_model,
+            extract_endpoint_ref,
+            extract_model_from_serialized_scorer,
+            is_gateway_model,
+            update_model_in_serialized_scorer,
+        )
+
+        serialized_data = _json.loads(serialized_scorer)
+        model = extract_model_from_serialized_scorer(serialized_data)
+        if is_gateway_model(model):
+            assert model is not None  # is_gateway_model returns False for None
+            endpoint_name = extract_endpoint_ref(model)
+            endpoint = self.get_gateway_endpoint(name=endpoint_name)  # raises if not found
+            serialized_data = update_model_in_serialized_scorer(
+                serialized_data, build_gateway_model(endpoint.endpoint_id)
+            )
+            serialized_scorer = _json.dumps(serialized_data)
+
         now_ms = int(time.time() * 1000)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
 
@@ -4346,13 +4369,15 @@ class DynamoDBTrackingStore(AbstractStore):
                     "creation_time": now_ms,
                 }
                 self._table.put_item(ver_item)
-                return _ScorerVersionCompat(
-                    experiment_id=experiment_id,
-                    scorer_name=name,
-                    scorer_version=version,
-                    serialized_scorer=serialized_scorer,
-                    creation_time=now_ms,
-                    scorer_id=scorer_id,
+                return self._resolve_endpoint_in_scorer(
+                    _ScorerVersionCompat(
+                        experiment_id=experiment_id,
+                        scorer_name=name,
+                        scorer_version=version,
+                        serialized_scorer=serialized_scorer,
+                        creation_time=now_ms,
+                        scorer_id=scorer_id,
+                    )
                 )
 
         # Existing scorer path (including race retry)
@@ -4369,13 +4394,15 @@ class DynamoDBTrackingStore(AbstractStore):
             "creation_time": now_ms,
         }
         self._table.put_item(ver_item)
-        return _ScorerVersionCompat(
-            experiment_id=experiment_id,
-            scorer_name=name,
-            scorer_version=version,
-            serialized_scorer=serialized_scorer,
-            creation_time=now_ms,
-            scorer_id=scorer_id,
+        return self._resolve_endpoint_in_scorer(
+            _ScorerVersionCompat(
+                experiment_id=experiment_id,
+                scorer_name=name,
+                scorer_version=version,
+                serialized_scorer=serialized_scorer,
+                creation_time=now_ms,
+                scorer_id=scorer_id,
+            )
         )
 
     def get_scorer(
@@ -4410,13 +4437,52 @@ class DynamoDBTrackingStore(AbstractStore):
 
         # Read META for scorer_name (in case name casing differs)
         meta = self._table.get_item(pk=pk, sk=meta_sk)
-        return _ScorerVersionCompat(
+        result = _ScorerVersionCompat(
             experiment_id=experiment_id,
             scorer_name=meta["scorer_name"] if meta else name,
             scorer_version=int(item["scorer_version"]),
             serialized_scorer=item["serialized_scorer"],
             creation_time=int(item["creation_time"]),
             scorer_id=scorer_id,
+        )
+        return self._resolve_endpoint_in_scorer(result)
+
+    def _resolve_endpoint_in_scorer(self, scorer_version: ScorerVersion) -> ScorerVersion:
+        """Resolve gateway endpoint ID to name in serialized scorer.
+
+        If the endpoint has been deleted, sets the model field to None.
+        """
+        import json as _json
+
+        from mlflow.genai.scorers.scorer_utils import (
+            build_gateway_model,
+            extract_endpoint_ref,
+            extract_model_from_serialized_scorer,
+            is_gateway_model,
+            update_model_in_serialized_scorer,
+        )
+
+        serialized_data = _json.loads(scorer_version._serialized_scorer)
+        model = extract_model_from_serialized_scorer(serialized_data)
+        if not is_gateway_model(model):
+            return scorer_version
+        assert model is not None  # is_gateway_model returns False for None
+
+        endpoint_ref = extract_endpoint_ref(model)
+        try:
+            endpoint = self.get_gateway_endpoint(endpoint_id=endpoint_ref)
+            new_model: str | None = build_gateway_model(endpoint.name) if endpoint.name else None
+        except MlflowException:
+            new_model = None
+
+        serialized_data = update_model_in_serialized_scorer(serialized_data, new_model)
+        return _ScorerVersionCompat(
+            experiment_id=scorer_version.experiment_id,
+            scorer_name=scorer_version.scorer_name,
+            scorer_version=scorer_version.scorer_version,
+            serialized_scorer=_json.dumps(serialized_data),
+            creation_time=scorer_version.creation_time,
+            scorer_id=scorer_version.scorer_id,
         )
 
     def list_scorers(self, experiment_id: str) -> list[ScorerVersion]:
@@ -4439,13 +4505,15 @@ class DynamoDBTrackingStore(AbstractStore):
             if versions:
                 ver = versions[0]
                 result.append(
-                    _ScorerVersionCompat(
-                        experiment_id=experiment_id,
-                        scorer_name=meta["scorer_name"],
-                        scorer_version=int(ver["scorer_version"]),
-                        serialized_scorer=ver["serialized_scorer"],
-                        creation_time=int(ver["creation_time"]),
-                        scorer_id=scorer_id,
+                    self._resolve_endpoint_in_scorer(
+                        _ScorerVersionCompat(
+                            experiment_id=experiment_id,
+                            scorer_name=meta["scorer_name"],
+                            scorer_version=int(ver["scorer_version"]),
+                            serialized_scorer=ver["serialized_scorer"],
+                            creation_time=int(ver["creation_time"]),
+                            scorer_id=scorer_id,
+                        )
                     )
                 )
         return result
