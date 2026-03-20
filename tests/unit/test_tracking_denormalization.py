@@ -67,7 +67,7 @@ class TestTagDenormalization:
             user_id="u",
             start_time=1000,
             tags=[RunTag("mlflow.runName", "my-run"), RunTag("user.tag", "skip")],
-            run_name="r",
+            run_name="my-run",
         )
         meta = tracking_store._table.get_item(
             pk=f"{PK_EXPERIMENT_PREFIX}{exp_id}",
@@ -76,7 +76,7 @@ class TestTagDenormalization:
         assert meta.get("tags", {}).get("mlflow.runName") == "my-run"
         assert "user.tag" not in meta.get("tags", {})
 
-    def test_run_meta_has_empty_tags_map_on_create(self, tracking_store):
+    def test_run_meta_has_run_name_tag_on_create(self, tracking_store):
         exp_id = tracking_store.create_experiment("exp6", artifact_location="s3://b")
         run = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r")
         meta = tracking_store._table.get_item(
@@ -84,7 +84,8 @@ class TestTagDenormalization:
             sk=f"{SK_RUN_PREFIX}{run.info.run_id}",
         )
         assert "tags" in meta
-        assert meta["tags"] == {}
+        # mlflow.runName is denormalized as a system tag
+        assert meta["tags"].get("mlflow.runName") == "r"
 
 
 class TestExperimentTagDenormalization:

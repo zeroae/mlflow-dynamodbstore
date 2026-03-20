@@ -101,7 +101,7 @@ class TestGetLoggedModel:
 
     def test_get_nonexistent_raises(self, tracking_store):
         _create_experiment(tracking_store)
-        with pytest.raises(MlflowException, match="does not exist"):
+        with pytest.raises(MlflowException, match="not found"):
             tracking_store.get_logged_model("m-nonexistent")
 
 

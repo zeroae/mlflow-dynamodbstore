@@ -242,7 +242,7 @@ def _item_to_run(
     )
 
     # Build RunInputs from input/dataset/input-tag items
-    run_inputs = None
+    run_inputs = RunInputs(dataset_inputs=[])
     if input_items:
         # Index datasets by name#digest
         ds_map: dict[str, dict[str, Any]] = {}
@@ -971,6 +971,22 @@ class DynamoDBTrackingStore(AbstractStore):
         run_id = ulid_from_timestamp(start_time)
         artifact_uri = f"{exp.artifact_location}/{run_id}/artifacts"
 
+        # Resolve run_name: use tag value, generate random name, or keep provided
+        from mlflow.utils.mlflow_tags import MLFLOW_RUN_NAME
+        from mlflow.utils.name_utils import _generate_random_name
+
+        run_name_tag = next((t for t in (tags or []) if t.key == MLFLOW_RUN_NAME), None)
+        if run_name and run_name_tag and run_name != run_name_tag.value:
+            raise MlflowException(
+                f"Both 'run_name' argument and 'mlflow.runName' tag are specified, but with "
+                f"different values (run_name='{run_name}', "
+                f"mlflow.runName='{run_name_tag.value}').",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        run_name = (
+            run_name or (run_name_tag.value if run_name_tag else None) or _generate_random_name()
+        )
+
         item: dict[str, Any] = {
             "PK": f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
             "SK": f"{SK_RUN_PREFIX}{run_id}",
@@ -997,6 +1013,15 @@ class DynamoDBTrackingStore(AbstractStore):
 
         self._table.put_item(item, condition="attribute_not_exists(PK)")
 
+        # Build the full tag list for the returned Run entity
+        all_tags: list[RunTag] = list(tags or [])
+
+        # Write mlflow.runName system tag
+        if run_name and not run_name_tag:
+            run_name_sys_tag = RunTag(MLFLOW_RUN_NAME, run_name)
+            self._write_run_tag(experiment_id, run_id, run_name_sys_tag)
+            all_tags.append(run_name_sys_tag)
+
         # Write tags if provided
         if tags:
             for tag in tags:
@@ -1017,7 +1042,7 @@ class DynamoDBTrackingStore(AbstractStore):
             if run_fts:
                 self._table.batch_write(run_fts)
 
-        return self._build_run(item, tags)
+        return self._build_run(item, all_tags)
 
     def get_run(self, run_id: str) -> Run:
         """Fetch a run by ID."""
@@ -1093,7 +1118,7 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         if not results:
             raise MlflowException(
-                f"LoggedModel '{model_id}' does not exist.",
+                f"Logged model with ID '{model_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         gsi1sk: str = results[0][GSI1_SK]
@@ -1184,13 +1209,13 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=sk)
         if meta is None:
             raise MlflowException(
-                f"LoggedModel '{model_id}' does not exist.",
+                f"Logged model with ID '{model_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
         if meta.get("lifecycle_stage") == "deleted" and not allow_deleted:
             raise MlflowException(
-                f"LoggedModel '{model_id}' does not exist.",
+                f"Logged model with ID '{model_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -1299,7 +1324,14 @@ class DynamoDBTrackingStore(AbstractStore):
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         now_ms = int(time.time() * 1000)
 
-        self._table.delete_item(pk=pk, sk=f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}{key}")
+        tag_sk = f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}{key}"
+        existing = self._table.get_item(pk=pk, sk=tag_sk)
+        if existing is None:
+            raise MlflowException(
+                f"No tag with key '{key}' for logged model '{model_id}'.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        self._table.delete_item(pk=pk, sk=tag_sk)
 
         # Update denormalized tags on META item
         meta = self._table.get_item(pk=pk, sk=f"{SK_LM_PREFIX}{model_id}") or {}
@@ -1363,6 +1395,13 @@ class DynamoDBTrackingStore(AbstractStore):
         )
 
         max_results = max_results or 100
+
+        # Validate filter string using MLflow's parser (raises with standard error message)
+        if filter_string:
+            from mlflow.utils.search_logged_model_utils import parse_filter_string
+
+            parse_filter_string(filter_string)
+
         predicates = parse_logged_model_filter(filter_string)
         plan = plan_logged_model_query(predicates, order_by, datasets)
 
@@ -1514,14 +1553,12 @@ class DynamoDBTrackingStore(AbstractStore):
 
         updates: dict[str, Any] = {
             "status": run_status,
-            "run_name": run_name,
             LSI3_SK: f"{run_status}#{run_id}",
         }
         removes: list[str] = []
         if run_name:
+            updates["run_name"] = run_name
             updates[LSI4_SK] = run_name.lower()
-        else:
-            removes.append(LSI4_SK)
 
         if end_time is not None:
             updates["end_time"] = end_time
@@ -1539,8 +1576,14 @@ class DynamoDBTrackingStore(AbstractStore):
 
         assert updated_item is not None  # update always returns ALL_NEW
 
-        # Update FTS for run name if it changed
+        # Update mlflow.runName tag when name changes
         old_run_name = current.get("run_name", "")
+        if run_name and run_name != old_run_name:
+            from mlflow.utils.mlflow_tags import MLFLOW_RUN_NAME
+
+            self._write_run_tag(experiment_id, run_id, RunTag(MLFLOW_RUN_NAME, run_name))
+
+        # Update FTS for run name if it changed
         if run_name and run_name != old_run_name:
             pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
             self._update_fts_for_rename(
@@ -1840,6 +1883,12 @@ class DynamoDBTrackingStore(AbstractStore):
             "value": tag.value,
         }
         self._table.put_item(item)
+        # Sync run_name field when mlflow.runName tag is written
+        from mlflow.utils.mlflow_tags import MLFLOW_RUN_NAME
+
+        if tag.key == MLFLOW_RUN_NAME and tag.value:
+            updates: dict[str, Any] = {"run_name": tag.value, LSI4_SK: tag.value.lower()}
+            self._table.update_item(pk=pk, sk=f"{SK_RUN_PREFIX}{run_id}", updates=updates)
         if self._config.should_denormalize(experiment_id, tag.key):
             self._denormalize_tag(pk, f"{SK_RUN_PREFIX}{run_id}", tag.key, tag.value)
         # Write FTS items for tag value if configured
@@ -1862,7 +1911,7 @@ class DynamoDBTrackingStore(AbstractStore):
             params=[],
             metrics=[],
         )
-        return Run(run_info=info, run_data=data)
+        return Run(run_info=info, run_data=data, run_inputs=RunInputs(dataset_inputs=[]))
 
     def _denormalize_tag(self, pk: str, sk: str, tag_key: str, tag_value: str) -> None:
         """Write tag value into the META item's nested `tags` map."""
@@ -2206,6 +2255,9 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def set_tag(self, run_id: str, tag: RunTag) -> None:
         """Set a tag on a run."""
+        from mlflow.utils.validation import _validate_tag_name
+
+        _validate_tag_name(tag.key)
         experiment_id = self._resolve_run_experiment(run_id)
         self._write_run_tag(experiment_id, run_id, tag)
 
@@ -2394,7 +2446,7 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         if not results:
             raise MlflowException(
-                f"Trace '{trace_id}' does not exist.",
+                f"Trace with ID {trace_id} is not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -2529,7 +2581,7 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=sk)
         if meta is None:
             raise MlflowException(
-                f"Trace '{trace_id}' does not exist.",
+                f"Trace with ID {trace_id} is not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -3422,13 +3474,17 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def set_trace_tag(self, trace_id: str, key: str, value: str) -> None:
         """Set a tag on a trace."""
+        from mlflow.utils.validation import _validate_length_limit, _validate_tag_name
+
+        _validate_tag_name(key)
+        _validate_length_limit("key", 250, key)
         experiment_id = self._resolve_trace_experiment(trace_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         # Read TTL from the trace META item
         meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
         if meta is None:
             raise MlflowException(
-                f"Trace '{trace_id}' does not exist.",
+                f"Trace with ID {trace_id} is not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
@@ -3484,7 +3540,7 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
         if meta is None:
             raise MlflowException(
-                f"Trace '{trace_id}' does not exist.",
+                f"Trace with ID {trace_id} is not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
@@ -3751,7 +3807,7 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
         if meta is None:
             raise MlflowException(
-                f"Trace '{trace_id}' does not exist.",
+                f"Trace with ID {trace_id} is not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
@@ -3799,7 +3855,7 @@ class DynamoDBTrackingStore(AbstractStore):
         item = self._table.get_item(pk=pk, sk=sk)
         if item is None:
             raise MlflowException(
-                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                f"Assessment '{assessment_id}' for trace '{trace_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -3823,7 +3879,7 @@ class DynamoDBTrackingStore(AbstractStore):
         item = self._table.get_item(pk=pk, sk=sk)
         if item is None:
             raise MlflowException(
-                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                f"Assessment '{assessment_id}' for trace '{trace_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         ttl = int(item["ttl"]) if "ttl" in item else self._get_trace_ttl()
@@ -3908,7 +3964,7 @@ class DynamoDBTrackingStore(AbstractStore):
         item = self._table.get_item(pk=pk, sk=sk)
         if item is None:
             raise MlflowException(
-                f"Assessment '{assessment_id}' for trace '{trace_id}' does not exist.",
+                f"Assessment '{assessment_id}' for trace '{trace_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -4170,9 +4226,19 @@ class DynamoDBTrackingStore(AbstractStore):
     ) -> OnlineScoringConfig:
         from mlflow.genai.scorers.online.entities import OnlineScoringConfig
 
+        if not isinstance(sample_rate, int | float):
+            raise MlflowException(
+                f"sample_rate must be a number, got {type(sample_rate).__name__}",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
         if not (0.0 <= sample_rate <= 1.0):
             raise MlflowException(
-                f"sample_rate must be in [0.0, 1.0], got {sample_rate}.",
+                f"sample_rate must be between 0.0 and 1.0, got {sample_rate}",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        if filter_string and not isinstance(filter_string, str):
+            raise MlflowException(
+                f"filter_string must be a string, got {type(filter_string).__name__}",
                 error_code=INVALID_PARAMETER_VALUE,
             )
         scorer_id = self._resolve_scorer_id(experiment_id, scorer_name)

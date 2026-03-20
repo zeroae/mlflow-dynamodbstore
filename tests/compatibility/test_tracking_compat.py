@@ -445,24 +445,9 @@ test_search_traces_with_prompts_filter_invalid_format = _xfail_validation(
     test_search_traces_with_prompts_filter_invalid_format
 )
 
-# --- Category 3: error message wording mismatch (16 tests) ---
-_xfail_error_msg = pytest.mark.xfail(
-    reason="DynamoDB store uses different error message format than SqlAlchemy"
-)
-test_delete_logged_model = _xfail_error_msg(test_delete_logged_model)
-test_delete_logged_model_tag = _xfail_error_msg(test_delete_logged_model_tag)
-test_finalize_logged_model = _xfail_error_msg(test_finalize_logged_model)
+# --- Category 3: experiment ID format mismatch (permanent) ---
+_xfail_error_msg = pytest.mark.xfail(reason="DynamoDB store uses ULID experiment IDs, not integers")
 test_get_experiment_invalid_id = _xfail_error_msg(test_get_experiment_invalid_id)
-test_get_logged_model = _xfail_error_msg(test_get_logged_model)
-test_get_trace_not_found = _xfail_error_msg(test_get_trace_not_found)
-test_search_logged_models_invalid_filter_string = _xfail_error_msg(
-    test_search_logged_models_invalid_filter_string
-)
-test_set_logged_model_tags = _xfail_error_msg(test_set_logged_model_tags)
-test_upsert_online_scoring_config_validates_sample_rate = _xfail_error_msg(
-    test_upsert_online_scoring_config_validates_sample_rate
-)
-test_set_invalid_tag = _xfail_error_msg(test_set_invalid_tag)
 
 # --- Category 4: StopIteration leaking from async coroutine (16 tests) ---
 _xfail_stopiter = pytest.mark.xfail(
@@ -672,14 +657,6 @@ test_get_deleted_logged_models = _xfail_missing_method(test_get_deleted_logged_m
 test_legacy_start_and_end_trace_v2 = _xfail_missing_method(test_legacy_start_and_end_trace_v2)
 test_log_logged_model_params = _xfail_missing_method(test_log_logged_model_params)
 
-# --- Category 14: mlflow.runName tag not stored (4 tests) ---
-_xfail_run_name = pytest.mark.xfail(
-    reason="DynamoDB store does not persist mlflow.runName system tag"
-)
-test_create_run_sets_name = _xfail_run_name(test_create_run_sets_name)
-test_create_run_with_tags = _xfail_run_name(test_create_run_with_tags)
-test_get_run_with_name = _xfail_run_name(test_get_run_with_name)
-test_update_run_name = _xfail_run_name(test_update_run_name)
 
 # --- Category 15: DynamoDB key size/duplicate key constraints (4 tests) ---
 _xfail_ddb_key = pytest.mark.xfail(
