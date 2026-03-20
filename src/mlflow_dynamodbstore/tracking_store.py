@@ -484,7 +484,8 @@ class DynamoDBTrackingStore(AbstractStore):
             "SK": SK_EXPERIMENT_META,
             "name": name,
             "lifecycle_stage": "active",
-            "artifact_location": artifact_location or self._artifact_uri,
+            "artifact_location": artifact_location
+            or append_to_uri_path(self._artifact_uri, str(exp_id)),
             "creation_time": now_ms,
             "last_update_time": now_ms,
             "workspace": self._workspace,
@@ -3006,6 +3007,17 @@ class DynamoDBTrackingStore(AbstractStore):
             if ttl is not None:
                 spans_item["ttl"] = ttl
             self._table.put_item(spans_item)
+
+            # Write spansLocation tag (indicates spans are stored in tracking store)
+            from mlflow.tracing.constant import SpansLocation
+
+            self._write_trace_tag(
+                experiment_id,
+                trace_id,
+                TraceTagKey.SPANS_LOCATION,
+                SpansLocation.TRACKING_STORE.value,
+                ttl,
+            )
 
             # --- Write individual span items, metrics, and denormalize META ---
             extra_items: list[dict[str, Any]] = []
