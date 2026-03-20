@@ -1386,6 +1386,13 @@ class DynamoDBTrackingStore(AbstractStore):
         )
 
         max_results = max_results or 100
+
+        # Validate filter string using MLflow's parser (raises with standard error message)
+        if filter_string:
+            from mlflow.utils.search_logged_model_utils import parse_filter_string
+
+            parse_filter_string(filter_string)
+
         predicates = parse_logged_model_filter(filter_string)
         plan = plan_logged_model_query(predicates, order_by, datasets)
 

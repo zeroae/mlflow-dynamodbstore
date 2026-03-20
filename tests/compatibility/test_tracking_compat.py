@@ -445,12 +445,9 @@ test_search_traces_with_prompts_filter_invalid_format = _xfail_validation(
     test_search_traces_with_prompts_filter_invalid_format
 )
 
-# --- Category 3: error message or validation mismatch (permanent) ---
-_xfail_error_msg = pytest.mark.xfail(reason="DynamoDB store uses different error/validation format")
+# --- Category 3: experiment ID format mismatch (permanent) ---
+_xfail_error_msg = pytest.mark.xfail(reason="DynamoDB store uses ULID experiment IDs, not integers")
 test_get_experiment_invalid_id = _xfail_error_msg(test_get_experiment_invalid_id)
-test_search_logged_models_invalid_filter_string = _xfail_error_msg(
-    test_search_logged_models_invalid_filter_string
-)
 
 # --- Category 4: StopIteration leaking from async coroutine (16 tests) ---
 _xfail_stopiter = pytest.mark.xfail(
