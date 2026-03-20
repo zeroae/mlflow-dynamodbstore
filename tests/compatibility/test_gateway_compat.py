@@ -130,27 +130,11 @@ _xfail_gateway = pytest.mark.xfail(
     reason="Gateway store methods not yet implemented (Phase 5)",
 )
 
-# Model Definitions
-test_create_gateway_model_definition = _xfail_gateway(test_create_gateway_model_definition)
-test_create_gateway_model_definition_duplicate_name_raises = _xfail_gateway(
-    test_create_gateway_model_definition_duplicate_name_raises
-)
-test_create_gateway_model_definition_nonexistent_secret_raises = _xfail_gateway(
-    test_create_gateway_model_definition_nonexistent_secret_raises
-)
-test_delete_gateway_model_definition = _xfail_gateway(test_delete_gateway_model_definition)
-test_delete_gateway_model_definition_in_use_raises = _xfail_gateway(
-    test_delete_gateway_model_definition_in_use_raises
-)
-test_get_gateway_model_definition_by_id = _xfail_gateway(test_get_gateway_model_definition_by_id)
-test_get_gateway_model_definition_by_name = _xfail_gateway(
-    test_get_gateway_model_definition_by_name
-)
-test_get_gateway_model_definition_requires_one_of_id_or_name = _xfail_gateway(
-    test_get_gateway_model_definition_requires_one_of_id_or_name
-)
-test_list_gateway_model_definitions = _xfail_gateway(test_list_gateway_model_definitions)
-test_update_gateway_model_definition = _xfail_gateway(test_update_gateway_model_definition)
+# Model Definitions — in_use_raises depends on create_gateway_endpoint (Phase 5c)
+test_delete_gateway_model_definition_in_use_raises = pytest.mark.xfail(
+    raises=NotImplementedError,
+    reason="Depends on create_gateway_endpoint (Phase 5c)",
+)(test_delete_gateway_model_definition_in_use_raises)
 
 # Endpoints
 test_create_gateway_endpoint = _xfail_gateway(test_create_gateway_endpoint)

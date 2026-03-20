@@ -22,6 +22,7 @@ from mlflow.entities import (
     EvaluationDataset,
     Experiment,
     ExperimentTag,
+    GatewayModelDefinition,
     GatewaySecretInfo,
     InputTag,
     LoggedModel,
@@ -48,6 +49,7 @@ from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
     INVALID_PARAMETER_VALUE,
+    INVALID_STATE,
     RESOURCE_ALREADY_EXISTS,
     RESOURCE_DOES_NOT_EXIST,
 )
@@ -85,17 +87,20 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_DS_LIST_PREFIX,
     GSI2_EXPERIMENTS_PREFIX,
     GSI2_FTS_NAMES_PREFIX,
+    GSI2_GW_MODELDEFS_PREFIX,
     GSI2_GW_SECRETS_PREFIX,
     GSI2_PK,
     GSI2_SESSIONS_PREFIX,
     GSI2_SK,
     GSI3_DS_NAME_PREFIX,
     GSI3_EXP_NAME_PREFIX,
+    GSI3_GW_MODELDEF_NAME_PREFIX,
     GSI3_PK,
     GSI3_SCOR_NAME_PREFIX,
     GSI3_SK,
     GSI4_GW_MODELDEF_SECRET_PREFIX,
     GSI5_EXP_NAMES_PREFIX,
+    GSI5_GW_ENDPOINT_MODELDEF_PREFIX,
     GSI5_PK,
     GSI5_SK,
     LSI1_SK,
@@ -105,6 +110,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI5_SK,
     PK_DATASET_PREFIX,
     PK_EXPERIMENT_PREFIX,
+    PK_GW_MODELDEF_PREFIX,
     PK_GW_SECRET_PREFIX,
     SK_DATASET_EXP_PREFIX,
     SK_DATASET_META,
@@ -318,6 +324,9 @@ def _item_to_logged_model(
         params=param_dict,
         metrics=metric_list,
     )
+
+
+_UNSET = object()  # sentinel for optional parameters where None is a valid value
 
 
 class DynamoDBTrackingStore(AbstractStore):
@@ -5466,3 +5475,287 @@ class DynamoDBTrackingStore(AbstractStore):
         # GSI2 has ALL projection — items include all base table attributes
         # (PK, SK, secret_name, masked_value, etc.), no re-fetch needed.
         return [self._secret_item_to_entity(item) for item in items]
+
+    # -----------------------------------------------------------------------
+    # Gateway Model Definitions
+    # -----------------------------------------------------------------------
+
+    def _resolve_secret_name(self, secret_id: str | None) -> str | None:
+        """Resolve secret_name from secret_id. Returns None if secret_id is None or not found."""
+        if not secret_id:
+            return None
+        item = self._get_secret_item(secret_id)
+        return item["secret_name"] if item else None
+
+    def create_gateway_model_definition(
+        self,
+        name: str,
+        secret_id: str,
+        provider: str,
+        model_name: str,
+        created_by: str | None = None,
+    ) -> GatewayModelDefinition:
+        # Check name uniqueness via GSI3
+        existing = self._table.query(
+            pk=f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}",
+            index_name="gsi3",
+            limit=1,
+        )
+        if existing:
+            raise MlflowException(
+                f"Model definition with name '{name}' already exists",
+                error_code=RESOURCE_ALREADY_EXISTS,
+            )
+
+        # Verify secret exists
+        secret_item = self._get_secret_item(secret_id)
+        if secret_item is None:
+            raise MlflowException(
+                f"Secret '{secret_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        secret_name = secret_item["secret_name"]
+
+        model_definition_id = f"d-{generate_ulid()}"
+        now = get_current_time_millis()
+
+        item = {
+            "PK": f"{PK_GW_MODELDEF_PREFIX}{model_definition_id}",
+            "SK": SK_GW_META,
+            "name": name,
+            "secret_id": secret_id,
+            "provider": provider,
+            "model_name": model_name,
+            "created_at": now,
+            "last_updated_at": now,
+            "workspace": self._workspace,
+            # GSI projections
+            "gsi2pk": f"{GSI2_GW_MODELDEFS_PREFIX}{self._workspace}",
+            "gsi2sk": model_definition_id,
+            "gsi3pk": f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}",
+            "gsi3sk": model_definition_id,
+            "gsi4pk": f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}",
+            "gsi4sk": model_definition_id,
+        }
+        if created_by is not None:
+            item["created_by"] = created_by
+            item["last_updated_by"] = created_by
+
+        self._table.put_item(item)
+
+        return GatewayModelDefinition(
+            model_definition_id=model_definition_id,
+            name=name,
+            secret_id=secret_id,
+            secret_name=secret_name,
+            provider=provider,
+            model_name=model_name,
+            created_at=now,
+            last_updated_at=now,
+            created_by=created_by,
+            last_updated_by=created_by,
+            workspace=self._workspace,
+        )
+
+    def _get_model_def_item(self, model_definition_id: str) -> dict[str, Any] | None:
+        """Fetch raw DynamoDB item for a model definition by ID. Returns None if not found."""
+        return self._table.get_item(
+            pk=f"{PK_GW_MODELDEF_PREFIX}{model_definition_id}",
+            sk=SK_GW_META,
+        )
+
+    def _model_def_item_to_entity(
+        self, item: dict[str, Any], *, secret_name: Any = _UNSET
+    ) -> GatewayModelDefinition:
+        """Convert a raw DynamoDB model definition item to a GatewayModelDefinition entity.
+
+        Args:
+            item: Raw DynamoDB item.
+            secret_name: Pre-resolved secret name. If not provided, resolved via GetItem.
+        """
+        model_definition_id = item["PK"].removeprefix(PK_GW_MODELDEF_PREFIX)
+        secret_id = item.get("secret_id")
+        if secret_name is _UNSET:
+            secret_name = self._resolve_secret_name(secret_id)
+        return GatewayModelDefinition(
+            model_definition_id=model_definition_id,
+            name=item["name"],
+            secret_id=secret_id,
+            secret_name=secret_name,
+            provider=item["provider"],
+            model_name=item["model_name"],
+            created_at=int(item["created_at"]),
+            last_updated_at=int(item["last_updated_at"]),
+            created_by=item.get("created_by"),
+            last_updated_by=item.get("last_updated_by"),
+            workspace=item.get("workspace"),
+        )
+
+    def get_gateway_model_definition(
+        self,
+        model_definition_id: str | None = None,
+        name: str | None = None,
+    ) -> GatewayModelDefinition:
+        if (model_definition_id is None) == (name is None):
+            raise MlflowException(
+                "Exactly one of `model_definition_id` or `name` must be specified",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        if model_definition_id:
+            item = self._get_model_def_item(model_definition_id)
+        else:
+            results = self._table.query(
+                pk=f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}",
+                index_name="gsi3",
+                limit=1,
+            )
+            if not results:
+                raise MlflowException(
+                    f"Model definition with name '{name}' not found",
+                    error_code=RESOURCE_DOES_NOT_EXIST,
+                )
+            found_id = results[0]["gsi3sk"]
+            item = self._get_model_def_item(found_id)
+
+        if item is None:
+            identifier = model_definition_id if model_definition_id else name
+            raise MlflowException(
+                f"Model definition '{identifier}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        return self._model_def_item_to_entity(item)
+
+    def list_gateway_model_definitions(
+        self,
+        provider: str | None = None,
+        secret_id: str | None = None,
+    ) -> list[GatewayModelDefinition]:
+        if secret_id:
+            # Direct lookup via GSI4
+            items = self._table.query(
+                pk=f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}",
+                index_name="gsi4",
+            )
+        else:
+            # List all via GSI2
+            items = self._table.query(
+                pk=f"{GSI2_GW_MODELDEFS_PREFIX}{self._workspace}",
+                index_name="gsi2",
+            )
+
+        # GSI has ALL projection — items include all base table attributes.
+        # Batch-resolve secret_names to avoid N+1 GetItem calls.
+        unique_secret_ids = {item.get("secret_id") for item in items if item.get("secret_id")}
+        secret_names = {sid: self._resolve_secret_name(sid) for sid in unique_secret_ids}
+        model_defs = [
+            self._model_def_item_to_entity(
+                item, secret_name=secret_names.get(item.get("secret_id"))
+            )
+            for item in items
+        ]
+
+        # Apply provider filter in-memory if specified
+        if provider is not None:
+            model_defs = [md for md in model_defs if md.provider == provider]
+
+        return model_defs
+
+    def update_gateway_model_definition(
+        self,
+        model_definition_id: str,
+        name: str | None = None,
+        secret_id: Any = _UNSET,
+        model_name: str | None = None,
+        updated_by: str | None = None,
+        provider: str | None = None,
+    ) -> GatewayModelDefinition:
+        item = self._get_model_def_item(model_definition_id)
+        if item is None:
+            raise MlflowException(
+                f"Model definition '{model_definition_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        now = get_current_time_millis()
+        updates: dict[str, Any] = {"last_updated_at": now}
+        removes: list[str] = []
+
+        if name is not None:
+            # Check new name uniqueness
+            existing = self._table.query(
+                pk=f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}",
+                index_name="gsi3",
+                limit=1,
+            )
+            if existing and existing[0]["gsi3sk"] != model_definition_id:
+                raise MlflowException(
+                    f"Model definition with name '{name}' already exists",
+                    error_code=RESOURCE_ALREADY_EXISTS,
+                )
+            updates["name"] = name
+            updates["gsi3pk"] = f"{GSI3_GW_MODELDEF_NAME_PREFIX}{self._workspace}#{name}"
+
+        if secret_id is not _UNSET:
+            if secret_id is None:
+                # Intentional orphan — remove secret_id and GSI4 projection
+                removes.extend(["secret_id", "gsi4pk", "gsi4sk"])
+            else:
+                # Verify new secret exists
+                secret_item = self._get_secret_item(secret_id)
+                if secret_item is None:
+                    raise MlflowException(
+                        f"Secret '{secret_id}' not found",
+                        error_code=RESOURCE_DOES_NOT_EXIST,
+                    )
+                updates["secret_id"] = secret_id
+                updates["gsi4pk"] = f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}"
+                updates["gsi4sk"] = model_definition_id
+
+        if model_name is not None:
+            updates["model_name"] = model_name
+
+        if provider is not None:
+            updates["provider"] = provider
+
+        if updated_by is not None:
+            updates["last_updated_by"] = updated_by
+
+        self._table.update_item(
+            pk=f"{PK_GW_MODELDEF_PREFIX}{model_definition_id}",
+            sk=SK_GW_META,
+            updates=updates,
+            removes=removes if removes else None,
+        )
+
+        updated_item = self._get_model_def_item(model_definition_id)
+        assert updated_item is not None  # just wrote it
+        self._invalidate_secret_cache()
+        return self._model_def_item_to_entity(updated_item)
+
+    def delete_gateway_model_definition(self, model_definition_id: str) -> None:
+        item = self._get_model_def_item(model_definition_id)
+        if item is None:
+            raise MlflowException(
+                f"Model definition '{model_definition_id}' not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # RESTRICT: check if any endpoints use this model def via GSI5
+        endpoints = self._table.query(
+            pk=f"{GSI5_GW_ENDPOINT_MODELDEF_PREFIX}{model_definition_id}",
+            index_name="gsi5",
+        )
+        if endpoints:
+            raise MlflowException(
+                "Cannot delete model definition that is currently in use by endpoints. "
+                "Detach it from all endpoints first.",
+                error_code=INVALID_STATE,
+            )
+
+        self._table.delete_item(
+            pk=f"{PK_GW_MODELDEF_PREFIX}{model_definition_id}",
+            sk=SK_GW_META,
+        )
+        self._invalidate_secret_cache()
