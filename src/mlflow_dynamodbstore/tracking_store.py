@@ -5612,3 +5612,30 @@ class DynamoDBTrackingStore(AbstractStore):
             )
 
         return self._model_def_item_to_entity(item)
+
+    def list_gateway_model_definitions(
+        self,
+        provider: str | None = None,
+        secret_id: str | None = None,
+    ) -> list[GatewayModelDefinition]:
+        if secret_id:
+            # Direct lookup via GSI4
+            items = self._table.query(
+                pk=f"{GSI4_GW_MODELDEF_SECRET_PREFIX}{secret_id}",
+                index_name="gsi4",
+            )
+        else:
+            # List all via GSI2
+            items = self._table.query(
+                pk=f"{GSI2_GW_MODELDEFS_PREFIX}{self._workspace}",
+                index_name="gsi2",
+            )
+
+        # GSI has ALL projection — items include all base table attributes
+        model_defs = [self._model_def_item_to_entity(item) for item in items]
+
+        # Apply provider filter in-memory if specified
+        if provider is not None:
+            model_defs = [md for md in model_defs if md.provider == provider]
+
+        return model_defs
