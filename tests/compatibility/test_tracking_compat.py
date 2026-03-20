@@ -449,31 +449,15 @@ test_search_traces_with_prompts_filter_invalid_format = _xfail_validation(
 _xfail_error_msg = pytest.mark.xfail(reason="DynamoDB store uses ULID experiment IDs, not integers")
 test_get_experiment_invalid_id = _xfail_error_msg(test_get_experiment_invalid_id)
 
-# --- Category 4: StopIteration leaking from async coroutine (16 tests) ---
-_xfail_stopiter = pytest.mark.xfail(
-    reason="DynamoDB store leaks StopIteration from bare next() in async coroutine"
+# --- Category 4: log_spans cost/token metric incremental updates ---
+_xfail_span_metrics = pytest.mark.xfail(
+    reason="DynamoDB store log_spans cost/token incremental updates incomplete"
 )
-test_log_spans_default_trace_status_in_progress = _xfail_stopiter(
-    test_log_spans_default_trace_status_in_progress
+test_log_spans_update_cost_incrementally = _xfail_span_metrics(
+    test_log_spans_update_cost_incrementally
 )
-test_log_spans_does_not_update_finalized_trace_status = _xfail_stopiter(
-    test_log_spans_does_not_update_finalized_trace_status
-)
-test_log_spans_sets_trace_status_from_root_span = _xfail_stopiter(
-    test_log_spans_sets_trace_status_from_root_span
-)
-test_log_spans_unset_root_span_status_defaults_to_ok = _xfail_stopiter(
-    test_log_spans_unset_root_span_status_defaults_to_ok
-)
-test_log_spans_update_cost_incrementally = _xfail_stopiter(test_log_spans_update_cost_incrementally)
-test_log_spans_update_token_usage_incrementally = _xfail_stopiter(
+test_log_spans_update_token_usage_incrementally = _xfail_span_metrics(
     test_log_spans_update_token_usage_incrementally
-)
-test_log_spans_updates_in_progress_trace_status_from_root_span = _xfail_stopiter(
-    test_log_spans_updates_in_progress_trace_status_from_root_span
-)
-test_log_spans_updates_state_unspecified_trace_status_from_root_span = _xfail_stopiter(
-    test_log_spans_updates_state_unspecified_trace_status_from_root_span
 )
 
 # --- Category 5: search runs ordering/pagination/filtering broken (15 tests) ---
