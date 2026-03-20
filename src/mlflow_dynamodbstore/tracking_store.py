@@ -5798,7 +5798,6 @@ class DynamoDBTrackingStore(AbstractStore):
         """Convert a list of raw DynamoDB items from an endpoint partition to a GatewayEndpoint."""
         meta: dict[str, Any] | None = None
         mapping_items: list[dict[str, Any]] = []
-        binding_items: list[dict[str, Any]] = []
         tag_items: list[dict[str, Any]] = []
 
         for item in items:
@@ -5807,8 +5806,6 @@ class DynamoDBTrackingStore(AbstractStore):
                 meta = item
             elif sk.startswith(SK_GW_MAP_PREFIX):
                 mapping_items.append(item)
-            elif sk.startswith(SK_GW_BIND_PREFIX):
-                binding_items.append(item)
             elif sk.startswith(SK_GW_TAG_PREFIX):
                 tag_items.append(item)
 
@@ -5818,7 +5815,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
-        # Resolve model definitions for mappings (batch to avoid N+1)
+        # Resolve model definitions for mappings (deduplicate to avoid redundant fetches)
         model_def_ids = {m["model_definition_id"] for m in mapping_items}
         model_def_cache: dict[str, GatewayModelDefinition] = {}
         for md_id in model_def_ids:
@@ -6463,6 +6460,19 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         self._invalidate_secret_cache()
 
+    def _binding_item_to_entity(self, item: dict[str, Any]) -> GatewayEndpointBinding:
+        """Convert a raw DynamoDB binding item to a GatewayEndpointBinding entity."""
+        return GatewayEndpointBinding(
+            endpoint_id=item["endpoint_id"],
+            resource_type=GatewayResourceType(item["resource_type"]),
+            resource_id=item["resource_id"],
+            created_at=int(item["created_at"]),
+            last_updated_at=int(item["last_updated_at"]),
+            created_by=item.get("created_by"),
+            last_updated_by=item.get("last_updated_by"),
+            display_name=item.get("display_name"),
+        )
+
     def list_endpoint_bindings(
         self,
         endpoint_id: str | None = None,
@@ -6481,19 +6491,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 pk=f"{PK_GW_ENDPOINT_PREFIX}{endpoint_id}",
                 sk_prefix=sk_prefix,
             )
-            return [
-                GatewayEndpointBinding(
-                    endpoint_id=item["endpoint_id"],
-                    resource_type=GatewayResourceType(item["resource_type"]),
-                    resource_id=item["resource_id"],
-                    created_at=int(item["created_at"]),
-                    last_updated_at=int(item["last_updated_at"]),
-                    created_by=item.get("created_by"),
-                    last_updated_by=item.get("last_updated_by"),
-                    display_name=item.get("display_name"),
-                )
-                for item in items
-            ]
+            return [self._binding_item_to_entity(item) for item in items]
 
         if resource_type is not None and resource_id is not None:
             # Reverse lookup via GSI2
@@ -6510,18 +6508,7 @@ class DynamoDBTrackingStore(AbstractStore):
                     sk=sk,
                 )
                 if bind_item:
-                    bindings.append(
-                        GatewayEndpointBinding(
-                            endpoint_id=bind_item["endpoint_id"],
-                            resource_type=GatewayResourceType(bind_item["resource_type"]),
-                            resource_id=bind_item["resource_id"],
-                            created_at=int(bind_item["created_at"]),
-                            last_updated_at=int(bind_item["last_updated_at"]),
-                            created_by=bind_item.get("created_by"),
-                            last_updated_by=bind_item.get("last_updated_by"),
-                            display_name=bind_item.get("display_name"),
-                        )
-                    )
+                    bindings.append(self._binding_item_to_entity(bind_item))
             return bindings
 
         # No endpoint_id and no resource filter: list all endpoints, query bindings per endpoint
@@ -6536,19 +6523,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 pk=f"{PK_GW_ENDPOINT_PREFIX}{ep_id}",
                 sk_prefix=SK_GW_BIND_PREFIX,
             )
-            for item in bind_items:
-                bindings.append(
-                    GatewayEndpointBinding(
-                        endpoint_id=item["endpoint_id"],
-                        resource_type=GatewayResourceType(item["resource_type"]),
-                        resource_id=item["resource_id"],
-                        created_at=int(item["created_at"]),
-                        last_updated_at=int(item["last_updated_at"]),
-                        created_by=item.get("created_by"),
-                        last_updated_by=item.get("last_updated_by"),
-                        display_name=item.get("display_name"),
-                    )
-                )
+            bindings.extend(self._binding_item_to_entity(item) for item in bind_items)
         return bindings
 
     def set_gateway_endpoint_tag(
