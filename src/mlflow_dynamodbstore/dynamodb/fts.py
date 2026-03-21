@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from typing import Any
 
 import snowballstemmer
@@ -184,14 +185,21 @@ STOP_WORDS = frozenset(
     }
 )
 
-_stemmer = snowballstemmer.stemmer("english")
+_thread_local = threading.local()
+
+
+def _get_stemmer() -> snowballstemmer.stemmer_modules.english_stemmer.EnglishStemmer:
+    """Return a thread-local stemmer instance (snowballstemmer is not thread-safe)."""
+    if not hasattr(_thread_local, "stemmer"):
+        _thread_local.stemmer = snowballstemmer.stemmer("english")
+    return _thread_local.stemmer
 
 
 def tokenize_words(text: str) -> set[str]:
     """Stemmed whole-word tokens for LIKE '%complete_word%' matches."""
     words = re.findall(r"[a-z0-9]+", text.lower())
     words = [w for w in words if w not in STOP_WORDS and len(w) > 1]
-    return set(_stemmer.stemWords(words))
+    return set(_get_stemmer().stemWords(words))
 
 
 def tokenize_trigrams(text: str) -> set[str]:
