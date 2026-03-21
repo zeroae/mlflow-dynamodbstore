@@ -1313,15 +1313,44 @@ def execute_logged_model_query(
 
     # Apply rank_filters (metric predicates) via RANK item range queries
     if plan.rank_filters and plan.strategy != "rank":
+        from mlflow_dynamodbstore.dynamodb.schema import SK_RANK_LMD_PREFIX
+
         for rf in plan.rank_filters:
-            sk_prefix = f"{SK_RANK_LM_PREFIX}{rf.key}#"
-            rank_items = table.query(pk=pk, sk_prefix=sk_prefix)
+            # Use dataset-scoped RANK items when datasets are specified
+            if plan.datasets:
+                ds = plan.datasets[0]
+                ds_name = ds.get("dataset_name", ds.get("name", ""))
+                ds_digest = ds.get("dataset_digest", ds.get("digest", ""))
+                rank_sk = f"{SK_RANK_LMD_PREFIX}{rf.key}#{ds_name}#"
+                if ds_digest:
+                    rank_sk = f"{SK_RANK_LMD_PREFIX}{rf.key}#{ds_name}#{ds_digest}#"
+            else:
+                rank_sk = f"{SK_RANK_LM_PREFIX}{rf.key}#"
+            rank_items = table.query(pk=pk, sk_prefix=rank_sk)
             matching_ids: set[str] = set()
             for ri in rank_items:
                 val = float(ri.get("metric_value", 0))
                 if _compare(val, rf.op, rf.value):
                     matching_ids.add(ri["model_id"])
             items = [i for i in items if i.get("model_id") in matching_ids]
+
+    # Apply dataset-only filter when datasets specified but no metric predicates
+    if plan.datasets and not plan.rank_filters and plan.strategy != "rank":
+        from mlflow_dynamodbstore.dynamodb.schema import SK_RANK_LMD_PREFIX
+
+        ds = plan.datasets[0]
+        ds_name = ds.get("dataset_name", ds.get("name", ""))
+        ds_digest = ds.get("dataset_digest", ds.get("digest", ""))
+        rank_sk = f"{SK_RANK_LMD_PREFIX}"
+        # Query all dataset-scoped RANK items and collect model_ids matching the dataset
+        all_ds_rank = table.query(pk=pk, sk_prefix=rank_sk)
+        ds_model_ids: set[str] = set()
+        for ri in all_ds_rank:
+            ri_name = ri.get("dataset_name", "")
+            ri_digest = ri.get("dataset_digest", "")
+            if ri_name == ds_name and (not ds_digest or ri_digest == ds_digest):
+                ds_model_ids.add(ri["model_id"])
+        items = [i for i in items if i.get("model_id") in ds_model_ids]
 
     # Apply post-filters
     filtered: list[dict[str, Any]] = []
