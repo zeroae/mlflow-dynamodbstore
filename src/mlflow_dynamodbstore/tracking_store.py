@@ -3194,6 +3194,8 @@ class DynamoDBTrackingStore(AbstractStore):
             "execution_duration": execution_duration,
             "state": state_str,
             "tags": {},
+            "feedbacks": {},
+            "expectations": {},
             # LSI attributes (must be strings, zero-padded for sort order)
             LSI1_SK: f"{request_time:020d}",
             LSI2_SK: request_time + execution_duration,
@@ -4743,6 +4745,49 @@ class DynamoDBTrackingStore(AbstractStore):
             except ValueError:
                 pass
 
+    def _denormalize_assessment_on_trace(
+        self, pk: str, trace_id: str, assess_dict: dict[str, Any]
+    ) -> None:
+        """Denormalize feedback/expectation value onto trace META for FilterExpression."""
+        name = assess_dict.get("assessment_name", "")
+        if not name:
+            return
+        trace_sk = f"{SK_TRACE_PREFIX}{trace_id}"
+        map_attr = "feedbacks" if "feedback" in assess_dict else "expectations"
+        raw = assess_dict.get("feedback" if map_attr == "feedbacks" else "expectation", {})
+        value = raw.get("value")
+        if value is not None:
+            # Normalize to match MLflow filter string conventions:
+            # bool → "true"/"false", float → int string if whole, else str
+            if isinstance(value, bool):
+                value = str(value).lower()
+            elif isinstance(value, float) and value == int(value):
+                value = str(int(value))
+            else:
+                value = str(value)
+        # SET feedbacks.#name = :val (nested map update)
+        self._table._table.update_item(
+            Key={"PK": pk, "SK": trace_sk},
+            UpdateExpression="SET #map.#name = :val",
+            ExpressionAttributeNames={"#map": map_attr, "#name": name},
+            ExpressionAttributeValues={":val": value},
+        )
+
+    def _remove_assessment_from_trace(
+        self, pk: str, trace_id: str, assess_dict: dict[str, Any]
+    ) -> None:
+        """Remove denormalized feedback/expectation from trace META."""
+        name = assess_dict.get("assessment_name", "")
+        if not name:
+            return
+        trace_sk = f"{SK_TRACE_PREFIX}{trace_id}"
+        map_attr = "feedbacks" if "feedback" in assess_dict else "expectations"
+        self._table._table.update_item(
+            Key={"PK": pk, "SK": trace_sk},
+            UpdateExpression="REMOVE #map.#name",
+            ExpressionAttributeNames={"#map": map_attr, "#name": name},
+        )
+
     def create_assessment(self, assessment: Assessment) -> Assessment:
         """Create a new assessment for a trace."""
         trace_id = assessment.trace_id
@@ -4787,6 +4832,9 @@ class DynamoDBTrackingStore(AbstractStore):
             item["ttl"] = ttl
         self._denormalize_assessment_item(item, assess_dict)
         self._table.put_item(item)
+
+        # Denormalize feedback/expectation value onto trace META for filtering
+        self._denormalize_assessment_on_trace(pk, trace_id, assess_dict)
 
         # Write FTS items for the assessment value text
         fts_text = self._assessment_fts_text(assessment)
@@ -4863,6 +4911,9 @@ class DynamoDBTrackingStore(AbstractStore):
         self._denormalize_assessment_item(item, assess_dict)
         self._table.put_item(item)
 
+        # Update denormalized feedback/expectation on trace META
+        self._denormalize_assessment_on_trace(pk, trace_id, assess_dict)
+
         # FTS diff
         updated_assessment = Assessment.from_dictionary(assess_dict)
         new_fts_text = self._assessment_fts_text(updated_assessment)
@@ -4918,6 +4969,10 @@ class DynamoDBTrackingStore(AbstractStore):
                 f"Assessment '{assessment_id}' for trace '{trace_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
+
+        # Remove denormalized feedback/expectation from trace META
+        assess_dict = item.get("data", {})
+        self._remove_assessment_from_trace(pk, trace_id, assess_dict)
 
         # Delete assessment item
         self._table.delete_item(pk=pk, sk=sk)
