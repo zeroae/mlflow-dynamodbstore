@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from mlflow.entities import ScorerVersion
+from mlflow.entities import GatewayEndpointModelConfig, GatewayModelLinkageType, ScorerVersion
 from mlflow.exceptions import MlflowException
 from mlflow.genai.scorers.online.entities import OnlineScoringConfig
 
@@ -14,6 +14,32 @@ _GATEWAY_SCORER = json.dumps({"instructions_judge_pydantic_data": {"model": "gat
 
 def _create_experiment(tracking_store) -> str:
     return tracking_store.create_experiment("scorer-test-exp")
+
+
+def _ensure_gateway_endpoint(tracking_store, name: str = "ep") -> None:
+    """Create a gateway endpoint (with backing secret + model def) if it doesn't exist."""
+    try:
+        tracking_store.get_gateway_endpoint(name=name)
+    except MlflowException:
+        secret = tracking_store.create_gateway_secret(
+            secret_name=f"{name}-secret", secret_value={"api_key": "value"}
+        )
+        model_def = tracking_store.create_gateway_model_definition(
+            name=f"{name}-model",
+            secret_id=secret.secret_id,
+            provider="openai",
+            model_name="gpt-4",
+        )
+        tracking_store.create_gateway_endpoint(
+            name=name,
+            model_configs=[
+                GatewayEndpointModelConfig(
+                    model_definition_id=model_def.model_definition_id,
+                    linkage_type=GatewayModelLinkageType.PRIMARY,
+                    weight=1.0,
+                ),
+            ],
+        )
 
 
 class TestRegisterScorer:
@@ -205,6 +231,10 @@ class TestDeleteScorer:
 
 
 class TestUpsertOnlineScoringConfig:
+    @pytest.fixture(autouse=True)
+    def _setup_gateway_endpoint(self, tracking_store):
+        _ensure_gateway_endpoint(tracking_store)
+
     def test_create_config(self, tracking_store):
         """upsert creates a new config."""
         exp_id = _create_experiment(tracking_store)
@@ -252,6 +282,10 @@ class TestUpsertOnlineScoringConfig:
 
 
 class TestGetOnlineScoringConfigs:
+    @pytest.fixture(autouse=True)
+    def _setup_gateway_endpoint(self, tracking_store):
+        _ensure_gateway_endpoint(tracking_store)
+
     def test_get_configs(self, tracking_store):
         """get_online_scoring_configs returns configs for given scorer_ids."""
         exp_id = _create_experiment(tracking_store)
@@ -271,6 +305,10 @@ class TestGetOnlineScoringConfigs:
 
 
 class TestGetActiveOnlineScorers:
+    @pytest.fixture(autouse=True)
+    def _setup_gateway_endpoint(self, tracking_store):
+        _ensure_gateway_endpoint(tracking_store)
+
     def test_active_scorers(self, tracking_store):
         """get_active_online_scorers returns scorers with sample_rate > 0."""
         exp_id = _create_experiment(tracking_store)
