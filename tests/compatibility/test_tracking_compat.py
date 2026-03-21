@@ -426,9 +426,6 @@ _xfail_search_runs_inputs = pytest.mark.xfail(
 test_log_input_multiple_times_does_not_overwrite_tags_or_dataset = _xfail_search_runs_inputs(
     test_log_input_multiple_times_does_not_overwrite_tags_or_dataset
 )
-test_log_inputs_and_retrieve_runs_behaves_as_expected = _xfail_search_runs_inputs(
-    test_log_inputs_and_retrieve_runs_behaves_as_expected
-)
 test_log_inputs_with_large_inputs_limit_check = _xfail_search_runs_inputs(
     test_log_inputs_with_large_inputs_limit_check
 )

@@ -125,6 +125,7 @@ class QueryPlan:
 
 # LSI mapping for order_by attributes
 _ORDER_BY_LSI: dict[str, str] = {
+    "start_time": "lsi1",
     "end_time": "lsi2",
     "status": "lsi3",
     "run_name": "lsi4",
