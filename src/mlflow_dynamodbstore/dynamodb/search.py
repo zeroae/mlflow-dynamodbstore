@@ -115,6 +115,8 @@ class QueryPlan:
     post_filters: list[FilterPredicate] = field(default_factory=list)
     rank_key: str | None = None  # For strategy="rank"
     fts_query: str | None = None  # For strategy="fts"
+    # Boto3 FilterExpression (ConditionBase) for server-side filtering
+    filter_expression: Any = None
     # Metric predicates applied after RANK/index fetch (logged model search)
     rank_filters: list[FilterPredicate] = field(default_factory=list)
     # Dataset scope for logged model metric search
@@ -361,11 +363,14 @@ def plan_trace_query(
         A :class:`QueryPlan` describing the chosen execution strategy.
     """
     # ------------------------------------------------------------------ #
-    # 1. Check for FTS strategy (LIKE '%word%' on any text field)         #
+    # 1. Check for FTS strategy (LIKE '%word%' on FTS-indexed fields)     #
     # ------------------------------------------------------------------ #
+    # Only use FTS for fields that are actually trigram-indexed.
+    # Non-indexed fields (tags, metadata, name) fall through to post-filter.
+    trace_fts_fields = {"run_name"}  # fields with FTS trigram index
     for pred in predicates:
         if pred.op in ("LIKE", "ILIKE") and isinstance(pred.value, str):
-            if _FTS_LIKE_RE.match(pred.value):
+            if _FTS_LIKE_RE.match(pred.value) and pred.key in trace_fts_fields:
                 fts_query = pred.value.strip("%")
                 return QueryPlan(
                     strategy="fts",
@@ -402,16 +407,23 @@ def plan_trace_query(
         if pred.field_type == "tag" and pred.key == "mlflow.traceName":
             if pred.op in ("LIKE", "ILIKE") and isinstance(pred.value, str):
                 # Only handle prefix patterns: 'word%'
+                # LSI4 stores lowercase name → narrows by ILIKE prefix
+                # For case-sensitive LIKE, add FilterExpression on trace_name
                 val = pred.value
                 if val.endswith("%") and not val.startswith("%"):
                     prefix = val.rstrip("%").lower()
                     remaining_preds = [p for p in predicates if p is not pred]
+                    # For LIKE (case-sensitive), use FilterExpression on trace_name
+                    fe = None
+                    if pred.op == "LIKE":
+                        fe = Attr("trace_name").begins_with(val.rstrip("%"))
                     return QueryPlan(
                         strategy="index",
                         index="lsi4",
                         sk_prefix=prefix,
                         scan_forward=True,
                         post_filters=remaining_preds,
+                        filter_expression=fe,
                     )
 
     # ------------------------------------------------------------------ #
@@ -837,6 +849,8 @@ def _apply_trace_post_filter(
             "end_time_ms": "lsi2sk",
             "execution_time_ms": "execution_duration",
             "status": "state",
+            "name": "trace_name",
+            "client_request_id": "client_request_id",
         }
         item_key = key_map.get(pred.key, pred.key)
         actual = item.get(item_key)
@@ -844,9 +858,16 @@ def _apply_trace_post_filter(
         if pred.key in ("timestamp_ms", "execution_time_ms", "end_time_ms"):
             if actual is not None:
                 actual = int(actual)
+        # For != on optional attributes, None means "not present" → exclude
+        if actual is None and pred.op == "!=":
+            return False
         return _compare(actual, pred.op, pred.value)
 
     if pred.field_type == "tag":
+        # For trace name, use the trace_name attribute on META
+        if pred.key == "mlflow.traceName":
+            actual = item.get("trace_name")
+            return _compare(actual, pred.op, pred.value)
         # Check denormalized tags first
         tags = item.get("tags", {})
         if pred.key in tags:
@@ -953,12 +974,13 @@ def _execute_trace_index(
     string_lsis = {"lsi3", "lsi4"}
 
     if plan.index in string_lsis and plan.sk_prefix is not None:
-        # Query the LSI directly with sk_prefix
+        # Query the LSI directly with sk_prefix, with optional FilterExpression
         items = table.query(
             pk=pk,
             sk_prefix=plan.sk_prefix,
             index_name=plan.index,
             scan_forward=plan.scan_forward,
+            filter_expression=plan.filter_expression,
         )
         # Filter to trace META items only
         return [item for item in items if _is_trace_meta_item(item)]

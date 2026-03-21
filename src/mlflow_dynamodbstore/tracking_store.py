@@ -2957,6 +2957,7 @@ class DynamoDBTrackingStore(AbstractStore):
         }
 
         if trace_name:
+            item["trace_name"] = trace_name
             item[LSI4_SK] = trace_name.lower()
 
         if ttl is not None:
