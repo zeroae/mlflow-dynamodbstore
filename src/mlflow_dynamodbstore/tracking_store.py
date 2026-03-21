@@ -3039,6 +3039,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 "PK": pk,
                 "SK": f"{SK_DLINK_PREFIX}{ds.name}#{ds.digest}#{SK_RUN_PREFIX}{run_id}",
                 "dataset_name": ds.name,
+                "dataset_name_lower": ds.name.lower(),
                 "dataset_digest": ds.digest,
                 "run_id": run_id,
             }

@@ -390,16 +390,7 @@ _xfail_search_runs_filter = pytest.mark.xfail(
 test_search_metrics = _xfail_search_runs_filter(test_search_metrics)
 # test_search_params — DONE (NULL != fix + FTS field restriction)
 
-# --- A5. Search runs: dataset filters (2 tests) ---
-# Root cause: DLINK strategy for dataset.name/digest/context filters
-# needs work in _execute_dlink.
-_xfail_search_runs_dataset = pytest.mark.xfail(
-    reason="search_runs: dataset filter predicates incomplete"
-)
-test_search_runs_datasets = _xfail_search_runs_dataset(test_search_runs_datasets)
-test_search_runs_datasets_with_param_filters = _xfail_search_runs_dataset(
-    test_search_runs_datasets_with_param_filters
-)
+# --- A5. Search runs: dataset filters — DONE (DLINK FilterExpression + post-filters) ---
 
 # --- A6. Search runs: pagination — DONE (overflow cache) ---
 
