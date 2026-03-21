@@ -99,14 +99,16 @@ class TestExperimentTagDenormalization:
         assert meta is not None
         assert meta.get("tags", {}).get("mlflow.note.content") == "my note"
 
-    def test_custom_experiment_tag_not_denormalized(self, tracking_store):
+    def test_custom_experiment_tag_always_denormalized(self, tracking_store):
+        """All experiment tags are denormalized for FilterExpression support."""
         exp_id = tracking_store.create_experiment("exp-e2", artifact_location="s3://b")
         tracking_store.set_experiment_tag(exp_id, ExperimentTag("team", "ml-platform"))
         meta = tracking_store._table.get_item(
             pk=f"{PK_EXPERIMENT_PREFIX}{exp_id}",
             sk=SK_EXPERIMENT_META,
         )
-        assert "team" not in meta.get("tags", {})
+        assert meta.get("tags", {}).get("team") == "ml-platform"
+        assert meta.get("tags_lower", {}).get("team") == "ml-platform"
 
     def test_experiment_meta_has_empty_tags_map_on_create(self, tracking_store):
         exp_id = tracking_store.create_experiment("exp-e3", artifact_location="s3://b")
@@ -128,4 +130,4 @@ class TestExperimentTagDenormalization:
             sk=SK_EXPERIMENT_META,
         )
         assert meta.get("tags", {}).get("mlflow.note.content") == "note"
-        assert "custom" not in meta.get("tags", {})
+        assert meta.get("tags", {}).get("custom") == "skip"

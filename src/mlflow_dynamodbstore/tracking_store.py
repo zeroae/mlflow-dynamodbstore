@@ -527,6 +527,9 @@ class DynamoDBTrackingStore(AbstractStore):
             "PK": f"{PK_EXPERIMENT_PREFIX}{exp_id}",
             "SK": SK_EXPERIMENT_META,
             "name": name,
+            "name_lower": name.lower(),
+            "name_rev": _rev(name),
+            "name_lower_rev": _rev(name.lower()),
             "lifecycle_stage": "active",
             "artifact_location": artifact_location
             or append_to_uri_path(self._artifact_uri, str(exp_id)),
@@ -534,6 +537,8 @@ class DynamoDBTrackingStore(AbstractStore):
             "last_update_time": now_ms,
             "workspace": self._workspace,
             "tags": {},
+            "tags_lower": {},
+            "tags_lower_rev": {},
             # LSI attributes
             LSI1_SK: f"active#{exp_id}",
             LSI2_SK: now_ms,
@@ -640,6 +645,9 @@ class DynamoDBTrackingStore(AbstractStore):
             sk=SK_EXPERIMENT_META,
             updates={
                 "name": new_name,
+                "name_lower": new_name.lower(),
+                "name_rev": _rev(new_name),
+                "name_lower_rev": _rev(new_name.lower()),
                 "last_update_time": now_ms,
                 LSI2_SK: now_ms,
                 LSI3_SK: new_name,
@@ -789,54 +797,37 @@ class DynamoDBTrackingStore(AbstractStore):
         from mlflow.store.entities import PagedList
 
         from mlflow_dynamodbstore.dynamodb.pagination import decode_page_token, encode_page_token
-        from mlflow_dynamodbstore.dynamodb.search import parse_experiment_filter
+        from mlflow_dynamodbstore.dynamodb.search import (
+            build_experiment_filter_expression,
+            parse_experiment_filter,
+        )
 
         predicates = parse_experiment_filter(filter_string)
+        filter_expr = build_experiment_filter_expression(predicates)
 
-        # Classify predicates
-        name_pred = next(
-            (p for p in predicates if p.field_type == "attribute" and p.key == "name"),
-            None,
-        )
-        tag_preds = [p for p in predicates if p.field_type == "tag"]
-
-        has_post_filters = bool(tag_preds) or bool(order_by)
-
-        if name_pred and name_pred.op == "=":
-            experiments = self._search_experiments_by_name_exact(name_pred.value, view_type)
-            return PagedList(experiments[:max_results], token=None)
-        elif name_pred and name_pred.op in ("LIKE", "ILIKE"):
-            experiments = self._search_experiments_by_name_like(
-                name_pred.value, name_pred.op, view_type
-            )
-            # Apply tag filters as post-filters
-            if tag_preds:
-                experiments = self._filter_experiments_by_tags(experiments, tag_preds)
-            if order_by:
-                experiments = self._sort_experiments(experiments, order_by)
-            return PagedList(experiments[:max_results], token=None)
-
-        # Default path: paginated GSI2 query with ULID-based ordering
         # Decode pagination state
         token_data = decode_page_token(page_token)
-        lek = token_data.get("lek") if token_data else None
 
-        if has_post_filters:
-            # When post-filters or custom ordering needed, fetch all and filter
-            experiments = self._search_experiments_by_lifecycle(view_type)
-            if tag_preds:
-                experiments = self._filter_experiments_by_tags(experiments, tag_preds)
-            if order_by:
-                experiments = self._sort_experiments(experiments, order_by)
-            # Offset-based pagination for post-filtered results
+        if order_by:
+            # Custom ordering requires fetching all, sorting, offset-paging
+            experiments = self._search_experiments_by_lifecycle(
+                view_type, filter_expression=filter_expr
+            )
+            experiments = self._sort_experiments(experiments, order_by)
             offset = token_data.get("offset", 0) if token_data else 0
             page = experiments[offset : offset + max_results]
             has_more = len(experiments) > offset + max_results
             next_token = encode_page_token({"offset": offset + max_results}) if has_more else None
             return PagedList(page, next_token)
 
-        # No post-filters: use native DynamoDB pagination (ULID = creation_time DESC)
-        experiments, next_lek = self._search_experiments_page(view_type, max_results, lek)
+        # Default path: native DynamoDB pagination with FilterExpression
+        # ULID experiment_ids give creation_time DESC ordering
+        # Note: lek is a DynamoDB LastEvaluatedKey for single-partition queries,
+        # but an {"offset": N} dict for ViewType.ALL (merged partitions).
+        lek = token_data.get("lek") if token_data else None
+        experiments, next_lek = self._search_experiments_page(
+            view_type, max_results, lek, filter_expression=filter_expr
+        )
         next_token = encode_page_token({"lek": next_lek}) if next_lek else None
         return PagedList(experiments, next_token)
 
@@ -844,8 +835,12 @@ class DynamoDBTrackingStore(AbstractStore):
     # search_experiments helpers
     # ------------------------------------------------------------------
 
-    def _search_experiments_by_lifecycle(self, view_type: int) -> list[Experiment]:
-        """Query ALL experiments by lifecycle stage using GSI2 (for post-filter paths)."""
+    def _search_experiments_by_lifecycle(
+        self,
+        view_type: int,
+        filter_expression: Any = None,
+    ) -> list[Experiment]:
+        """Query ALL experiments by lifecycle stage using GSI2 (for custom ordering paths)."""
         experiments: list[Experiment] = []
 
         if view_type in (ViewType.ACTIVE_ONLY, ViewType.ALL):
@@ -853,6 +848,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 pk=f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#active",
                 index_name="gsi2",
                 scan_forward=False,
+                filter_expression=filter_expression,
             )
             for item in items:
                 exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
@@ -863,6 +859,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 pk=f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#deleted",
                 index_name="gsi2",
                 scan_forward=False,
+                filter_expression=filter_expression,
             )
             for item in items:
                 exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
@@ -875,11 +872,15 @@ class DynamoDBTrackingStore(AbstractStore):
         view_type: int,
         max_results: int,
         lek: dict[str, Any] | None = None,
+        filter_expression: Any = None,
     ) -> tuple[list[Experiment], dict[str, Any] | None]:
         """Query a page of experiments using native DynamoDB pagination.
 
         Uses GSI2 with scan_forward=False for creation_time DESC ordering
         (ULID experiment_ids are time-ordered).
+
+        When filter_expression is provided, over-fetches and loops until
+        enough results are collected (DynamoDB Limit is pre-filter).
 
         Returns (experiments, last_evaluated_key).
         """
@@ -892,11 +893,13 @@ class DynamoDBTrackingStore(AbstractStore):
                 pk=f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#active",
                 index_name="gsi2",
                 scan_forward=False,
+                filter_expression=filter_expression,
             )
             deleted_items = self._table.query(
                 pk=f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#deleted",
                 index_name="gsi2",
                 scan_forward=False,
+                filter_expression=filter_expression,
             )
             # Merge-sort by experiment_id (ULID) descending
             all_items = active_items + deleted_items
@@ -914,17 +917,30 @@ class DynamoDBTrackingStore(AbstractStore):
         else:
             # Single partition: use native DynamoDB pagination
             partition = "active" if view_type == ViewType.ACTIVE_ONLY else "deleted"
-            items, raw_lek = self._table.query_page(
-                pk=f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#{partition}",
-                index_name="gsi2",
-                scan_forward=False,
-                limit=max_results,
-                exclusive_start_key=lek,
-            )
-            for item in items:
-                exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
-                experiments.append(self.get_experiment(exp_id))
-            next_lek = raw_lek
+            gsi2_pk = f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#{partition}"
+
+            # With FilterExpression, DynamoDB Limit is pre-filter, so we need
+            # to loop until we have enough results or exhaust the partition
+            cursor = lek
+            batch_size = max_results * 2 if filter_expression else max_results
+            while len(experiments) < max_results:
+                items, raw_lek = self._table.query_page(
+                    pk=gsi2_pk,
+                    index_name="gsi2",
+                    scan_forward=False,
+                    limit=batch_size,
+                    exclusive_start_key=cursor,
+                    filter_expression=filter_expression,
+                )
+                for item in items:
+                    if len(experiments) >= max_results:
+                        break
+                    exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
+                    experiments.append(self.get_experiment(exp_id))
+                if raw_lek is None:
+                    break
+                cursor = raw_lek
+            next_lek = cursor if len(experiments) >= max_results and cursor else None
 
         return experiments, next_lek
 
@@ -1149,8 +1165,13 @@ class DynamoDBTrackingStore(AbstractStore):
             "value": tag.value,
         }
         self._table.put_item(item)
-        if self._config.should_denormalize(None, tag.key):
-            self._denormalize_tag(pk, SK_EXPERIMENT_META, tag.key, tag.value)
+        # Always denormalize all experiment tags for FilterExpression support
+        self._denormalize_tag(pk, SK_EXPERIMENT_META, tag.key, tag.value)
+        lower_val = tag.value.lower() if tag.value else ""
+        self._denormalize_tag(pk, SK_EXPERIMENT_META, tag.key, lower_val, map_attr="tags_lower")
+        self._denormalize_tag(
+            pk, SK_EXPERIMENT_META, tag.key, _rev(lower_val), map_attr="tags_lower_rev"
+        )
 
     def delete_experiment_tag(self, experiment_id: str, key: str) -> None:
         """Delete a tag from an experiment."""
@@ -1158,8 +1179,9 @@ class DynamoDBTrackingStore(AbstractStore):
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         sk = f"{SK_EXPERIMENT_TAG_PREFIX}{key}"
         self._table.delete_item(pk=pk, sk=sk)
-        if self._config.should_denormalize(None, key):
-            self._remove_denormalized_tag(pk, SK_EXPERIMENT_META, key)
+        self._remove_denormalized_tag(pk, SK_EXPERIMENT_META, key)
+        self._remove_denormalized_tag(pk, SK_EXPERIMENT_META, key, map_attr="tags_lower")
+        self._remove_denormalized_tag(pk, SK_EXPERIMENT_META, key, map_attr="tags_lower_rev")
 
     def _get_experiment_tags(self, experiment_id: str) -> list[ExperimentTag]:
         """Read all tags for an experiment."""
@@ -2252,21 +2274,25 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         return Run(run_info=info, run_data=data, run_inputs=RunInputs(dataset_inputs=[]))
 
-    def _denormalize_tag(self, pk: str, sk: str, tag_key: str, tag_value: str) -> None:
-        """Write tag value into the META item's nested `tags` map."""
+    def _denormalize_tag(
+        self, pk: str, sk: str, tag_key: str, tag_value: str, map_attr: str = "tags"
+    ) -> None:
+        """Write tag value into a nested map attribute on the META item."""
         self._table._table.update_item(
             Key={"PK": pk, "SK": sk},
-            UpdateExpression="SET #tags.#k = :v",
-            ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
+            UpdateExpression="SET #map.#k = :v",
+            ExpressionAttributeNames={"#map": map_attr, "#k": tag_key},
             ExpressionAttributeValues={":v": tag_value},
         )
 
-    def _remove_denormalized_tag(self, pk: str, sk: str, tag_key: str) -> None:
-        """Remove a tag from the META item's nested `tags` map."""
+    def _remove_denormalized_tag(
+        self, pk: str, sk: str, tag_key: str, map_attr: str = "tags"
+    ) -> None:
+        """Remove a tag from a nested map attribute on the META item."""
         self._table._table.update_item(
             Key={"PK": pk, "SK": sk},
-            UpdateExpression="REMOVE #tags.#k",
-            ExpressionAttributeNames={"#tags": "tags", "#k": tag_key},
+            UpdateExpression="REMOVE #map.#k",
+            ExpressionAttributeNames={"#map": map_attr, "#k": tag_key},
         )
 
     def _upsert_session_tracker(

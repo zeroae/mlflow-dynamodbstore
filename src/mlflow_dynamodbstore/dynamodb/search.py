@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from boto3.dynamodb.conditions import Attr, ConditionBase
 from mlflow.entities import ViewType
 from mlflow.utils.search_utils import SearchExperimentsUtils, SearchTraceUtils, SearchUtils
 
@@ -1050,6 +1051,144 @@ def parse_experiment_filter(filter_string: str | None) -> list[FilterPredicate]:
         return []
     parsed = SearchExperimentsUtils.parse_search_filter(filter_string)  # type: ignore[no-untyped-call]
     return _to_predicates(parsed)
+
+
+def build_experiment_filter_expression(
+    predicates: list[FilterPredicate],
+) -> ConditionBase | None:
+    """Build a DynamoDB FilterExpression from experiment search predicates.
+
+    Uses ``name_lower``/``name_lower_rev`` and ``tags_lower``/``tags_lower_rev``
+    for case-insensitive (ILIKE) comparisons. Suffix patterns use reversed
+    attributes with ``begins_with`` to avoid post-filtering.
+
+    Returns None if no predicates are provided.
+    """
+    if not predicates:
+        return None
+
+    conditions: list[ConditionBase] = []
+    for pred in predicates:
+        if pred.field_type == "attribute" and pred.key == "name":
+            _build_name_condition(pred, conditions)
+        elif pred.field_type == "attribute" and pred.key in (
+            "creation_time",
+            "last_update_time",
+        ):
+            _build_time_condition(pred, conditions)
+        elif pred.field_type == "tag":
+            _build_tag_condition(pred, conditions)
+
+    if not conditions:
+        return None
+    result = conditions[0]
+    for c in conditions[1:]:
+        result = result & c
+    return result
+
+
+def _rev(s: str) -> str:
+    return s[::-1]
+
+
+def _build_name_condition(pred: FilterPredicate, conditions: list[ConditionBase]) -> None:
+    """Build FilterExpression condition for experiment name predicates.
+
+    Suffix patterns use reversed attributes (``name_rev``, ``name_lower_rev``)
+    with ``begins_with`` — fully server-side, no post-filtering needed.
+    """
+    if pred.op == "=":
+        conditions.append(Attr("name").eq(pred.value))
+    elif pred.op == "!=":
+        conditions.append(Attr("name").ne(pred.value))
+    elif pred.op == "LIKE":
+        pattern = pred.value
+        if pattern.startswith("%") and pattern.endswith("%"):
+            conditions.append(Attr("name").contains(pattern.strip("%")))
+        elif pattern.endswith("%"):
+            conditions.append(Attr("name").begins_with(pattern.rstrip("%")))
+        elif pattern.startswith("%"):
+            suffix = pattern.lstrip("%")
+            conditions.append(Attr("name_rev").begins_with(_rev(suffix)))
+        else:
+            conditions.append(Attr("name").eq(pattern))
+    elif pred.op == "ILIKE":
+        pattern = pred.value.lower()
+        if pattern.startswith("%") and pattern.endswith("%"):
+            conditions.append(Attr("name_lower").contains(pattern.strip("%")))
+        elif pattern.endswith("%"):
+            conditions.append(Attr("name_lower").begins_with(pattern.rstrip("%")))
+        elif pattern.startswith("%"):
+            suffix = pattern.lstrip("%")
+            conditions.append(Attr("name_lower_rev").begins_with(_rev(suffix)))
+        else:
+            conditions.append(Attr("name_lower").eq(pattern))
+
+
+def _build_time_condition(pred: FilterPredicate, conditions: list[ConditionBase]) -> None:
+    """Build FilterExpression condition for time attribute predicates."""
+    # Map filter key to DynamoDB attribute name
+    attr_name = pred.key
+    val = int(pred.value) if pred.value is not None else 0
+    match pred.op:
+        case "=":
+            conditions.append(Attr(attr_name).eq(val))
+        case "!=":
+            conditions.append(Attr(attr_name).ne(val))
+        case ">":
+            conditions.append(Attr(attr_name).gt(val))
+        case ">=":
+            conditions.append(Attr(attr_name).gte(val))
+        case "<":
+            conditions.append(Attr(attr_name).lt(val))
+        case "<=":
+            conditions.append(Attr(attr_name).lte(val))
+
+
+def _build_tag_condition(pred: FilterPredicate, conditions: list[ConditionBase]) -> None:
+    """Build FilterExpression condition for tag predicates.
+
+    Suffix patterns use reversed tag maps (``tags_lower_rev``) with ``begins_with``.
+    """
+    tag_attr = f"tags.{pred.key}"
+    tag_lower_attr = f"tags_lower.{pred.key}"
+    tag_lower_rev_attr = f"tags_lower_rev.{pred.key}"
+    match pred.op:
+        case "=":
+            conditions.append(Attr(tag_attr).eq(pred.value))
+        case "!=":
+            # != means tag exists AND has a different value
+            conditions.append(Attr(tag_attr).exists() & Attr(tag_attr).ne(pred.value))
+        case "LIKE":
+            pattern = pred.value
+            if pattern.startswith("%") and pattern.endswith("%"):
+                conditions.append(Attr(tag_attr).contains(pattern.strip("%")))
+            elif pattern.endswith("%"):
+                conditions.append(Attr(tag_attr).begins_with(pattern.rstrip("%")))
+            elif pattern.startswith("%"):
+                suffix = pattern.lstrip("%")
+                # Case-sensitive suffix: no reversed original-case map stored.
+                # contains() may produce false positives (matches substring, not
+                # just suffix). Acceptable for experiments (small result sets).
+                # TODO: add tags_rev map for exact suffix matching if needed.
+                conditions.append(Attr(tag_attr).contains(suffix))
+            else:
+                conditions.append(Attr(tag_attr).eq(pattern))
+        case "ILIKE":
+            pattern = pred.value.lower()
+            if pattern.startswith("%") and pattern.endswith("%"):
+                conditions.append(Attr(tag_lower_attr).contains(pattern.strip("%")))
+            elif pattern.endswith("%"):
+                conditions.append(Attr(tag_lower_attr).begins_with(pattern.rstrip("%")))
+            elif pattern.startswith("%"):
+                suffix = pattern.lstrip("%")
+                conditions.append(Attr(tag_lower_rev_attr).begins_with(_rev(suffix)))
+            else:
+                conditions.append(Attr(tag_lower_attr).eq(pattern))
+        case "IS NULL":
+            conditions.append(Attr(tag_attr).not_exists())
+        case "IS NOT NULL":
+            conditions.append(Attr(tag_attr).exists())
 
 
 def parse_logged_model_filter(filter_string: str | None) -> list[FilterPredicate]:

@@ -506,17 +506,7 @@ test_log_inputs_with_large_inputs_limit_check = _xfail_dataset_search_runs(
 test_default_experiment_lifecycle = pytest.mark.xfail(
     reason="DynamoDB uses ULID experiment IDs, not auto-increment integers (permanent)"
 )(test_default_experiment_lifecycle)
-# Remaining: in-memory filter/ordering needed
-_xfail_search_exp = pytest.mark.xfail(
-    reason="DynamoDB store search_experiments filtering and time-based ordering incomplete"
-)
-test_search_experiments_filter_by_attribute = _xfail_search_exp(
-    test_search_experiments_filter_by_attribute
-)
-test_search_experiments_filter_by_tag = _xfail_search_exp(test_search_experiments_filter_by_tag)
-test_search_experiments_filter_by_time_attribute = _xfail_search_exp(
-    test_search_experiments_filter_by_time_attribute
-)
+# Remaining Cat 8 — DONE (all use FilterExpression, no in-memory filtering)
 
 # --- Category 9: metric history dedup (2 tests, schema change needed) ---
 # History SK is key#step#timestamp — same step+timestamp with different values overwrites.
