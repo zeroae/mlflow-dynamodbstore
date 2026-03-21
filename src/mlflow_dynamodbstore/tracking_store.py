@@ -637,7 +637,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 error_code=RESOURCE_ALREADY_EXISTS,
             )
 
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
         exp_id = generate_ulid()
 
         item: dict[str, Any] = {
@@ -755,7 +755,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 error_code=RESOURCE_ALREADY_EXISTS,
             )
 
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         self._table.update_item(
             pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
@@ -827,7 +827,7 @@ class DynamoDBTrackingStore(AbstractStore):
     def delete_experiment(self, experiment_id: str) -> None:
         """Soft-delete an experiment and set TTL on META only."""
         self._check_experiment_workspace(experiment_id)
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         updates: dict[str, Any] = {
             "lifecycle_stage": "deleted",
@@ -868,7 +868,7 @@ class DynamoDBTrackingStore(AbstractStore):
     def restore_experiment(self, experiment_id: str) -> None:
         """Restore a soft-deleted experiment and remove TTL from META."""
         self._check_experiment_workspace(experiment_id)
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         self._table.update_item(
             pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
@@ -1512,7 +1512,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 INVALID_PARAMETER_VALUE,
             )
 
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
         model_id = f"m-{generate_ulid()}"
         name = name or model_id
         artifact_location = f"{exp.artifact_location}/models/{model_id}/artifacts/"
@@ -1613,7 +1613,7 @@ class DynamoDBTrackingStore(AbstractStore):
         experiment_id = self._resolve_logged_model_experiment(model_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         sk = f"{SK_LM_PREFIX}{model_id}"
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         self._table.update_item(
             pk=pk,
@@ -1645,7 +1645,7 @@ class DynamoDBTrackingStore(AbstractStore):
         experiment_id = self._resolve_logged_model_experiment(model_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         sk = f"{SK_LM_PREFIX}{model_id}"
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         ttl_seconds = self._config.get_soft_deleted_ttl_seconds()
         ttl_value = int(time.time()) + ttl_seconds if ttl_seconds is not None else None
@@ -1684,7 +1684,7 @@ class DynamoDBTrackingStore(AbstractStore):
         """Set (or overwrite) tags on a logged model."""
         experiment_id = self._resolve_logged_model_experiment(model_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         tag_dict: dict[str, str] = {}
         for tag in tags:
@@ -1712,7 +1712,7 @@ class DynamoDBTrackingStore(AbstractStore):
         """Delete a tag from a logged model."""
         experiment_id = self._resolve_logged_model_experiment(model_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         tag_sk = f"{SK_LM_PREFIX}{model_id}{SK_LM_TAG_PREFIX}{key}"
         existing = self._table.get_item(pk=pk, sk=tag_sk)
@@ -1947,7 +1947,7 @@ class DynamoDBTrackingStore(AbstractStore):
             )
 
         # Update last_updated_timestamp_ms on the model meta item
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
         self._table.update_item(
             pk=pk,
             sk=f"{SK_LM_PREFIX}{model_id}",
@@ -4763,7 +4763,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
         # Generate assessment ID
         assessment_id = generate_ulid()
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
 
         # Build the assessment item storing the full serialized assessment dict
         assess_dict = assessment.to_dictionary()
@@ -4840,7 +4840,7 @@ class DynamoDBTrackingStore(AbstractStore):
         old_fts_text = self._assessment_fts_text(old_assessment)
 
         # Apply updates
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
         assess_dict["last_update_time"] = milliseconds_to_proto_timestamp(now_ms)
 
         if name is not None:
@@ -4979,7 +4979,7 @@ class DynamoDBTrackingStore(AbstractStore):
             )
             serialized_scorer = _json.dumps(serialized_data)
 
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
 
         existing_scorer_id = self._resolve_scorer_id(experiment_id, name)
@@ -5638,7 +5638,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 error_code=RESOURCE_ALREADY_EXISTS,
             )
 
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
         dataset_id = f"d-{generate_ulid()}"
         digest = self._compute_dataset_digest(name, now_ms)
         pk = f"{PK_DATASET_PREFIX}{dataset_id}"
@@ -5958,7 +5958,7 @@ class DynamoDBTrackingStore(AbstractStore):
         # Remove from denormalized tags map on META
         self._remove_denormalized_tag(pk=pk, sk=SK_DATASET_META, tag_key=key)
         # Update last_update_time and digest
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
         meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
         if meta is not None:
             digest = self._compute_dataset_digest(meta["name"], now_ms)
@@ -6080,7 +6080,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 filter_expression=Attr("SK").begins_with(SK_DATASET_RECORD_PREFIX),
             )
 
-            now_ms = int(time.time() * 1000)
+            now_ms = get_current_time_millis()
 
             if existing_items:
                 # Update the first matching record (merge expectations and tags)
@@ -6145,7 +6145,7 @@ class DynamoDBTrackingStore(AbstractStore):
         # Compute schema from all records
         schema = self._compute_dataset_schema(all_records)
 
-        now_ms = int(time.time() * 1000)
+        now_ms = get_current_time_millis()
         digest = self._compute_dataset_digest(meta["name"], now_ms)
         meta_updates: dict[str, Any] = {
             "profile": _json.dumps({"num_records": num_records}),
@@ -6265,7 +6265,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 limit=10000,
             )
             num_records = len(all_records)
-            now_ms = int(time.time() * 1000)
+            now_ms = get_current_time_millis()
             digest = self._compute_dataset_digest(meta["name"], now_ms)
             self._table.update_item(
                 pk=pk,
