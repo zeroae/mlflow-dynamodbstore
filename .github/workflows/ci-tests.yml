@@ -125,8 +125,10 @@ jobs:
         run: uv python install 3.12
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Run compatibility tests
-        run: uv run pytest tests/compatibility/ -m compatibility -n auto --cov=mlflow_dynamodbstore --cov-report=xml --junitxml=junit.xml -o junit_family=legacy -v
+      - name: Run compatibility tests (parallel, excludes moto_server)
+        run: uv run pytest tests/compatibility/ -m "compatibility and not moto_server" -n auto --cov=mlflow_dynamodbstore --cov-report=xml --junitxml=junit.xml -o junit_family=legacy -v
+      - name: Run moto_server compatibility tests (serial)
+        run: uv run pytest tests/compatibility/ -m "moto_server" --cov=mlflow_dynamodbstore --cov-report=xml --cov-append --junitxml=junit-moto-server.xml -o junit_family=legacy -v
       - name: Upload compatibility coverage
         uses: codecov/codecov-action@v5
         with:
