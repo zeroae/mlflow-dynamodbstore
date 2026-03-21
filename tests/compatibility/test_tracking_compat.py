@@ -397,46 +397,12 @@ test_log_metric_concurrent_logging_succeeds = pytest.mark.moto_server(
 
 # --- C. Trace search filter engine (31 tests) ---
 
-# -- C1. Trace name LIKE/ILIKE — DONE, RLIKE remaining --
-_xfail_trace_rlike = pytest.mark.xfail(reason="RLIKE (regex) filters not implemented")
-test_search_traces_with_name_rlike_filters = _xfail_trace_rlike(
-    test_search_traces_with_name_rlike_filters
-)
-
-# -- C2. Tag LIKE — DONE, RLIKE remaining --
-test_search_traces_with_tag_rlike_filters = _xfail_trace_rlike(
-    test_search_traces_with_tag_rlike_filters
-)
-
-# -- C3. Metadata LIKE — DONE, RLIKE remaining --
-test_search_traces_with_metadata_rlike_filters = _xfail_trace_rlike(
-    test_search_traces_with_metadata_rlike_filters
-)
-
-# -- C4. Span attribute/type/status/content filters (8 tests) --
-# Root cause: span predicates pass through _apply_trace_post_filter (return True).
-# Need to query SPANS blob and match span properties.
-# -- C4. Span filters — DONE for non-RLIKE, RLIKE remaining --
-test_search_traces_with_span_attributes_rlike_filters = _xfail_trace_rlike(
-    test_search_traces_with_span_attributes_rlike_filters
-)
-test_search_traces_with_span_name_rlike_filters = _xfail_trace_rlike(
-    test_search_traces_with_span_name_rlike_filters
-)
-test_search_traces_with_span_type_rlike_filters = _xfail_trace_rlike(
-    test_search_traces_with_span_type_rlike_filters
-)
-
-# -- C5. Assessment/feedback/expectation filters --
-# -- C5. Assessment/feedback/expectation — DONE, RLIKE remaining --
-test_search_traces_with_feedback_rlike_filters = _xfail_trace_rlike(
-    test_search_traces_with_feedback_rlike_filters
-)
-
-# -- C6. Client request ID — DONE, RLIKE remaining --
-test_search_traces_with_client_request_id_rlike_filters = _xfail_trace_rlike(
-    test_search_traces_with_client_request_id_rlike_filters
-)
+# -- C1. Trace name LIKE/ILIKE/RLIKE — DONE --
+# -- C2. Tag LIKE/RLIKE — DONE --
+# -- C3. Metadata LIKE/RLIKE — DONE --
+# -- C4. Span filters (type, status, name, attributes, content) — DONE --
+# -- C5. Assessment/feedback/expectation — DONE --
+# -- C6. Client request ID — DONE --
 
 # -- C7. Prompt filters — DONE (denormalized prompts map + FilterExpression) --
 
