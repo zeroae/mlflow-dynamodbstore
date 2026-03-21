@@ -490,22 +490,8 @@ test_search_traces_span_filters_with_no_results = _xfail_trace_span(
 )
 
 # -- C5. Assessment/feedback/expectation filters --
-_xfail_trace_assess = pytest.mark.xfail(
-    reason="Trace assessment/feedback/expectation filters not implemented"
-)
-test_search_traces_with_assessment_is_null_filters = _xfail_trace_assess(
-    test_search_traces_with_assessment_is_null_filters
-)
-test_search_traces_with_feedback_and_expectation_filters = _xfail_trace_assess(
-    test_search_traces_with_feedback_and_expectation_filters
-)
-test_search_traces_with_feedback_like_filters = _xfail_trace_assess(
-    test_search_traces_with_feedback_like_filters
-)
-test_search_traces_with_expectation_like_filters = _xfail_trace_assess(
-    test_search_traces_with_expectation_like_filters
-)
-test_search_traces_with_feedback_rlike_filters = _xfail_trace_assess(
+# -- C5. Assessment/feedback/expectation — DONE, RLIKE remaining --
+test_search_traces_with_feedback_rlike_filters = _xfail_trace_rlike(
     test_search_traces_with_feedback_rlike_filters
 )
 
