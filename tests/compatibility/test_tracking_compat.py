@@ -24,7 +24,43 @@ from mlflow.environment_variables import MLFLOW_ENABLE_WORKSPACES
 @pytest.fixture
 def store(tracking_store, monkeypatch):
     monkeypatch.setenv(MLFLOW_ENABLE_WORKSPACES.name, "false")
+    _patch_sqlalchemy_compat(tracking_store)
     return tracking_store
+
+
+def _patch_sqlalchemy_compat(store):
+    """Add ManagedSessionMaker and _get_run shims for SqlAlchemy-style tests."""
+    from contextlib import contextmanager
+
+    from mlflow.exceptions import MlflowException
+    from mlflow.protos.databricks_pb2 import RESOURCE_DOES_NOT_EXIST
+
+    from mlflow_dynamodbstore.dynamodb.schema import PK_EXPERIMENT_PREFIX, SK_RUN_PREFIX
+
+    @contextmanager
+    def _managed_session():
+        yield None
+
+    class _RunRecord:
+        def __init__(self, item):
+            self.run_uuid = item.get("run_id", "")
+            self.deleted_time = int(item["deleted_time"]) if "deleted_time" in item else None
+
+    def _get_run(_session, run_id):
+        experiment_id = store._resolve_run_experiment(run_id)
+        item = store._table.get_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=f"{SK_RUN_PREFIX}{run_id}",
+        )
+        if item is None:
+            raise MlflowException(
+                f"Run '{run_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        return _RunRecord(item)
+
+    store.ManagedSessionMaker = _managed_session
+    store._get_run = _get_run
 
 
 from tests.store.tracking.test_sqlalchemy_store import (  # noqa: E402, F401
@@ -583,14 +619,3 @@ test_search_logged_models_order_by_dataset = pytest.mark.xfail(
 )(test_search_logged_models_order_by_dataset)
 
 # --- Category 17: misc run/experiment/trace/scorer lifecycle bugs (7 tests) ---
-_xfail_misc = pytest.mark.xfail(reason="DynamoDB store misc lifecycle bugs")
-test_update_run_info = _xfail_misc(test_update_run_info)
-test_delete_restore_experiment_with_runs = _xfail_misc(test_delete_restore_experiment_with_runs)
-test_set_experiment_tag = _xfail_misc(test_set_experiment_tag)
-test_delete_traces_with_max_timestamp = _xfail_misc(test_delete_traces_with_max_timestamp)
-test_delete_traces = _xfail_misc(test_delete_traces)
-test_delete_traces_with_max_count = _xfail_misc(test_delete_traces_with_max_count)
-test_scorer_operations = _xfail_misc(test_scorer_operations)
-test_get_active_online_scorers_filters_non_gateway_model = _xfail_misc(
-    test_get_active_online_scorers_filters_non_gateway_model
-)
