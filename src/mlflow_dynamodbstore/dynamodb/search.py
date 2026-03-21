@@ -712,6 +712,15 @@ def _execute_index(
             if _apply_denormalized_tag_filters(item, plan.filter_expressions, predicates)
         ]
 
+    # For DESC on LSI2 (end_time), move null-sentinel items to the end
+    # so that nulls sort last regardless of direction.
+    if plan.index == "lsi2" and not plan.scan_forward:
+        from mlflow_dynamodbstore.dynamodb.schema import LSI2_NULL_SENTINEL, LSI2_SK
+
+        real = [it for it in items if it.get(LSI2_SK) != LSI2_NULL_SENTINEL]
+        nulls = [it for it in items if it.get(LSI2_SK) == LSI2_NULL_SENTINEL]
+        items = real + nulls
+
     return items
 
 

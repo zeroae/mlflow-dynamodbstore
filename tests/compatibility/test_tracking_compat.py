@@ -376,7 +376,7 @@ test_search_tags = _xfail_search_runs_fts(test_search_tags)
 _xfail_search_runs_order = pytest.mark.xfail(
     reason="search_runs: ordering by start_time/attributes incomplete"
 )
-test_order_by_attributes = _xfail_search_runs_order(test_order_by_attributes)
+# test_order_by_attributes — DONE (LSI2 sentinel + attribute field_type)
 test_order_by_metric_tag_param = _xfail_search_runs_order(test_order_by_metric_tag_param)
 # test_search_with_deterministic_max_results — DONE (overflow cache)
 # test_search_runs_start_time_alias — DONE (created alias)
