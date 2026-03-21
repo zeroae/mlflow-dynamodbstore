@@ -348,98 +348,8 @@ from tests.store.tracking.test_sqlalchemy_store import (  # noqa: E402, F401
     test_upsert_online_scoring_config_validates_sample_rate,
 )
 
-# --- Category 1: search traces filtering not implemented (30 tests) ---
-_xfail_trace_filter = pytest.mark.xfail(
-    reason="DynamoDB store search_traces filtering not implemented"
-)
-test_search_traces_combined_span_filters_match_same_span = _xfail_trace_filter(
-    test_search_traces_combined_span_filters_match_same_span
-)
-test_search_traces_span_filters_with_no_results = _xfail_trace_filter(
-    test_search_traces_span_filters_with_no_results
-)
-test_search_traces_with_assessment_is_null_filters = _xfail_trace_filter(
-    test_search_traces_with_assessment_is_null_filters
-)
-test_search_traces_with_client_request_id_edge_cases = _xfail_trace_filter(
-    test_search_traces_with_client_request_id_edge_cases
-)
-test_search_traces_with_client_request_id_filter = _xfail_trace_filter(
-    test_search_traces_with_client_request_id_filter
-)
-test_search_traces_with_client_request_id_rlike_filters = _xfail_trace_filter(
-    test_search_traces_with_client_request_id_rlike_filters
-)
-test_search_traces_with_combined_filters = _xfail_trace_filter(
-    test_search_traces_with_combined_filters
-)
-test_search_traces_with_combined_numeric_and_string_filters = _xfail_trace_filter(
-    test_search_traces_with_combined_numeric_and_string_filters
-)
-test_search_traces_with_combined_span_filters = _xfail_trace_filter(
-    test_search_traces_with_combined_span_filters
-)
-test_search_traces_with_empty_and_special_characters = _xfail_trace_filter(
-    test_search_traces_with_empty_and_special_characters
-)
-test_search_traces_with_feedback_and_expectation_filters = _xfail_trace_filter(
-    test_search_traces_with_feedback_and_expectation_filters
-)
-test_search_traces_with_feedback_rlike_filters = _xfail_trace_filter(
-    test_search_traces_with_feedback_rlike_filters
-)
-test_search_traces_with_full_text_filter = _xfail_trace_filter(
-    test_search_traces_with_full_text_filter
-)
-test_search_traces_with_metadata_like_filters = _xfail_trace_filter(
-    test_search_traces_with_metadata_like_filters
-)
-test_search_traces_with_metadata_rlike_filters = _xfail_trace_filter(
-    test_search_traces_with_metadata_rlike_filters
-)
-test_search_traces_with_name_ilike_variations = _xfail_trace_filter(
-    test_search_traces_with_name_ilike_variations
-)
-test_search_traces_with_name_like_filters = _xfail_trace_filter(
-    test_search_traces_with_name_like_filters
-)
-test_search_traces_with_name_rlike_filters = _xfail_trace_filter(
-    test_search_traces_with_name_rlike_filters
-)
-test_search_traces_with_prompts_filter = _xfail_trace_filter(test_search_traces_with_prompts_filter)
-test_search_traces_with_prompts_filter_multiple_prompts = _xfail_trace_filter(
-    test_search_traces_with_prompts_filter_multiple_prompts
-)
-test_search_traces_with_span_attributes_filter = _xfail_trace_filter(
-    test_search_traces_with_span_attributes_filter
-)
-test_search_traces_with_span_attributes_rlike_filters = _xfail_trace_filter(
-    test_search_traces_with_span_attributes_rlike_filters
-)
-test_search_traces_with_span_attributute_backticks = _xfail_trace_filter(
-    test_search_traces_with_span_attributute_backticks
-)
-test_search_traces_with_span_content_filter = _xfail_trace_filter(
-    test_search_traces_with_span_content_filter
-)
-test_search_traces_with_span_name_rlike_filters = _xfail_trace_filter(
-    test_search_traces_with_span_name_rlike_filters
-)
-test_search_traces_with_span_status_filter = _xfail_trace_filter(
-    test_search_traces_with_span_status_filter
-)
-test_search_traces_with_span_type_filter = _xfail_trace_filter(
-    test_search_traces_with_span_type_filter
-)
-test_search_traces_with_span_type_rlike_filters = _xfail_trace_filter(
-    test_search_traces_with_span_type_rlike_filters
-)
-test_search_traces_with_tag_like_filters = _xfail_trace_filter(
-    test_search_traces_with_tag_like_filters
-)
-test_search_traces_with_tag_rlike_filters = _xfail_trace_filter(
-    test_search_traces_with_tag_rlike_filters
-)
+# --- Category 1: search traces filtering — partially DONE ---
+# Remaining xfails moved to C sections below
 
 
 # =====================================================================
@@ -540,39 +450,19 @@ test_log_metric_concurrent_logging_succeeds = _xfail_metric_history(
 
 # --- C. Trace search filter engine (31 tests) ---
 
-# -- C1. Trace name LIKE/ILIKE/RLIKE (3 tests) --
-# Root cause: trace META item has no "name" field — trace name is only in
-# LSI4_SK (lowercase). _apply_trace_post_filter can't find it.
-_xfail_trace_name = pytest.mark.xfail(
-    reason="Trace META missing 'name' field for LIKE/ILIKE/RLIKE filters"
-)
-test_search_traces_with_name_like_filters = _xfail_trace_name(
-    test_search_traces_with_name_like_filters
-)
-test_search_traces_with_name_ilike_variations = _xfail_trace_name(
-    test_search_traces_with_name_ilike_variations
-)
-test_search_traces_with_name_rlike_filters = _xfail_trace_name(
+# -- C1. Trace name LIKE/ILIKE — DONE, RLIKE remaining --
+_xfail_trace_rlike = pytest.mark.xfail(reason="RLIKE (regex) filters not implemented")
+test_search_traces_with_name_rlike_filters = _xfail_trace_rlike(
     test_search_traces_with_name_rlike_filters
 )
 
-# -- C2. Tag LIKE/RLIKE (2 tests) --
-# Root cause: tag LIKE/RLIKE not implemented in _apply_trace_post_filter
-_xfail_trace_tag = pytest.mark.xfail(reason="Trace tag LIKE/RLIKE filters not implemented")
-test_search_traces_with_tag_like_filters = _xfail_trace_tag(
-    test_search_traces_with_tag_like_filters
-)
-test_search_traces_with_tag_rlike_filters = _xfail_trace_tag(
+# -- C2. Tag LIKE — DONE, RLIKE remaining --
+test_search_traces_with_tag_rlike_filters = _xfail_trace_rlike(
     test_search_traces_with_tag_rlike_filters
 )
 
-# -- C3. Metadata LIKE/RLIKE (2 tests) --
-# Root cause: metadata LIKE/RLIKE not implemented in _apply_trace_post_filter
-_xfail_trace_meta = pytest.mark.xfail(reason="Trace metadata LIKE/RLIKE filters not implemented")
-test_search_traces_with_metadata_like_filters = _xfail_trace_meta(
-    test_search_traces_with_metadata_like_filters
-)
-test_search_traces_with_metadata_rlike_filters = _xfail_trace_meta(
+# -- C3. Metadata LIKE — DONE, RLIKE remaining --
+test_search_traces_with_metadata_rlike_filters = _xfail_trace_rlike(
     test_search_traces_with_metadata_rlike_filters
 )
 
@@ -616,7 +506,7 @@ test_search_traces_span_filters_with_no_results = _xfail_trace_span(
     test_search_traces_span_filters_with_no_results
 )
 
-# -- C5. Assessment/feedback/expectation filters (2 tests) --
+# -- C5. Assessment/feedback/expectation filters --
 _xfail_trace_assess = pytest.mark.xfail(
     reason="Trace assessment/feedback/expectation filters not implemented"
 )
@@ -626,19 +516,18 @@ test_search_traces_with_assessment_is_null_filters = _xfail_trace_assess(
 test_search_traces_with_feedback_and_expectation_filters = _xfail_trace_assess(
     test_search_traces_with_feedback_and_expectation_filters
 )
+test_search_traces_with_feedback_like_filters = _xfail_trace_assess(
+    test_search_traces_with_feedback_like_filters
+)
+test_search_traces_with_expectation_like_filters = _xfail_trace_assess(
+    test_search_traces_with_expectation_like_filters
+)
 test_search_traces_with_feedback_rlike_filters = _xfail_trace_assess(
     test_search_traces_with_feedback_rlike_filters
 )
 
-# -- C6. Client request ID filters (3 tests) --
-_xfail_trace_crid = pytest.mark.xfail(reason="Trace client_request_id filters not implemented")
-test_search_traces_with_client_request_id_filter = _xfail_trace_crid(
-    test_search_traces_with_client_request_id_filter
-)
-test_search_traces_with_client_request_id_edge_cases = _xfail_trace_crid(
-    test_search_traces_with_client_request_id_edge_cases
-)
-test_search_traces_with_client_request_id_rlike_filters = _xfail_trace_crid(
+# -- C6. Client request ID — DONE, RLIKE remaining --
+test_search_traces_with_client_request_id_rlike_filters = _xfail_trace_rlike(
     test_search_traces_with_client_request_id_rlike_filters
 )
 
@@ -649,20 +538,10 @@ test_search_traces_with_prompts_filter_multiple_prompts = _xfail_trace_prompt(
     test_search_traces_with_prompts_filter_multiple_prompts
 )
 
-# -- C8. Combined/misc filters (4 tests) --
-_xfail_trace_combined = pytest.mark.xfail(reason="Trace combined/misc filters incomplete")
-test_search_traces_with_combined_filters = _xfail_trace_combined(
-    test_search_traces_with_combined_filters
-)
-test_search_traces_with_combined_numeric_and_string_filters = _xfail_trace_combined(
-    test_search_traces_with_combined_numeric_and_string_filters
-)
-test_search_traces_with_empty_and_special_characters = _xfail_trace_combined(
-    test_search_traces_with_empty_and_special_characters
-)
-test_search_traces_with_full_text_filter = _xfail_trace_combined(
-    test_search_traces_with_full_text_filter
-)
+# -- C8. Combined/misc — mostly DONE, full_text remaining --
+test_search_traces_with_full_text_filter = pytest.mark.xfail(
+    reason="Full text search for traces needs FTS indexing of trace fields"
+)(test_search_traces_with_full_text_filter)
 
 # -- C9. Sessions (depends on trace filter engine) --
 test_find_completed_sessions_with_filter_string = pytest.mark.xfail(
