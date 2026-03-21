@@ -1310,6 +1310,20 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         return self.get_logged_model(model_id)
 
+    def log_logged_model_params(self, model_id: str, params: list[LoggedModelParameter]) -> None:
+        """Log parameters on an existing logged model."""
+        experiment_id = self._resolve_logged_model_experiment(model_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        for param in params:
+            self._table.put_item(
+                {
+                    "PK": pk,
+                    "SK": f"{SK_LM_PREFIX}{model_id}{SK_LM_PARAM_PREFIX}{param.key}",
+                    "key": param.key,
+                    "value": param.value,
+                }
+            )
+
     def delete_logged_model(self, model_id: str) -> None:
         """Soft-delete a logged model and set TTL on all related items."""
         experiment_id = self._resolve_logged_model_experiment(model_id)
@@ -1760,6 +1774,53 @@ class DynamoDBTrackingStore(AbstractStore):
         for item in fts_items:
             if run_id in item.get("SK", ""):
                 self._table.update_item(pk=pk, sk=item["SK"], removes=["ttl"])
+
+    def _get_deleted_runs(self, older_than: int = 0) -> list[str]:
+        """Return IDs of all soft-deleted runs across experiments in this workspace."""
+        current_time = get_current_time_millis()
+        # Get all experiments (active + deleted) in the workspace
+        all_experiments = self.search_experiments(view_type=ViewType.ALL, max_results=50000)
+        deleted_run_ids: list[str] = []
+        for exp in all_experiments:
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp.experiment_id}"
+            # LSI1 SK for deleted runs: "deleted#<run_id>"
+            items = self._table.query(pk=pk, sk_prefix="deleted#", index_name="lsi1")
+            for item in items:
+                # Only include runs (SK starts with R#), not experiments
+                if not item.get("SK", "").startswith(SK_RUN_PREFIX):
+                    continue
+                # Filter by deleted_time if older_than > 0
+                if older_than > 0:
+                    deleted_time = int(item.get("deleted_time", 0))
+                    if deleted_time > current_time - older_than:
+                        continue
+                run_id = item.get("run_id") or item["SK"][len(SK_RUN_PREFIX) :].split("#")[0]
+                deleted_run_ids.append(run_id)
+        return deleted_run_ids
+
+    def _get_deleted_logged_models(self, older_than: int = 0) -> list[str]:
+        """Return IDs of all soft-deleted logged models across experiments."""
+        current_time = get_current_time_millis()
+        all_experiments = self.search_experiments(view_type=ViewType.ALL, max_results=50000)
+        deleted_model_ids: list[str] = []
+        for exp in all_experiments:
+            pk = f"{PK_EXPERIMENT_PREFIX}{exp.experiment_id}"
+            # Query all logged model META items
+            items = self._table.query(pk=pk, sk_prefix=SK_LM_PREFIX)
+            for item in items:
+                # Only META items (SK = LM#<model_id>, no further # suffix)
+                sk = item.get("SK", "")
+                if sk.count("#") != 1:
+                    continue
+                if item.get("lifecycle_stage") != "deleted":
+                    continue
+                if older_than > 0:
+                    last_updated = int(item.get("last_updated_timestamp_ms", 0))
+                    if last_updated > current_time - older_than:
+                        continue
+                model_id = item.get("model_id") or sk[len(SK_LM_PREFIX) :]
+                deleted_model_ids.append(model_id)
+        return deleted_model_ids
 
     def _search_runs(
         self,

@@ -567,12 +567,11 @@ test_find_completed_sessions_with_filter_string = _xfail_trace_path(
     test_find_completed_sessions_with_filter_string
 )
 
-# --- Category 13: missing methods on DynamoDBTrackingStore (4 tests) ---
-_xfail_missing_method = pytest.mark.xfail(reason="DynamoDB store missing method implementation")
-test_get_deleted_runs = _xfail_missing_method(test_get_deleted_runs)
-test_get_deleted_logged_models = _xfail_missing_method(test_get_deleted_logged_models)
-test_legacy_start_and_end_trace_v2 = _xfail_missing_method(test_legacy_start_and_end_trace_v2)
-test_log_logged_model_params = _xfail_missing_method(test_log_logged_model_params)
+# --- Category 13: missing methods (remaining) ---
+# deprecated_start_trace_v2: legacy V2 trace API, not worth implementing
+test_legacy_start_and_end_trace_v2 = pytest.mark.xfail(
+    reason="Deprecated V2 trace API not implemented in DynamoDB store"
+)(test_legacy_start_and_end_trace_v2)
 
 
 # --- Category 15: DynamoDB key size/duplicate key constraints (remaining) ---
