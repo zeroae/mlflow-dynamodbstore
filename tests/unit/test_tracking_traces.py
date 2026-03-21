@@ -1807,8 +1807,8 @@ class TestLinkPromptsToTrace:
         tracking_store.link_prompts_to_trace("tr-prompt-1", [pv])
 
         fetched = tracking_store.get_trace_info("tr-prompt-1")
-        assert "mlflow.promptVersions" in fetched.tags
-        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        assert "mlflow.linkedPrompts" in fetched.tags
+        versions = json.loads(fetched.tags["mlflow.linkedPrompts"])
         assert len(versions) == 1
         assert versions[0]["name"] == "my-prompt"
         assert versions[0]["version"] == 1
@@ -1827,7 +1827,7 @@ class TestLinkPromptsToTrace:
         tracking_store.link_prompts_to_trace("tr-prompt-2", pvs)
 
         fetched = tracking_store.get_trace_info("tr-prompt-2")
-        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        versions = json.loads(fetched.tags["mlflow.linkedPrompts"])
         assert len(versions) == 2
 
     def test_overwrite_existing_prompt_links(self, tracking_store):
@@ -1844,7 +1844,7 @@ class TestLinkPromptsToTrace:
         tracking_store.link_prompts_to_trace("tr-prompt-3", [pv2])
 
         fetched = tracking_store.get_trace_info("tr-prompt-3")
-        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        versions = json.loads(fetched.tags["mlflow.linkedPrompts"])
         assert len(versions) == 1
         assert versions[0]["name"] == "new-prompt"
 
