@@ -272,10 +272,12 @@ def plan_run_query(
     if chosen_index is None:
         chosen_index = "lsi1"
 
-    # Determine SK prefix for LSI1 lifecycle
+    # Determine SK prefix(es) for LSI1 lifecycle
     if chosen_index == "lsi1":
         if view_type == ViewType.DELETED_ONLY:
             sk_prefix = "deleted#"
+        elif view_type == ViewType.ALL:
+            sk_prefix = None
         else:
             sk_prefix = "active#"
     elif chosen_index == "lsi3" and status_sk_prefix:
@@ -646,14 +648,25 @@ def _execute_index(
     predicates: list[FilterPredicate],
 ) -> list[dict[str, Any]]:
     """Execute an index-based query strategy."""
+    from mlflow_dynamodbstore.dynamodb.schema import SK_RUN_PREFIX
+
     # Fetch more than needed to account for filtering
-    fetch_limit = offset + max_results * 2 if plan.filter_expressions else None
+    has_filters = bool(plan.filter_expressions) or plan.sk_prefix is None
+    fetch_limit = offset + max_results * 2 if has_filters else None
+
+    # When sk_prefix is None (ViewType.ALL), add FilterExpression to limit
+    # results to run META items only (avoid scanning traces, tags, etc.)
+    filter_expr = None
+    if plan.sk_prefix is None:
+        filter_expr = Attr("SK").begins_with(SK_RUN_PREFIX)
+
     items = table.query(
         pk=pk,
         sk_prefix=plan.sk_prefix,
         index_name=plan.index,
         scan_forward=plan.scan_forward,
         limit=fetch_limit,
+        filter_expression=filter_expr,
     )
 
     # Apply denormalized tag filters

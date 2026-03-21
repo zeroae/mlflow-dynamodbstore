@@ -308,9 +308,9 @@ def _item_to_run(
 
         run_inputs = RunInputs(dataset_inputs=dataset_inputs)
 
-    # Build RunOutputs from output items
+    # Build RunOutputs from output items (always non-None when output_items is passed)
     run_outputs = None
-    if output_items:
+    if output_items is not None:
         run_outputs = RunOutputs(
             model_outputs=[
                 LoggedModelOutput(
