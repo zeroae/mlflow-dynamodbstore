@@ -233,12 +233,14 @@ def plan_run_query(
             )
 
     # ------------------------------------------------------------------ #
-    # 3. Check for FTS strategy (LIKE '%word%' on attribute fields)       #
+    # 3. Check for FTS strategy (LIKE '%word%' on FTS-indexed fields)     #
     # ------------------------------------------------------------------ #
+    # Only use FTS for attribute fields that are actually trigram-indexed.
+    # Non-indexed fields (params, metrics, tags) fall through to post-filter.
+    run_fts_fields = {"attribute"}
     for pred in predicates:
         if pred.op in ("LIKE", "ILIKE") and isinstance(pred.value, str):
-            if _FTS_LIKE_RE.match(pred.value):
-                # Extract the word(s) for the FTS query (strip % characters)
+            if _FTS_LIKE_RE.match(pred.value) and pred.field_type in run_fts_fields:
                 fts_query = pred.value.strip("%")
                 return QueryPlan(
                     strategy="fts",
@@ -475,7 +477,7 @@ def plan_trace_query(
 def _compare(actual: Any, op: str, expected: Any) -> bool:
     """Evaluate a single comparison predicate."""
     if actual is None:
-        return op in ("IS NULL", "!=", "NOT IN")
+        return op == "IS NULL"
 
     if op == "=":
         return bool(actual == expected)

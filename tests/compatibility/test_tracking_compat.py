@@ -368,7 +368,7 @@ _xfail_search_runs_fts = pytest.mark.xfail(
     reason="search_runs: attribute LIKE needs FTS indexing for artifact_uri and other fields"
 )
 test_search_attrs = _xfail_search_runs_fts(test_search_attrs)
-test_search_tags = _xfail_search_runs_fts(test_search_tags)
+# test_search_tags — DONE (FTS field restriction)
 
 # --- A3. Search runs: ordering (4 tests) ---
 # Root cause: order_by for start_time, end_time, attributes needs proper
@@ -388,7 +388,7 @@ _xfail_search_runs_filter = pytest.mark.xfail(
     reason="search_runs: metric/param post-filter predicates incomplete"
 )
 test_search_metrics = _xfail_search_runs_filter(test_search_metrics)
-test_search_params = _xfail_search_runs_filter(test_search_params)
+# test_search_params — DONE (NULL != fix + FTS field restriction)
 
 # --- A5. Search runs: dataset filters (2 tests) ---
 # Root cause: DLINK strategy for dataset.name/digest/context filters
