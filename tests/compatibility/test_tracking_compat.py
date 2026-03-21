@@ -509,24 +509,31 @@ test_search_experiments_order_by_time_attribute = _xfail_search_exp(
 test_search_experiments_pagination = _xfail_search_exp(test_search_experiments_pagination)
 test_search_experiments_view_type = _xfail_search_exp(test_search_experiments_view_type)
 
-# --- Category 9: DynamoDB float/Decimal/NaN type errors (8 tests) ---
-_xfail_decimal = pytest.mark.xfail(
-    reason="DynamoDB rejects float types, NaN, and Infinity (requires Decimal conversion)"
+# --- Category 9: metric history dedup (2 tests, schema change needed) ---
+# History SK is key#step#timestamp — same step+timestamp with different values overwrites.
+# Fixing requires adding value to SK, which is a schema-breaking change.
+_xfail_metric_history = pytest.mark.xfail(
+    reason="Metric history SK dedup: same step+timestamp different values overwrites"
 )
-test_dataset_schema_and_profile_computation = _xfail_decimal(
-    test_dataset_schema_and_profile_computation
+test_log_metric_allows_multiple_values_at_same_ts_and_run_data_uses_max_ts_value = (
+    _xfail_metric_history(
+        test_log_metric_allows_multiple_values_at_same_ts_and_run_data_uses_max_ts_value
+    )
 )
-test_dataset_schema_and_profile_incremental_updates = _xfail_decimal(
-    test_dataset_schema_and_profile_incremental_updates
-)
-test_dataset_digest_updates_with_changes = _xfail_decimal(test_dataset_digest_updates_with_changes)
-test_log_metric_allows_multiple_values_at_same_ts_and_run_data_uses_max_ts_value = _xfail_decimal(
-    test_log_metric_allows_multiple_values_at_same_ts_and_run_data_uses_max_ts_value
-)
-test_log_metric_concurrent_logging_succeeds = _xfail_decimal(
+test_log_metric_concurrent_logging_succeeds = _xfail_metric_history(
     test_log_metric_concurrent_logging_succeeds
 )
-test_delete_traces_with_max_count = _xfail_decimal(test_delete_traces_with_max_count)
+
+# --- Reclassified from Cat 9 to Cat 6 (dataset CRUD) ---
+test_dataset_schema_and_profile_computation = _xfail_dataset(
+    test_dataset_schema_and_profile_computation
+)
+test_dataset_schema_and_profile_incremental_updates = _xfail_dataset(
+    test_dataset_schema_and_profile_incremental_updates
+)
+test_dataset_digest_updates_with_changes = _xfail_dataset(test_dataset_digest_updates_with_changes)
+
+# test_delete_traces_with_max_count: reclassified to Cat 17 (see below)
 
 # --- Category 10: logged model search/lifecycle bugs (7 tests) ---
 _xfail_logged_model = pytest.mark.xfail(
@@ -582,6 +589,7 @@ test_delete_restore_experiment_with_runs = _xfail_misc(test_delete_restore_exper
 test_set_experiment_tag = _xfail_misc(test_set_experiment_tag)
 test_delete_traces_with_max_timestamp = _xfail_misc(test_delete_traces_with_max_timestamp)
 test_delete_traces = _xfail_misc(test_delete_traces)
+test_delete_traces_with_max_count = _xfail_misc(test_delete_traces_with_max_count)
 test_scorer_operations = _xfail_misc(test_scorer_operations)
 test_get_active_online_scorers_filters_non_gateway_model = _xfail_misc(
     test_get_active_online_scorers_filters_non_gateway_model
