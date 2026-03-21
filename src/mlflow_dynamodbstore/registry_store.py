@@ -24,6 +24,7 @@ from mlflow.protos.databricks_pb2 import (
     RESOURCE_DOES_NOT_EXIST,
     ErrorCode,
 )
+from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.model_registry.abstract_store import AbstractStore
 from mlflow.utils.time import get_current_time_millis
 from mlflow.utils.validation import (
@@ -42,6 +43,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_SK,
     GSI2_FTS_NAMES_PREFIX,
     GSI2_MODELS_PREFIX,
+    GSI2_NAME,
     GSI2_PK,
     GSI2_SK,
     GSI2_WEBHOOKS_PREFIX,
@@ -2299,3 +2301,39 @@ class DynamoDBRegistryStore(AbstractStore):
 
     def get_webhook(self, webhook_id: str) -> Webhook:
         return self._get_webhook_by_id(webhook_id)
+
+    def list_webhooks(
+        self,
+        max_results: int | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[Webhook]:
+        max_results = max_results or 100
+        if max_results < 1 or max_results > 1000:
+            raise MlflowException(
+                "max_results must be between 1 and 1000.",
+                INVALID_PARAMETER_VALUE,
+            )
+
+        exclusive_start_key = self._decode_page_token(page_token)
+
+        # Use query_page (not query) for cursor-based pagination
+        gsi2_items, lek = self._table.query_page(
+            pk=f"{GSI2_WEBHOOKS_PREFIX}{self._workspace}",
+            index_name=GSI2_NAME,
+            limit=max_results,
+            scan_forward=False,
+            exclusive_start_key=exclusive_start_key,
+        )
+
+        next_page_token = None
+        if lek is not None:
+            next_page_token = self._encode_page_token(lek)
+
+        webhooks = []
+        for gsi2_item in gsi2_items:
+            webhook_ulid = gsi2_item[GSI2_SK]
+            items = self._get_webhook_items(webhook_ulid)
+            if items:
+                webhooks.append(self._webhook_items_to_entity(webhook_ulid, items))
+
+        return PagedList(webhooks, next_page_token)
