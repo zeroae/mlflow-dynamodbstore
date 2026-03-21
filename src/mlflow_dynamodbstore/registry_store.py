@@ -14,7 +14,13 @@ from mlflow.entities.model_registry.model_version import ModelVersion
 from mlflow.entities.model_registry.model_version_stages import STAGE_DELETED_INTERNAL
 from mlflow.entities.model_registry.model_version_tag import ModelVersionTag
 from mlflow.entities.model_registry.registered_model_alias import RegisteredModelAlias
-from mlflow.entities.webhook import Webhook, WebhookEvent, WebhookStatus
+from mlflow.entities.webhook import (
+    Webhook,
+    WebhookAction,
+    WebhookEntity,
+    WebhookEvent,
+    WebhookStatus,
+)
 from mlflow.environment_variables import MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY
 from mlflow.exceptions import MlflowException
 from mlflow.prompt.constants import IS_PROMPT_TAG_KEY
@@ -2196,8 +2202,8 @@ class DynamoDBRegistryStore(AbstractStore):
             elif sk.startswith(SK_WEBHOOK_EVT_PREFIX):
                 events.append(
                     WebhookEvent(
-                        entity=item["entity"],
-                        action=item["action"],
+                        entity=WebhookEntity(item["entity"]),
+                        action=WebhookAction(item["action"]),
                     )
                 )
 
