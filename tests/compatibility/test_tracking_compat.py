@@ -381,14 +381,7 @@ test_order_by_metric_tag_param = _xfail_search_runs_order(test_order_by_metric_t
 # test_search_with_deterministic_max_results — DONE (overflow cache)
 # test_search_runs_start_time_alias — DONE (created alias)
 
-# --- A4. Search runs: metric/param post-filters (2 tests) ---
-# Root cause: metric/param filter predicates in _apply_post_filter need
-# sub-item lookups for non-denormalized values.
-_xfail_search_runs_filter = pytest.mark.xfail(
-    reason="search_runs: metric/param post-filter predicates incomplete"
-)
-test_search_metrics = _xfail_search_runs_filter(test_search_metrics)
-# test_search_params — DONE (NULL != fix + FTS field restriction)
+# --- A4. Search runs: metric/param post-filters — DONE ---
 
 # --- A5. Search runs: dataset filters — DONE (DLINK FilterExpression + post-filters) ---
 
