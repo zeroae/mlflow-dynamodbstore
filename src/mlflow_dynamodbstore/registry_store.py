@@ -2331,12 +2331,12 @@ class DynamoDBRegistryStore(AbstractStore):
         max_results: int | None = None,
         page_token: str | None = None,
     ) -> PagedList[Webhook]:
-        max_results = max_results or 100
-        if max_results < 1 or max_results > 1000:
+        if max_results is not None and (max_results < 1 or max_results > 1000):
             raise MlflowException(
                 "max_results must be between 1 and 1000.",
                 INVALID_PARAMETER_VALUE,
             )
+        max_results = max_results or 100
 
         exclusive_start_key = self._decode_page_token(page_token)
 
