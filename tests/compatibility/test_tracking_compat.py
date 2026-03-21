@@ -507,10 +507,6 @@ test_log_inputs_with_large_inputs_limit_check = _xfail_dataset(
 )
 
 # --- Category 7: trace persistence remaining issues ---
-# Concurrent log_spans race: multiple threads writing spansLocation tag can lose writes
-test_concurrent_log_spans_spans_location_tag = pytest.mark.xfail(
-    reason="Concurrent log_spans race condition on spansLocation tag write"
-)(test_concurrent_log_spans_spans_location_tag)
 
 # --- Category 8: search experiments filtering/ordering/pagination broken (9 tests) ---
 _xfail_search_exp = pytest.mark.xfail(

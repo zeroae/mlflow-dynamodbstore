@@ -3118,27 +3118,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 self._cache.put("trace_exp", trace_id, experiment_id)
 
             span_dicts = [s.to_dict() for s in trace_spans]
-
-            # Merge with existing cached spans (log_spans may be called multiple
-            # times for the same trace — e.g., parent span first, child span second)
             spans_sk = f"{SK_TRACE_PREFIX}{trace_id}#SPANS"
-            existing = self._table.get_item(pk=pk, sk=spans_sk)
-            if existing is not None:
-                existing_dicts = _json.loads(existing["data"])
-                # Deduplicate by span_id
-                existing_by_id = {sd.get("span_id"): sd for sd in existing_dicts}
-                for sd in span_dicts:
-                    existing_by_id[sd.get("span_id")] = sd
-                span_dicts = list(existing_by_id.values())
-
-            spans_item: dict[str, Any] = {
-                "PK": pk,
-                "SK": spans_sk,
-                "data": _json.dumps(span_dicts),
-            }
-            if ttl is not None:
-                spans_item["ttl"] = ttl
-            self._table.put_item(spans_item)
 
             # Write spansLocation tag (indicates spans are stored in tracking store)
             from mlflow.tracing.constant import SpansLocation
@@ -3361,9 +3341,51 @@ class DynamoDBTrackingStore(AbstractStore):
                     rmeta_cost["ttl"] = ttl
                 extra_items.append(rmeta_cost)
 
-            # Write all extra items in batch
+            # Write all extra items in batch (individual span items, metrics, etc.)
             if extra_items:
                 self._table.batch_write(extra_items)
+
+            # Rebuild SPANS blob with optimistic locking (retry on conflict).
+            # Each write increments a version counter; if another thread wrote
+            # between our read and write, the condition fails and we retry.
+            from botocore.exceptions import ClientError
+
+            for _attempt in range(10):
+                existing_blob = self._table.get_item(pk=pk, sk=spans_sk)
+                if existing_blob is not None:
+                    existing_dicts = _json.loads(existing_blob["data"])
+                    merged = {sd.get("span_id"): sd for sd in existing_dicts}
+                    old_version = int(existing_blob.get("version", 0))
+                else:
+                    merged = {}
+                    old_version = 0
+                for sd in span_dicts:
+                    merged[sd.get("span_id")] = sd
+                new_version = old_version + 1
+                spans_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": spans_sk,
+                    "data": _json.dumps(list(merged.values())),
+                    "version": new_version,
+                }
+                if ttl is not None:
+                    spans_item["ttl"] = ttl
+                try:
+                    if old_version == 0:
+                        self._table.put_item(spans_item, condition="attribute_not_exists(version)")
+                    else:
+                        from mlflow_dynamodbstore.dynamodb.table import convert_floats
+
+                        self._table._table.put_item(
+                            Item=convert_floats(spans_item),
+                            ConditionExpression="version = :v",
+                            ExpressionAttributeValues={":v": old_version},
+                        )
+                    break
+                except ClientError as e:
+                    if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                        continue  # Retry on conflict
+                    raise
 
             # Write session ID from span attributes if not already set
             if session_id_from_spans:
