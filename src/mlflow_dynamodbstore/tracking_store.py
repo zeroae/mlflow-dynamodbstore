@@ -3632,6 +3632,11 @@ class DynamoDBTrackingStore(AbstractStore):
                     status_str = str(status.get("code", status))
                 else:
                     status_str = str(status)
+                # Normalize "StatusCode.OK" / "SpanStatusCode.OK" → "OK"
+                for prefix in ("SpanStatusCode.", "StatusCode."):
+                    if status_str.startswith(prefix):
+                        status_str = status_str[len(prefix) :]
+                        break
 
                 # Collect for META denormalization
                 if span_type:
@@ -4004,9 +4009,9 @@ class DynamoDBTrackingStore(AbstractStore):
                     if trace_id in seen_trace_ids:
                         continue
 
-                    # Apply span predicates on cached (denormalized) data
-                    if span_predicates and not self._match_span_predicates_cached(
-                        item, span_predicates
+                    # Apply span predicates (denormalized sets + SPANS blob)
+                    if span_predicates and not self._match_span_predicates(
+                        pk, item, span_predicates
                     ):
                         continue
 
@@ -4155,24 +4160,22 @@ class DynamoDBTrackingStore(AbstractStore):
             total_count=total_count,
         )
 
-    @staticmethod
-    def _match_span_predicates_cached(
+    def _match_span_predicates(
+        self,
+        pk: str,
         item: dict[str, Any],
         span_predicates: list[Any],
     ) -> bool:
-        """Check span predicates against denormalized span attrs on META item.
+        """Check span predicates against denormalized data and SPANS blob.
 
-        Denormalized fields on META:
-        - span_types: set of span type strings (e.g. {"LLM", "RETRIEVER"})
-        - span_names: set of span name strings (e.g. {"ChatModel", "Retriever"})
-        - span_statuses: set of status strings (e.g. {"OK"})
+        For simple predicates (type, name, status with =, !=, IN, NOT IN,
+        LIKE, ILIKE), use denormalized sets on META for fast evaluation.
 
-        Returns True if the item has denormalized data and all predicates match,
-        or False if the item has no denormalized data (uncached).
+        For predicates requiring per-span data (attributes, content, combined
+        same-span constraints), load the SPANS blob and evaluate per-span.
         """
         import fnmatch as _fnmatch
 
-        # Map span predicate keys to denormalized set fields on META
         span_key_to_field = {
             "type": "span_types",
             "name": "span_names",
@@ -4183,16 +4186,20 @@ class DynamoDBTrackingStore(AbstractStore):
             item.get(f) for f in ("span_types", "span_names", "span_statuses")
         )
         if not has_any_denormalized:
-            # No cached span data -> cannot match via DynamoDB
             return False
 
+        # Separate predicates: set-based (fast) vs blob-required
+        set_preds = []
+        blob_preds = []
         for pred in span_predicates:
-            field_name = span_key_to_field.get(pred.key)
-            if not field_name:
-                # Unknown span key (e.g. "content" from trace.text ILIKE).
-                # Can't filter from cached META sets — skip this predicate
-                # and let the trace through rather than rejecting it.
-                continue
+            if pred.key in span_key_to_field and pred.op != "RLIKE":
+                set_preds.append(pred)
+            else:
+                blob_preds.append(pred)
+
+        # Evaluate set-based predicates first (cheap, no blob load)
+        for pred in set_preds:
+            field_name = span_key_to_field[pred.key]
             values = item.get(field_name)
             if not values:
                 return False
@@ -4202,6 +4209,12 @@ class DynamoDBTrackingStore(AbstractStore):
                     return False
             elif pred.op == "!=":
                 if pred.value in values:
+                    return False
+            elif pred.op == "IN":
+                if not values & set(pred.value):
+                    return False
+            elif pred.op == "NOT IN":
+                if not values - set(pred.value):
                     return False
             elif pred.op in ("LIKE", "ILIKE"):
                 pattern = str(pred.value).replace("%", "*").replace("_", "?")
@@ -4213,9 +4226,121 @@ class DynamoDBTrackingStore(AbstractStore):
                 )
                 if not matched:
                     return False
+
+        if not blob_preds:
+            # If we also have combined set predicates that need same-span check,
+            # and there are multiple set predicates, load blob to verify.
+            if len(set_preds) > 1:
+                return self._match_span_predicates_blob(pk, item, span_predicates)
+            return True
+
+        # Load SPANS blob for remaining predicates
+        return self._match_span_predicates_blob(pk, item, span_predicates)
+
+    def _match_span_predicates_blob(
+        self,
+        pk: str,
+        item: dict[str, Any],
+        span_predicates: list[Any],
+    ) -> bool:
+        """Evaluate span predicates per-span using the SPANS blob.
+
+        All predicates must match the SAME span for the trace to pass.
+        """
+        import fnmatch as _fnmatch
+        import json as _json
+
+        trace_id = item["trace_id"]
+        spans_sk = f"{SK_TRACE_PREFIX}{trace_id}#SPANS"
+        spans_item = self._table.get_item(pk=pk, sk=spans_sk)
+        if spans_item is None:
+            return False
+
+        span_dicts = _json.loads(spans_item["data"])
+
+        # Each span must satisfy ALL predicates for a match (same-span constraint)
+        for sd in span_dicts:
+            if self._span_matches_all(sd, span_predicates, _fnmatch):
+                return True
+        return False
+
+    @staticmethod
+    def _span_matches_all(
+        sd: dict[str, Any],
+        predicates: list[Any],
+        _fnmatch: Any,
+    ) -> bool:
+        """Check if a single span dict matches ALL predicates."""
+        import json as _json
+
+        attrs = sd.get("attributes", {}) or {}
+        for pred in predicates:
+            if pred.key == "type":
+                # span_type may be top-level or in attributes as mlflow.spanType
+                actual = sd.get("span_type") or attrs.get("mlflow.spanType", "")
+                actual = str(actual).strip('"')
+            elif pred.key == "status":
+                raw_status = sd.get("status", "")
+                if isinstance(raw_status, dict):
+                    # Blob format: {"code": "STATUS_CODE_OK", "message": ""}
+                    code = raw_status.get("code", "")
+                    actual = code.replace("STATUS_CODE_", "") if code else ""
+                else:
+                    actual = str(raw_status)
+                    for pfx in ("SpanStatusCode.", "StatusCode."):
+                        if actual.startswith(pfx):
+                            actual = actual[len(pfx) :]
+                            break
+            elif pred.key == "name":
+                actual = sd.get("name", "")
+            elif pred.key == "content":
+                # Content = serialized span: name + attributes + inputs + outputs
+                parts = [str(sd.get("name", ""))]
+                if isinstance(attrs, dict):
+                    for k, v in attrs.items():
+                        parts.append(f"{k}: {v}")
+                    for io_key in ("mlflow.spanInputs", "mlflow.spanOutputs"):
+                        raw = attrs.get(io_key, "")
+                        if raw:
+                            try:
+                                parts.append(str(_json.loads(raw)))
+                            except (ValueError, TypeError):
+                                parts.append(str(raw))
+                actual = " ".join(parts)
+            elif pred.key.startswith("attributes."):
+                attr_name = pred.key[len("attributes.") :]
+                actual = attrs.get(attr_name)
+                if actual is not None:
+                    actual = str(actual)
             else:
-                # Unsupported op for set membership
+                actual = None
+
+            if actual is None:
+                if pred.op == "IS NULL":
+                    continue
                 return False
+
+            if pred.op == "=":
+                if actual != pred.value:
+                    return False
+            elif pred.op == "!=":
+                if actual == pred.value:
+                    return False
+            elif pred.op in ("LIKE", "ILIKE"):
+                pattern = str(pred.value).replace("%", "*").replace("_", "?")
+                if pred.op == "ILIKE":
+                    if not _fnmatch.fnmatch(str(actual).lower(), pattern.lower()):
+                        return False
+                elif not _fnmatch.fnmatch(str(actual), pattern):
+                    return False
+            elif pred.op == "IN":
+                if actual not in pred.value:
+                    return False
+            elif pred.op == "NOT IN":
+                if actual in pred.value:
+                    return False
+            else:
+                continue  # RLIKE etc — skip
 
         return True
 
