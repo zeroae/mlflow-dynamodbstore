@@ -441,34 +441,38 @@ test_search_traces_with_tag_rlike_filters = _xfail_trace_filter(
     test_search_traces_with_tag_rlike_filters
 )
 
-# --- Category 2: missing input validation (remaining xfails) ---
-# test_log_batch_internal_error: patches SqlAlchemy-specific internal methods (_log_metrics, etc.)
-test_log_batch_internal_error = pytest.mark.xfail(
-    reason="Test patches SqlAlchemy-specific internal methods, not applicable to DynamoDB store"
-)(test_log_batch_internal_error)
-# search_logged_models order_by: needs sorting feature implementation
-test_search_logged_models_order_by = pytest.mark.xfail(
-    reason="DynamoDB store does not yet support search_logged_models order_by"
-)(test_search_logged_models_order_by)
 
-# --- Category 3: experiment ID format mismatch (permanent) ---
-_xfail_error_msg = pytest.mark.xfail(reason="DynamoDB store uses ULID experiment IDs, not integers")
-test_get_experiment_invalid_id = _xfail_error_msg(test_get_experiment_invalid_id)
+# =====================================================================
+# REMAINING XFAILS — grouped by root cause
+# =====================================================================
 
-
-# --- Category 5: search runs ordering/pagination/filtering broken (15 tests) ---
+# --- A. Search runs: ViewType.ALL, filtering, ordering, pagination (18 tests) ---
+# Root cause: _search_runs uses LSI1 sk_prefix="active#" for ViewType.ALL,
+# missing deleted runs. Attribute/metric/param/dataset filters and ordering
+# need work in the parse→plan→execute pipeline.
 _xfail_search_runs = pytest.mark.xfail(
-    reason="DynamoDB store search_runs ordering, pagination, and filtering incomplete"
+    reason="search_runs: ViewType.ALL, attribute/metric/param filters, ordering incomplete"
 )
+# -- ordering --
 test_order_by_attributes = _xfail_search_runs(test_order_by_attributes)
 test_order_by_metric_tag_param = _xfail_search_runs(test_order_by_metric_tag_param)
+test_search_with_deterministic_max_results = _xfail_search_runs(
+    test_search_with_deterministic_max_results
+)
+test_search_runs_start_time_alias = _xfail_search_runs(test_search_runs_start_time_alias)
+# -- attribute/status filters --
+test_search_vanilla = _xfail_search_runs(test_search_vanilla)
 test_search_attrs = _xfail_search_runs(test_search_attrs)
+test_search_tags = _xfail_search_runs(test_search_tags)
+# -- metric/param filters --
 test_search_metrics = _xfail_search_runs(test_search_metrics)
 test_search_params = _xfail_search_runs(test_search_params)
+# -- dataset filters --
 test_search_runs_datasets = _xfail_search_runs(test_search_runs_datasets)
 test_search_runs_datasets_with_param_filters = _xfail_search_runs(
     test_search_runs_datasets_with_param_filters
 )
+# -- pagination --
 test_search_runs_pagination = _xfail_search_runs(test_search_runs_pagination)
 test_search_runs_pagination_last_page_exact = _xfail_search_runs(
     test_search_runs_pagination_last_page_exact
@@ -476,41 +480,22 @@ test_search_runs_pagination_last_page_exact = _xfail_search_runs(
 test_search_runs_pagination_with_max_results_none = _xfail_search_runs(
     test_search_runs_pagination_with_max_results_none
 )
+# -- outputs in search results --
 test_search_runs_returns_outputs = _xfail_search_runs(test_search_runs_returns_outputs)
-test_search_runs_start_time_alias = _xfail_search_runs(test_search_runs_start_time_alias)
-test_search_tags = _xfail_search_runs(test_search_tags)
-test_search_vanilla = _xfail_search_runs(test_search_vanilla)
-test_search_with_deterministic_max_results = _xfail_search_runs(
-    test_search_with_deterministic_max_results
-)
-
-# --- Category 6: dataset CRUD/association bugs — mostly DONE ---
-# Remaining: tests blocked by search_runs ordering (Cat 5 dependency)
-_xfail_dataset_search_runs = pytest.mark.xfail(
-    reason="Needs search_runs ordering/dataset filter (Cat 5 dependency)"
-)
-test_log_input_multiple_times_does_not_overwrite_tags_or_dataset = _xfail_dataset_search_runs(
+# -- dataset inputs via search_runs --
+test_log_input_multiple_times_does_not_overwrite_tags_or_dataset = _xfail_search_runs(
     test_log_input_multiple_times_does_not_overwrite_tags_or_dataset
 )
-test_log_inputs_and_retrieve_runs_behaves_as_expected = _xfail_dataset_search_runs(
+test_log_inputs_and_retrieve_runs_behaves_as_expected = _xfail_search_runs(
     test_log_inputs_and_retrieve_runs_behaves_as_expected
 )
-test_log_inputs_with_large_inputs_limit_check = _xfail_dataset_search_runs(
+test_log_inputs_with_large_inputs_limit_check = _xfail_search_runs(
     test_log_inputs_with_large_inputs_limit_check
 )
 
-# --- Category 7: trace persistence remaining issues ---
-
-# --- Category 8: search experiments — partially DONE ---
-# Permanent xfail: integer experiment ID assumptions
-test_default_experiment_lifecycle = pytest.mark.xfail(
-    reason="DynamoDB uses ULID experiment IDs, not auto-increment integers (permanent)"
-)(test_default_experiment_lifecycle)
-# Remaining Cat 8 — DONE (all use FilterExpression, no in-memory filtering)
-
-# --- Category 9: metric history dedup (2 tests, schema change needed) ---
-# History SK is key#step#timestamp — same step+timestamp with different values overwrites.
-# Fixing requires adding value to SK, which is a schema-breaking change.
+# --- B. Metric history schema (2 tests) ---
+# Root cause: History SK is key#step#timestamp — same step+timestamp with
+# different values overwrites. Fixing requires adding value to SK.
 _xfail_metric_history = pytest.mark.xfail(
     reason="Metric history SK dedup: same step+timestamp different values overwrites"
 )
@@ -523,30 +508,34 @@ test_log_metric_concurrent_logging_succeeds = _xfail_metric_history(
     test_log_metric_concurrent_logging_succeeds
 )
 
-# --- Reclassified from Cat 9 to Cat 6 (dataset CRUD) — DONE ---
-
-# test_delete_traces_with_max_count: reclassified to Cat 17 (see below)
-
-# --- Category 10: logged model search/lifecycle bugs (7 tests) — DONE ---
-
-# --- Category 11: batch_get_traces remaining issues ---
-# --- Category 12: trace sessions (remaining) ---
-# find_completed_sessions_with_filter_string: trace search filter not applied correctly
+# --- C. Trace search filter engine (31 tests) ---
+# Root cause: search_traces filter_string predicates for span attributes,
+# tags, metadata, assessments, prompts not translated to DynamoDB queries.
+# find_completed_sessions depends on this.
 test_find_completed_sessions_with_filter_string = pytest.mark.xfail(
-    reason="find_completed_sessions filter_string post-filtering incomplete (Cat 1 dependency)"
+    reason="Depends on trace search filter engine"
 )(test_find_completed_sessions_with_filter_string)
 
-# --- Category 13: missing methods (remaining) ---
-# deprecated_start_trace_v2: legacy V2 trace API, not worth implementing
+# --- D. Permanent xfails (7 tests) ---
+# Integer experiment ID assumptions
+test_default_experiment_lifecycle = pytest.mark.xfail(
+    reason="DynamoDB uses ULID experiment IDs, not auto-increment integers (permanent)"
+)(test_default_experiment_lifecycle)
+test_get_experiment_invalid_id = pytest.mark.xfail(
+    reason="DynamoDB uses ULID experiment IDs, not integers (permanent)"
+)(test_get_experiment_invalid_id)
+# SqlAlchemy-specific internal method patching
+test_log_batch_internal_error = pytest.mark.xfail(
+    reason="Test patches SqlAlchemy-specific internal methods (permanent)"
+)(test_log_batch_internal_error)
+# Deprecated V2 trace API
 test_legacy_start_and_end_trace_v2 = pytest.mark.xfail(
-    reason="Deprecated V2 trace API not implemented in DynamoDB store"
+    reason="Deprecated V2 trace API not implemented (permanent)"
 )(test_legacy_start_and_end_trace_v2)
-
-
-# --- Category 15: DynamoDB key size/duplicate key constraints (remaining) ---
-# search_logged_models order_by_dataset: needs sorting feature implementation (same as Cat 2)
+# search_logged_models order_by — needs sort implementation
+test_search_logged_models_order_by = pytest.mark.xfail(
+    reason="search_logged_models order_by not yet implemented (permanent)"
+)(test_search_logged_models_order_by)
 test_search_logged_models_order_by_dataset = pytest.mark.xfail(
-    reason="DynamoDB store does not yet support search_logged_models order_by"
+    reason="search_logged_models order_by not yet implemented (permanent)"
 )(test_search_logged_models_order_by_dataset)
-
-# --- Category 17: misc run/experiment/trace/scorer lifecycle bugs (7 tests) ---
