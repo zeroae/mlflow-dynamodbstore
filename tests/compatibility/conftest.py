@@ -100,15 +100,57 @@ WorkspaceStores = namedtuple("WorkspaceStores", ["ddb", "sql"])
 
 
 @pytest.fixture
-def mock_dynamodb():
-    with mock_aws():
-        yield
+def _moto_server_endpoint(request):
+    """Start a ThreadedMotoServer for tests marked with @pytest.mark.moto_server."""
+    if not request.node.get_closest_marker("moto_server"):
+        yield None
+        return
+
+    import os
+
+    import requests
+    from moto.server import ThreadedMotoServer
+
+    saved = {
+        k: os.environ.get(k)
+        for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION")
+    }
+    os.environ["AWS_ACCESS_KEY_ID"] = "testing"
+    os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
+    os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
+
+    server = ThreadedMotoServer(port=0)
+    server.start()
+    host, port = server.get_host_and_port()
+    endpoint = f"http://localhost:{port}"
+    yield endpoint
+    requests.post(f"{endpoint}/moto-api/reset")
+    server.stop()
+
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
 
 
 @pytest.fixture
-def tracking_store(mock_dynamodb):
+def mock_dynamodb(_moto_server_endpoint):
+    if _moto_server_endpoint is not None:
+        yield
+    else:
+        with mock_aws():
+            yield
+
+
+@pytest.fixture
+def tracking_store(_moto_server_endpoint, mock_dynamodb):
+    if _moto_server_endpoint:
+        uri = f"dynamodb://{_moto_server_endpoint}/test-table"
+    else:
+        uri = "dynamodb://us-east-1/test-table"
     return DynamoDBTrackingStore(
-        store_uri="dynamodb://us-east-1/test-table",
+        store_uri=uri,
         artifact_uri="/tmp/artifacts",
     )
 

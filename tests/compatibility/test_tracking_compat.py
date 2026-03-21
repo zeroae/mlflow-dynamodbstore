@@ -401,11 +401,12 @@ test_log_inputs_with_large_inputs_limit_check = _xfail_search_runs_inputs(
 )
 
 # --- B. Metric history schema (2 tests) ---
-# --- B. Metric history — partially DONE ---
+# --- B. Metric history — DONE ---
 # test_log_metric_allows_multiple_values_at_same_ts — DONE (value suffix in SK)
-test_log_metric_concurrent_logging_succeeds = pytest.mark.xfail(
-    reason="Moto thread-safety bug: dictionary changed size during iteration"
-)(test_log_metric_concurrent_logging_succeeds)
+# Concurrent test needs moto server (in-process mock is not thread-safe)
+test_log_metric_concurrent_logging_succeeds = pytest.mark.moto_server(
+    test_log_metric_concurrent_logging_succeeds
+)
 
 # --- C. Trace search filter engine (31 tests) ---
 
