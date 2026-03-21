@@ -2710,19 +2710,26 @@ class DynamoDBTrackingStore(AbstractStore):
         items: list[dict[str, Any]] = []
 
         for metric in metrics:
-            # Latest metric item (overwrites previous for same key)
+            # Latest metric item — only update if (step, timestamp, value)
+            # tuple is greater than existing, matching MLflow's semantics.
             latest_sk = f"{SK_RUN_PREFIX}{run_id}{SK_METRIC_PREFIX}{metric.key}"
             ddb_value = Decimal(str(metric.value))
-            items.append(
-                {
-                    "PK": pk,
-                    "SK": latest_sk,
-                    "key": metric.key,
-                    "value": ddb_value,
-                    "timestamp": metric.timestamp,
-                    "step": metric.step,
-                }
-            )
+            existing = self._table.get_item(pk=pk, sk=latest_sk)
+            if existing is None or (metric.step, metric.timestamp, float(ddb_value)) > (
+                int(existing.get("step", 0)),
+                int(existing.get("timestamp", 0)),
+                float(existing.get("value", 0)),
+            ):
+                items.append(
+                    {
+                        "PK": pk,
+                        "SK": latest_sk,
+                        "key": metric.key,
+                        "value": ddb_value,
+                        "timestamp": metric.timestamp,
+                        "step": metric.step,
+                    }
+                )
 
             # History item (unique per key+step+timestamp)
             padded = pad_step(metric.step)
