@@ -1392,17 +1392,24 @@ class DynamoDBTrackingStore(AbstractStore):
         # Cache run_id -> experiment_id
         self._cache.put("run_exp", run_id, experiment_id)
 
-        # Write FTS items for run name
+        # Write FTS items for run name and artifact_uri
+        fts_pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         if run_name:
             run_fts = fts_items_for_text(
-                pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
-                entity_type="R",
-                entity_id=run_id,
-                field=None,
-                text=run_name,
+                pk=fts_pk, entity_type="R", entity_id=run_id, field=None, text=run_name
             )
             if run_fts:
                 self._table.batch_write(run_fts)
+        if artifact_uri:
+            uri_fts = fts_items_for_text(
+                pk=fts_pk,
+                entity_type="R",
+                entity_id=run_id,
+                field="artifact_uri",
+                text=artifact_uri,
+            )
+            if uri_fts:
+                self._table.batch_write(uri_fts)
 
         return self._build_run(item, all_tags)
 

@@ -244,12 +244,15 @@ def plan_run_query(
         if pred.op in ("LIKE", "ILIKE") and isinstance(pred.value, str):
             if _FTS_LIKE_RE.match(pred.value) and pred.field_type in run_fts_fields:
                 fts_query = pred.value.strip("%")
+                # FTS narrows candidates; add all predicates as post-filters
+                # to enforce case-sensitivity (LIKE) and other constraints.
                 return QueryPlan(
                     strategy="fts",
                     index=None,
                     sk_prefix=None,
                     scan_forward=True,
                     fts_query=fts_query,
+                    post_filters=list(predicates),
                 )
 
     # ------------------------------------------------------------------ #

@@ -362,13 +362,7 @@ from tests.store.tracking.test_sqlalchemy_store import (  # noqa: E402, F401
 # Also: RunOutputs should always be non-None in search results.
 
 # --- A2. Search runs: attribute LIKE needs FTS indexing (2 tests) ---
-# Root cause: attribute.artifact_uri LIKE '%..%' triggers FTS strategy but
-# artifact_uri is not FTS-indexed. Need to index more run fields in FTS.
-_xfail_search_runs_fts = pytest.mark.xfail(
-    reason="search_runs: attribute LIKE needs FTS indexing for artifact_uri and other fields"
-)
-test_search_attrs = _xfail_search_runs_fts(test_search_attrs)
-# test_search_tags — DONE (FTS field restriction)
+# --- A2. FTS indexing — DONE (artifact_uri FTS index + post-filter) ---
 
 # --- A3. Search runs: ordering (4 tests) ---
 # Root cause: order_by for start_time, end_time, attributes needs proper
