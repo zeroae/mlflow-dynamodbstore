@@ -126,15 +126,8 @@ test_search_model_versions_order_by_simple = _xfail_search_order(
 
 # --- Webhooks: not implemented ---
 _xfail_webhook = pytest.mark.xfail(reason="Webhooks not implemented")
-test_create_webhook = _xfail_webhook(test_create_webhook)
-test_create_webhook_invalid_events = _xfail_webhook(test_create_webhook_invalid_events)
-test_create_webhook_invalid_names = _xfail_webhook(test_create_webhook_invalid_names)
-test_create_webhook_invalid_urls = _xfail_webhook(test_create_webhook_invalid_urls)
-test_create_webhook_valid_names = _xfail_webhook(test_create_webhook_valid_names)
 test_delete_webhook = _xfail_webhook(test_delete_webhook)
 test_delete_webhook_not_found = _xfail_webhook(test_delete_webhook_not_found)
-test_get_webhook = _xfail_webhook(test_get_webhook)
-test_get_webhook_not_found = _xfail_webhook(test_get_webhook_not_found)
 test_list_webhooks = _xfail_webhook(test_list_webhooks)
 test_list_webhooks_invalid_max_results = _xfail_webhook(test_list_webhooks_invalid_max_results)
 test_list_webhooks_pagination = _xfail_webhook(test_list_webhooks_pagination)

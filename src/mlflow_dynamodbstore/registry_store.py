@@ -7,12 +7,15 @@ import json
 import time
 from typing import Any
 
+from cryptography.fernet import Fernet
 from mlflow import MlflowClient
 from mlflow.entities.model_registry import RegisteredModel, RegisteredModelTag
 from mlflow.entities.model_registry.model_version import ModelVersion
 from mlflow.entities.model_registry.model_version_stages import STAGE_DELETED_INTERNAL
 from mlflow.entities.model_registry.model_version_tag import ModelVersionTag
 from mlflow.entities.model_registry.registered_model_alias import RegisteredModelAlias
+from mlflow.entities.webhook import Webhook, WebhookEvent, WebhookStatus
+from mlflow.environment_variables import MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY
 from mlflow.exceptions import MlflowException
 from mlflow.prompt.constants import IS_PROMPT_TAG_KEY
 from mlflow.protos.databricks_pb2 import (
@@ -23,6 +26,11 @@ from mlflow.protos.databricks_pb2 import (
 )
 from mlflow.store.model_registry.abstract_store import AbstractStore
 from mlflow.utils.time import get_current_time_millis
+from mlflow.utils.validation import (
+    _validate_webhook_events,
+    _validate_webhook_name,
+    _validate_webhook_url,
+)
 
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
@@ -36,9 +44,11 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_MODELS_PREFIX,
     GSI2_PK,
     GSI2_SK,
+    GSI2_WEBHOOKS_PREFIX,
     GSI3_MODEL_NAME_PREFIX,
     GSI3_PK,
     GSI3_SK,
+    GSI3_WH_EVT_PREFIX,
     GSI5_MODEL_NAMES_PREFIX,
     GSI5_PK,
     GSI5_SK,
@@ -48,6 +58,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI4_SK,
     LSI5_SK,
     PK_MODEL_PREFIX,
+    PK_WEBHOOK_PREFIX,
     SK_FTS_PREFIX,
     SK_FTS_REV_PREFIX,
     SK_MODEL_ALIAS_PREFIX,
@@ -56,12 +67,34 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_MODEL_TAG_PREFIX,
     SK_VERSION_PREFIX,
     SK_VERSION_TAG_SUFFIX,
+    SK_WEBHOOK_EVT_PREFIX,
+    SK_WEBHOOK_META,
 )
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
 from mlflow_dynamodbstore.ids import generate_ulid
 
 _PREFETCH_TTL_SECONDS = 60
+
+
+def _get_fernet() -> Fernet:
+    """Get a Fernet cipher for webhook secret encryption/decryption."""
+    key = MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY.get()
+    if key is None:
+        key = Fernet.generate_key()
+    if isinstance(key, str):
+        key = key.encode()
+    return Fernet(key)
+
+
+def _encrypt_webhook_secret(secret: str) -> str:
+    """Encrypt a webhook secret using Fernet."""
+    return _get_fernet().encrypt(secret.encode()).decode()
+
+
+def _decrypt_webhook_secret(encrypted: str) -> str:
+    """Decrypt a webhook secret using Fernet."""
+    return _get_fernet().decrypt(encrypted.encode()).decode()
 
 
 def _rev(s: str) -> str:
@@ -2120,3 +2153,149 @@ class DynamoDBRegistryStore(AbstractStore):
             )
         version: str = item["version"]
         return self.get_model_version(name, version)
+
+    # ------------------------------------------------------------------
+    # Webhook operations (Phase 6)
+    # ------------------------------------------------------------------
+
+    def _get_webhook_items(self, webhook_ulid: str) -> list[dict[str, Any]]:
+        """Query all items in a webhook partition (META + EVENT items)."""
+        return self._table.query(
+            pk=f"{PK_WEBHOOK_PREFIX}{webhook_ulid}",
+        )
+
+    def _webhook_items_to_entity(self, webhook_ulid: str, items: list[dict[str, Any]]) -> Webhook:
+        """Convert raw DynamoDB items from a webhook partition to a Webhook entity."""
+        meta: dict[str, Any] | None = None
+        events: list[WebhookEvent] = []
+
+        for item in items:
+            sk = item["SK"]
+            if sk == SK_WEBHOOK_META:
+                meta = item
+            elif sk.startswith(SK_WEBHOOK_EVT_PREFIX):
+                events.append(
+                    WebhookEvent(
+                        entity=item["entity"],
+                        action=item["action"],
+                    )
+                )
+
+        if meta is None:
+            raise MlflowException(
+                f"Webhook with ID {webhook_ulid} not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        secret = None
+        if meta.get("encrypted_secret"):
+            secret = _decrypt_webhook_secret(meta["encrypted_secret"])
+
+        return Webhook(
+            webhook_id=webhook_ulid,
+            name=meta["name"],
+            url=meta["url"],
+            events=events,
+            description=meta.get("description"),
+            status=WebhookStatus(meta["status"]),
+            secret=secret,
+            creation_timestamp=int(meta["creation_timestamp"]),
+            last_updated_timestamp=int(meta["last_updated_timestamp"]),
+            workspace=meta.get("workspace"),
+        )
+
+    def _get_webhook_by_id(self, webhook_id: str) -> Webhook:
+        """Get a webhook by ID. Raises RESOURCE_DOES_NOT_EXIST if not found or soft-deleted."""
+        items = self._get_webhook_items(webhook_id)
+        if not items:
+            raise MlflowException(
+                f"Webhook with ID {webhook_id} not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        meta = None
+        for item in items:
+            if item["SK"] == SK_WEBHOOK_META:
+                meta = item
+                break
+
+        if meta is None or meta.get("deleted_timestamp") is not None:
+            raise MlflowException(
+                f"Webhook with ID {webhook_id} not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        if meta.get("workspace") != self._workspace:
+            raise MlflowException(
+                f"Webhook with ID {webhook_id} not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        return self._webhook_items_to_entity(webhook_id, items)
+
+    def create_webhook(
+        self,
+        name: str,
+        url: str,
+        events: list[WebhookEvent],
+        description: str | None = None,
+        secret: str | None = None,
+        status: WebhookStatus | None = None,
+    ) -> Webhook:
+        _validate_webhook_name(name)
+        _validate_webhook_url(url)
+        _validate_webhook_events(events)
+
+        webhook_ulid = generate_ulid()
+        now = get_current_time_millis()
+        ws = self._workspace
+        effective_status = status or WebhookStatus.ACTIVE
+
+        meta_item: dict[str, Any] = {
+            "PK": f"{PK_WEBHOOK_PREFIX}{webhook_ulid}",
+            "SK": SK_WEBHOOK_META,
+            "name": name,
+            "url": url,
+            "status": effective_status.value,
+            "creation_timestamp": now,
+            "last_updated_timestamp": now,
+            "workspace": ws,
+            GSI2_PK: f"{GSI2_WEBHOOKS_PREFIX}{ws}",
+            GSI2_SK: webhook_ulid,
+        }
+        if description is not None:
+            meta_item["description"] = description
+        if secret is not None:
+            meta_item["encrypted_secret"] = _encrypt_webhook_secret(secret)
+
+        event_items = []
+        for event in events:
+            event_items.append(
+                {
+                    "PK": f"{PK_WEBHOOK_PREFIX}{webhook_ulid}",
+                    "SK": f"{SK_WEBHOOK_EVT_PREFIX}{event.entity.value}#{event.action.value}",
+                    "entity": event.entity.value,
+                    "action": event.action.value,
+                    "workspace": ws,
+                    GSI3_PK: f"{GSI3_WH_EVT_PREFIX}{ws}#{event.entity.value}#{event.action.value}",
+                    GSI3_SK: webhook_ulid,
+                }
+            )
+
+        self._table.batch_write([meta_item] + event_items)
+
+        return Webhook(
+            webhook_id=webhook_ulid,
+            name=name,
+            url=url,
+            events=events,
+            description=description,
+            status=effective_status,
+            secret=secret,
+            creation_timestamp=now,
+            last_updated_timestamp=now,
+            workspace=ws,
+        )
+
+    def get_webhook(self, webhook_id: str) -> Webhook:
+        return self._get_webhook_by_id(webhook_id)
