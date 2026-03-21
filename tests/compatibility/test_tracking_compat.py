@@ -401,17 +401,10 @@ test_log_inputs_with_large_inputs_limit_check = _xfail_search_runs_inputs(
 )
 
 # --- B. Metric history schema (2 tests) ---
-# Root cause: History SK is key#step#timestamp — same step+timestamp with
-# different values overwrites. Fixing requires adding value to SK.
-_xfail_metric_history = pytest.mark.xfail(
-    reason="Metric history SK dedup: same step+timestamp different values overwrites"
-)
-test_log_metric_allows_multiple_values_at_same_ts_and_run_data_uses_max_ts_value = (
-    _xfail_metric_history(
-        test_log_metric_allows_multiple_values_at_same_ts_and_run_data_uses_max_ts_value
-    )
-)
-test_log_metric_concurrent_logging_succeeds = _xfail_metric_history(
+# --- B. Metric history — DONE ---
+# test_log_metric_allows_multiple_values_at_same_ts — DONE (value suffix in SK)
+# Concurrent test needs moto server (in-process mock is not thread-safe)
+test_log_metric_concurrent_logging_succeeds = pytest.mark.moto_server(
     test_log_metric_concurrent_logging_succeeds
 )
 

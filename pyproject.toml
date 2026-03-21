@@ -114,6 +114,7 @@ markers = [
     "compatibility: MLflow test suite compatibility",
     "smoke: real DynamoDB (needs AWS creds)",
     "e2e: end-to-end tests (mlflow server over HTTP)",
+    "moto_server: use moto HTTP server instead of in-process mock (thread-safe)",
 ]
 addopts = "--strict-markers --import-mode=importlib"
 filterwarnings = [
