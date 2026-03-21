@@ -48,6 +48,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI2_SK,
     GSI2_WEBHOOKS_PREFIX,
     GSI3_MODEL_NAME_PREFIX,
+    GSI3_NAME,
     GSI3_PK,
     GSI3_SK,
     GSI3_WH_EVT_PREFIX,
@@ -2456,3 +2457,40 @@ class DynamoDBRegistryStore(AbstractStore):
         )
         if event_items:
             self._table.batch_delete([{"PK": item["PK"], "SK": item["SK"]} for item in event_items])
+
+    def list_webhooks_by_event(
+        self,
+        event: WebhookEvent,
+        max_results: int | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[Webhook]:
+        if max_results is not None and (max_results < 1 or max_results > 1000):
+            raise MlflowException(
+                "max_results must be between 1 and 1000.",
+                INVALID_PARAMETER_VALUE,
+            )
+        max_results = max_results or 100
+
+        exclusive_start_key = self._decode_page_token(page_token)
+        ws = self._workspace
+
+        gsi3_items, lek = self._table.query_page(
+            pk=f"{GSI3_WH_EVT_PREFIX}{ws}#{event.entity.value}#{event.action.value}",
+            index_name=GSI3_NAME,
+            limit=max_results,
+            scan_forward=False,
+            exclusive_start_key=exclusive_start_key,
+        )
+
+        next_page_token = None
+        if lek is not None:
+            next_page_token = self._encode_page_token(lek)
+
+        webhooks = []
+        for gsi3_item in gsi3_items:
+            webhook_ulid = gsi3_item[GSI3_SK]
+            items = self._get_webhook_items(webhook_ulid)
+            if items:
+                webhooks.append(self._webhook_items_to_entity(webhook_ulid, items))
+
+        return PagedList(webhooks, next_page_token)
