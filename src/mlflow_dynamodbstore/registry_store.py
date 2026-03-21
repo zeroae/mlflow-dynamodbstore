@@ -7,12 +7,21 @@ import json
 import time
 from typing import Any
 
+from cryptography.fernet import Fernet
 from mlflow import MlflowClient
 from mlflow.entities.model_registry import RegisteredModel, RegisteredModelTag
 from mlflow.entities.model_registry.model_version import ModelVersion
 from mlflow.entities.model_registry.model_version_stages import STAGE_DELETED_INTERNAL
 from mlflow.entities.model_registry.model_version_tag import ModelVersionTag
 from mlflow.entities.model_registry.registered_model_alias import RegisteredModelAlias
+from mlflow.entities.webhook import (
+    Webhook,
+    WebhookAction,
+    WebhookEntity,
+    WebhookEvent,
+    WebhookStatus,
+)
+from mlflow.environment_variables import MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY
 from mlflow.exceptions import MlflowException
 from mlflow.prompt.constants import IS_PROMPT_TAG_KEY
 from mlflow.protos.databricks_pb2 import (
@@ -21,8 +30,14 @@ from mlflow.protos.databricks_pb2 import (
     RESOURCE_DOES_NOT_EXIST,
     ErrorCode,
 )
+from mlflow.store.entities.paged_list import PagedList
 from mlflow.store.model_registry.abstract_store import AbstractStore
 from mlflow.utils.time import get_current_time_millis
+from mlflow.utils.validation import (
+    _validate_webhook_events,
+    _validate_webhook_name,
+    _validate_webhook_url,
+)
 
 from mlflow_dynamodbstore.cache import ResolutionCache
 from mlflow_dynamodbstore.dynamodb.config import ConfigReader
@@ -34,11 +49,15 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI1_SK,
     GSI2_FTS_NAMES_PREFIX,
     GSI2_MODELS_PREFIX,
+    GSI2_NAME,
     GSI2_PK,
     GSI2_SK,
+    GSI2_WEBHOOKS_PREFIX,
     GSI3_MODEL_NAME_PREFIX,
+    GSI3_NAME,
     GSI3_PK,
     GSI3_SK,
+    GSI3_WH_EVT_PREFIX,
     GSI5_MODEL_NAMES_PREFIX,
     GSI5_PK,
     GSI5_SK,
@@ -48,6 +67,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     LSI4_SK,
     LSI5_SK,
     PK_MODEL_PREFIX,
+    PK_WEBHOOK_PREFIX,
     SK_FTS_PREFIX,
     SK_FTS_REV_PREFIX,
     SK_MODEL_ALIAS_PREFIX,
@@ -56,12 +76,51 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     SK_MODEL_TAG_PREFIX,
     SK_VERSION_PREFIX,
     SK_VERSION_TAG_SUFFIX,
+    SK_WEBHOOK_EVT_PREFIX,
+    SK_WEBHOOK_META,
 )
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
 from mlflow_dynamodbstore.ids import generate_ulid
 
 _PREFETCH_TTL_SECONDS = 60
+
+
+_FERNET_INSTANCE: Fernet | None = None
+_FERNET_KEY_USED: bytes | None = None
+
+
+def _get_fernet() -> Fernet:
+    """Get a Fernet cipher for webhook secret encryption/decryption.
+
+    Caches the instance so that secrets encrypted in one call can be decrypted in another,
+    even when no key is set in the environment (in which case a random key is generated once
+    per process lifetime).
+    """
+    global _FERNET_INSTANCE, _FERNET_KEY_USED
+
+    configured_key = MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY.get()
+    if configured_key is not None:
+        key = configured_key.encode() if isinstance(configured_key, str) else configured_key
+        if key != _FERNET_KEY_USED:
+            _FERNET_INSTANCE = Fernet(key)
+            _FERNET_KEY_USED = key
+    elif _FERNET_INSTANCE is None:
+        key = Fernet.generate_key()
+        _FERNET_INSTANCE = Fernet(key)
+        _FERNET_KEY_USED = key
+
+    return _FERNET_INSTANCE  # type: ignore[return-value]
+
+
+def _encrypt_webhook_secret(secret: str) -> str:
+    """Encrypt a webhook secret using Fernet."""
+    return _get_fernet().encrypt(secret.encode()).decode()
+
+
+def _decrypt_webhook_secret(encrypted: str) -> str:
+    """Decrypt a webhook secret using Fernet."""
+    return _get_fernet().decrypt(encrypted.encode()).decode()
 
 
 def _rev(s: str) -> str:
@@ -2120,3 +2179,324 @@ class DynamoDBRegistryStore(AbstractStore):
             )
         version: str = item["version"]
         return self.get_model_version(name, version)
+
+    # ------------------------------------------------------------------
+    # Webhook operations (Phase 6)
+    # ------------------------------------------------------------------
+
+    def _get_webhook_items(self, webhook_ulid: str) -> list[dict[str, Any]]:
+        """Query all items in a webhook partition (META + EVENT items)."""
+        return self._table.query(
+            pk=f"{PK_WEBHOOK_PREFIX}{webhook_ulid}",
+        )
+
+    def _webhook_items_to_entity(self, webhook_ulid: str, items: list[dict[str, Any]]) -> Webhook:
+        """Convert raw DynamoDB items from a webhook partition to a Webhook entity."""
+        meta: dict[str, Any] | None = None
+        events: list[WebhookEvent] = []
+
+        for item in items:
+            sk = item["SK"]
+            if sk == SK_WEBHOOK_META:
+                meta = item
+            elif sk.startswith(SK_WEBHOOK_EVT_PREFIX):
+                events.append(
+                    WebhookEvent(
+                        entity=WebhookEntity(item["entity"]),
+                        action=WebhookAction(item["action"]),
+                    )
+                )
+
+        if meta is None:
+            raise MlflowException(
+                f"Webhook with ID {webhook_ulid} not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        secret = None
+        if meta.get("encrypted_secret"):
+            secret = _decrypt_webhook_secret(meta["encrypted_secret"])
+
+        return Webhook(
+            webhook_id=webhook_ulid,
+            name=meta["name"],
+            url=meta["url"],
+            events=events,
+            description=meta.get("description"),
+            status=WebhookStatus(meta["status"]),
+            secret=secret,
+            creation_timestamp=int(meta["creation_timestamp"]),
+            last_updated_timestamp=int(meta["last_updated_timestamp"]),
+            workspace=meta.get("workspace"),
+        )
+
+    def _get_webhook_by_id(self, webhook_id: str) -> Webhook:
+        """Get a webhook by ID. Raises RESOURCE_DOES_NOT_EXIST if not found or soft-deleted."""
+        items = self._get_webhook_items(webhook_id)
+        if not items:
+            raise MlflowException(
+                f"Webhook with ID {webhook_id} not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        meta = None
+        for item in items:
+            if item["SK"] == SK_WEBHOOK_META:
+                meta = item
+                break
+
+        if meta is None or meta.get("deleted_timestamp") is not None:
+            raise MlflowException(
+                f"Webhook with ID {webhook_id} not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        if meta.get("workspace") != self._workspace:
+            raise MlflowException(
+                f"Webhook with ID {webhook_id} not found",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        return self._webhook_items_to_entity(webhook_id, items)
+
+    def create_webhook(
+        self,
+        name: str,
+        url: str,
+        events: list[WebhookEvent],
+        description: str | None = None,
+        secret: str | None = None,
+        status: WebhookStatus | None = None,
+    ) -> Webhook:
+        _validate_webhook_name(name)
+        _validate_webhook_url(url)
+        _validate_webhook_events(events)
+
+        webhook_ulid = generate_ulid()
+        now = get_current_time_millis()
+        ws = self._workspace
+        effective_status = status or WebhookStatus.ACTIVE
+
+        meta_item: dict[str, Any] = {
+            "PK": f"{PK_WEBHOOK_PREFIX}{webhook_ulid}",
+            "SK": SK_WEBHOOK_META,
+            "name": name,
+            "url": url,
+            "status": effective_status.value,
+            "creation_timestamp": now,
+            "last_updated_timestamp": now,
+            "workspace": ws,
+            GSI2_PK: f"{GSI2_WEBHOOKS_PREFIX}{ws}",
+            GSI2_SK: webhook_ulid,
+        }
+        if description is not None:
+            meta_item["description"] = description
+        if secret is not None:
+            meta_item["encrypted_secret"] = _encrypt_webhook_secret(secret)
+
+        event_items = []
+        for event in events:
+            event_items.append(
+                {
+                    "PK": f"{PK_WEBHOOK_PREFIX}{webhook_ulid}",
+                    "SK": f"{SK_WEBHOOK_EVT_PREFIX}{event.entity.value}#{event.action.value}",
+                    "entity": event.entity.value,
+                    "action": event.action.value,
+                    "workspace": ws,
+                    GSI3_PK: f"{GSI3_WH_EVT_PREFIX}{ws}#{event.entity.value}#{event.action.value}",
+                    GSI3_SK: webhook_ulid,
+                }
+            )
+
+        self._table.batch_write([meta_item] + event_items)
+
+        return Webhook(
+            webhook_id=webhook_ulid,
+            name=name,
+            url=url,
+            events=events,
+            description=description,
+            status=effective_status,
+            secret=secret,
+            creation_timestamp=now,
+            last_updated_timestamp=now,
+            workspace=ws,
+        )
+
+    def get_webhook(self, webhook_id: str) -> Webhook:
+        return self._get_webhook_by_id(webhook_id)
+
+    def list_webhooks(
+        self,
+        max_results: int | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[Webhook]:
+        if max_results is not None and (max_results < 1 or max_results > 1000):
+            raise MlflowException(
+                "max_results must be between 1 and 1000.",
+                INVALID_PARAMETER_VALUE,
+            )
+        max_results = max_results or 100
+
+        exclusive_start_key = self._decode_page_token(page_token)
+
+        # Use query_page (not query) for cursor-based pagination
+        gsi2_items, lek = self._table.query_page(
+            pk=f"{GSI2_WEBHOOKS_PREFIX}{self._workspace}",
+            index_name=GSI2_NAME,
+            limit=max_results,
+            scan_forward=False,
+            exclusive_start_key=exclusive_start_key,
+        )
+
+        next_page_token = None
+        if lek is not None:
+            next_page_token = self._encode_page_token(lek)
+
+        webhooks = []
+        for gsi2_item in gsi2_items:
+            webhook_ulid = gsi2_item[GSI2_SK]
+            items = self._get_webhook_items(webhook_ulid)
+            if items:
+                webhooks.append(self._webhook_items_to_entity(webhook_ulid, items))
+
+        return PagedList(webhooks, next_page_token)
+
+    def update_webhook(
+        self,
+        webhook_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        url: str | None = None,
+        events: list[WebhookEvent] | None = None,
+        secret: str | None = None,
+        status: WebhookStatus | None = None,
+    ) -> Webhook:
+        if name is not None:
+            _validate_webhook_name(name)
+        if url is not None:
+            _validate_webhook_url(url)
+        if events is not None:
+            _validate_webhook_events(events)
+
+        # Verify webhook exists (checks workspace + not deleted)
+        self._get_webhook_by_id(webhook_id)
+
+        now = get_current_time_millis()
+        updates: dict[str, Any] = {"last_updated_timestamp": now}
+
+        if name is not None:
+            updates["name"] = name
+        if description is not None:
+            updates["description"] = description
+        if url is not None:
+            updates["url"] = url
+        if secret is not None:
+            updates["encrypted_secret"] = _encrypt_webhook_secret(secret)
+        if status is not None:
+            updates["status"] = status.value
+
+        self._table.update_item(
+            pk=f"{PK_WEBHOOK_PREFIX}{webhook_id}",
+            sk=SK_WEBHOOK_META,
+            updates=updates,
+        )
+
+        # If events changed, replace all EVENT items
+        if events is not None:
+            ws = self._workspace
+
+            old_items = self._table.query(
+                pk=f"{PK_WEBHOOK_PREFIX}{webhook_id}",
+                sk_prefix=SK_WEBHOOK_EVT_PREFIX,
+            )
+            if old_items:
+                self._table.batch_delete(
+                    [{"PK": item["PK"], "SK": item["SK"]} for item in old_items]
+                )
+
+            new_event_items = []
+            for event in events:
+                new_event_items.append(
+                    {
+                        "PK": f"{PK_WEBHOOK_PREFIX}{webhook_id}",
+                        "SK": f"{SK_WEBHOOK_EVT_PREFIX}{event.entity.value}#{event.action.value}",
+                        "entity": event.entity.value,
+                        "action": event.action.value,
+                        "workspace": ws,
+                        GSI3_PK: (
+                            f"{GSI3_WH_EVT_PREFIX}{ws}#{event.entity.value}#{event.action.value}"
+                        ),
+                        GSI3_SK: webhook_id,
+                    }
+                )
+            if new_event_items:
+                self._table.batch_write(new_event_items)
+
+        return self._get_webhook_by_id(webhook_id)
+
+    def delete_webhook(self, webhook_id: str) -> None:
+        self._get_webhook_by_id(webhook_id)
+
+        now = get_current_time_millis()
+        updates: dict[str, Any] = {
+            "deleted_timestamp": now,
+            "last_updated_timestamp": now,
+        }
+
+        ttl_seconds = self._config.get_soft_deleted_ttl_seconds()
+        if ttl_seconds is not None:
+            updates["ttl"] = int(time.time()) + ttl_seconds
+
+        removes = [GSI2_PK, GSI2_SK]
+
+        self._table.update_item(
+            pk=f"{PK_WEBHOOK_PREFIX}{webhook_id}",
+            sk=SK_WEBHOOK_META,
+            updates=updates,
+            removes=removes,
+        )
+
+        event_items = self._table.query(
+            pk=f"{PK_WEBHOOK_PREFIX}{webhook_id}",
+            sk_prefix=SK_WEBHOOK_EVT_PREFIX,
+        )
+        if event_items:
+            self._table.batch_delete([{"PK": item["PK"], "SK": item["SK"]} for item in event_items])
+
+    def list_webhooks_by_event(
+        self,
+        event: WebhookEvent,
+        max_results: int | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[Webhook]:
+        if max_results is not None and (max_results < 1 or max_results > 1000):
+            raise MlflowException(
+                "max_results must be between 1 and 1000.",
+                INVALID_PARAMETER_VALUE,
+            )
+        max_results = max_results or 100
+
+        exclusive_start_key = self._decode_page_token(page_token)
+        ws = self._workspace
+
+        gsi3_items, lek = self._table.query_page(
+            pk=f"{GSI3_WH_EVT_PREFIX}{ws}#{event.entity.value}#{event.action.value}",
+            index_name=GSI3_NAME,
+            limit=max_results,
+            scan_forward=False,
+            exclusive_start_key=exclusive_start_key,
+        )
+
+        next_page_token = None
+        if lek is not None:
+            next_page_token = self._encode_page_token(lek)
+
+        webhooks = []
+        for gsi3_item in gsi3_items:
+            webhook_ulid = gsi3_item[GSI3_SK]
+            items = self._get_webhook_items(webhook_ulid)
+            if items:
+                webhooks.append(self._webhook_items_to_entity(webhook_ulid, items))
+
+        return PagedList(webhooks, next_page_token)

@@ -7,8 +7,6 @@ MLflow's fixture name in test_sqlalchemy_workspace_store.py).
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).parents[2] / "vendor" / "mlflow"))
 
 from tests.store.model_registry.test_sqlalchemy_workspace_store import (  # noqa: E402, F401
@@ -20,8 +18,3 @@ from tests.store.model_registry.test_sqlalchemy_workspace_store import (  # noqa
     test_update_and_delete_registered_model_metadata_are_workspace_scoped,
     test_webhook_operations_are_workspace_scoped,
 )
-
-# --- Webhooks not implemented ---
-test_webhook_operations_are_workspace_scoped = pytest.mark.xfail(
-    reason="DynamoDB store does not implement webhook operations"
-)(test_webhook_operations_are_workspace_scoped)
