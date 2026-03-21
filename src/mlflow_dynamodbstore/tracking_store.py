@@ -3156,6 +3156,7 @@ class DynamoDBTrackingStore(AbstractStore):
             total_output_cost = 0.0
             total_total_cost = 0.0
             has_cost = False
+            session_id_from_spans: str | None = None
 
             for span in trace_spans:
                 sd = span.to_dict()
@@ -3221,6 +3222,12 @@ class DynamoDBTrackingStore(AbstractStore):
                         pass
                     if model_provider:
                         span_item["model_provider"] = model_provider
+
+                # Extract session.id from span attributes (OTel semantic convention)
+                if session_id_from_spans is None:
+                    span_session = attrs.get("session.id")
+                    if span_session:
+                        session_id_from_spans = span_session
 
                 if ttl is not None:
                     span_item["ttl"] = ttl
@@ -3348,6 +3355,28 @@ class DynamoDBTrackingStore(AbstractStore):
             # Write all extra items in batch
             if extra_items:
                 self._table.batch_write(extra_items)
+
+            # Write session ID from span attributes if not already set
+            if session_id_from_spans:
+                session_rmeta_sk = (
+                    f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{TraceMetadataKey.TRACE_SESSION}"
+                )
+                existing_session = self._table.get_item(pk=pk, sk=session_rmeta_sk)
+                if existing_session is None:
+                    rmeta_item: dict[str, Any] = {
+                        "PK": pk,
+                        "SK": session_rmeta_sk,
+                        "key": TraceMetadataKey.TRACE_SESSION,
+                        "value": session_id_from_spans,
+                    }
+                    if ttl is not None:
+                        rmeta_item["ttl"] = ttl
+                    self._table.put_item(rmeta_item)
+                    # Also upsert session tracker
+                    request_time = int(meta.get("request_time", 0))
+                    self._upsert_session_tracker(
+                        experiment_id, session_id_from_spans, request_time, ttl
+                    )
 
             # --- Denormalize span attributes on META ---
             updates: dict[str, Any] = {}
@@ -3906,6 +3935,12 @@ class DynamoDBTrackingStore(AbstractStore):
         experiment_id = self._resolve_trace_experiment(trace_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         sk = f"{SK_TRACE_PREFIX}{trace_id}#TAG#{key}"
+        existing = self._table.get_item(pk=pk, sk=sk)
+        if existing is None:
+            raise MlflowException(
+                f"No trace tag with key '{key}'",
+                INVALID_PARAMETER_VALUE,
+            )
         self._table.delete_item(pk=pk, sk=sk)
         if self._config.should_denormalize(experiment_id, key):
             self._remove_denormalized_tag(pk, f"{SK_TRACE_PREFIX}{trace_id}", key)
@@ -4060,6 +4095,16 @@ class DynamoDBTrackingStore(AbstractStore):
 
             # Sort spans by start_time_ns ascending (JSON blob is unordered)
             spans.sort(key=lambda s: getattr(s, "start_time_ns", 0) or 0)
+
+            # Skip incomplete traces (expected span count > actual)
+            from mlflow.tracing.constant import TraceSizeStatsKey
+
+            size_stats_str = trace_info.trace_metadata.get(TraceMetadataKey.SIZE_STATS)
+            if size_stats_str:
+                size_stats = _json.loads(size_stats_str)
+                expected = size_stats.get(TraceSizeStatsKey.NUM_SPANS, 0)
+                if expected > len(spans):
+                    continue
 
             results.append(Trace(info=trace_info, data=TraceData(spans=spans)))
 
