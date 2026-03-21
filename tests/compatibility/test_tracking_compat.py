@@ -588,22 +588,11 @@ test_log_batch_logged_model = _xfail_logged_model(test_log_batch_logged_model)
 test_log_outputs = _xfail_logged_model(test_log_outputs)
 
 # --- Category 11: batch_get_traces remaining issues ---
-# --- Category 12: trace tag/artifact path issues (remaining) ---
-_xfail_trace_path = pytest.mark.xfail(
-    reason="DynamoDB store trace artifact path or session tracking issues"
-)
-# NOTE: test_get_trace_with_partial_trace is parametrized [True/False].
-# [True] passes (trace creation via log_spans works), but [False] fails because
-# our store doesn't raise MlflowException for missing traces in get_trace.
-# We xfail the whole test; [True] will show as xpassed which is fine.
-test_get_trace_with_partial_trace = _xfail_trace_path(test_get_trace_with_partial_trace)
-test_find_completed_sessions = _xfail_trace_path(test_find_completed_sessions)
-test_find_completed_sessions_aggregates_across_all_traces = _xfail_trace_path(
-    test_find_completed_sessions_aggregates_across_all_traces
-)
-test_find_completed_sessions_with_filter_string = _xfail_trace_path(
-    test_find_completed_sessions_with_filter_string
-)
+# --- Category 12: trace sessions (remaining) ---
+# find_completed_sessions_with_filter_string: trace search filter not applied correctly
+test_find_completed_sessions_with_filter_string = pytest.mark.xfail(
+    reason="find_completed_sessions filter_string post-filtering incomplete (Cat 1 dependency)"
+)(test_find_completed_sessions_with_filter_string)
 
 # --- Category 13: missing methods (remaining) ---
 # deprecated_start_trace_v2: legacy V2 trace API, not worth implementing

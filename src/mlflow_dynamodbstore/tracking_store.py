@@ -2821,7 +2821,7 @@ class DynamoDBTrackingStore(AbstractStore):
             trace_info.tags[MLFLOW_ARTIFACT_LOCATION] = artifact_loc
 
         # Upsert session tracker if trace has session metadata
-        session_id = (trace_info.trace_metadata or {}).get("mlflow.traceSession")
+        session_id = (trace_info.trace_metadata or {}).get(TraceMetadataKey.TRACE_SESSION)
         if session_id:
             self._upsert_session_tracker(
                 experiment_id=experiment_id,
@@ -3006,6 +3006,23 @@ class DynamoDBTrackingStore(AbstractStore):
                 spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
         else:
             spans = span_dicts_to_mlflow_spans(span_dicts, trace_id)
+
+        # Check for partial trace when not allowed
+        if not allow_partial and spans:
+            import json as _json2
+
+            size_stats_str = trace_info.trace_metadata.get(TraceMetadataKey.SIZE_STATS)
+            if size_stats_str:
+                from mlflow.tracing.constant import TraceSizeStatsKey
+
+                size_stats = _json2.loads(size_stats_str)
+                expected_spans = size_stats.get(TraceSizeStatsKey.NUM_SPANS, 0)
+                if expected_spans > len(spans):
+                    raise MlflowException(
+                        f"Trace with ID {trace_id} is not fully exported yet. "
+                        f"Expected {expected_spans} spans but only {len(spans)} are available.",
+                        INVALID_STATE,
+                    )
 
         return Trace(info=trace_info, data=TraceData(spans=spans))
 
@@ -4090,7 +4107,7 @@ class DynamoDBTrackingStore(AbstractStore):
                     if "trace_id" not in t_item:
                         continue
                     tid = t_item["trace_id"]
-                    rmeta_sk = f"{SK_TRACE_PREFIX}{tid}#RMETA#mlflow.traceSession"
+                    rmeta_sk = f"{SK_TRACE_PREFIX}{tid}#RMETA#{TraceMetadataKey.TRACE_SESSION}"
                     rmeta = self._table.get_item(pk=exp_pk, sk=rmeta_sk)
                     if rmeta and rmeta.get("value") == session_id:
                         if all(

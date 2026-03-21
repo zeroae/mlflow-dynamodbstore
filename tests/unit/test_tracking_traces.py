@@ -1493,7 +1493,7 @@ class TestStartTraceSessionTracker:
             request_time=1000,
             trace_metadata={
                 TraceTagKey.TRACE_NAME: "my-trace",
-                "mlflow.traceSession": "session-abc",
+                TraceMetadataKey.TRACE_SESSION: "session-abc",
             },
         )
         tracking_store.start_trace(trace_info)
@@ -1532,7 +1532,7 @@ class TestStartTraceSessionTracker:
                 request_time=ts,
                 trace_metadata={
                     TraceTagKey.TRACE_NAME: "my-trace",
-                    "mlflow.traceSession": "session-xyz",
+                    TraceMetadataKey.TRACE_SESSION: "session-xyz",
                 },
             )
             tracking_store.start_trace(trace_info)
@@ -1555,7 +1555,7 @@ class TestStartTraceSessionTracker:
             request_time=5000,
             trace_metadata={
                 TraceTagKey.TRACE_NAME: "my-trace",
-                "mlflow.traceSession": "session-gsi2",
+                TraceMetadataKey.TRACE_SESSION: "session-gsi2",
             },
         )
         tracking_store.start_trace(trace_info)
@@ -1578,7 +1578,7 @@ class TestStartTraceSessionTracker:
                 request_time=ts,
                 trace_metadata={
                     TraceTagKey.TRACE_NAME: "my-trace",
-                    "mlflow.traceSession": "session-gsi2-multi",
+                    TraceMetadataKey.TRACE_SESSION: "session-gsi2-multi",
                 },
             )
             tracking_store.start_trace(trace_info)
@@ -1596,7 +1596,7 @@ class TestStartTraceSessionTracker:
             request_time=1000,
             trace_metadata={
                 TraceTagKey.TRACE_NAME: "my-trace",
-                "mlflow.traceSession": "session-ttl",
+                TraceMetadataKey.TRACE_SESSION: "session-ttl",
             },
         )
         tracking_store.start_trace(trace_info)
@@ -1910,7 +1910,7 @@ class TestFindCompletedSessions:
                 request_time=ts,
                 trace_metadata={
                     TraceTagKey.TRACE_NAME: "my-trace",
-                    "mlflow.traceSession": session_id,
+                    TraceMetadataKey.TRACE_SESSION: session_id,
                 },
             )
             tracking_store.start_trace(trace_info)
@@ -1976,7 +1976,7 @@ class TestFindCompletedSessions:
             request_time=1000,
             trace_metadata={
                 TraceTagKey.TRACE_NAME: "my-trace",
-                "mlflow.traceSession": "sess-match",
+                TraceMetadataKey.TRACE_SESSION: "sess-match",
             },
             tags={"env": "prod"},
         )
@@ -1987,7 +1987,7 @@ class TestFindCompletedSessions:
             request_time=2000,
             trace_metadata={
                 TraceTagKey.TRACE_NAME: "my-trace",
-                "mlflow.traceSession": "sess-nomatch",
+                TraceMetadataKey.TRACE_SESSION: "sess-nomatch",
             },
             tags={"env": "dev"},
         )
