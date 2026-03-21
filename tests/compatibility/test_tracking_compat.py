@@ -379,7 +379,7 @@ _xfail_search_runs_order = pytest.mark.xfail(
 test_order_by_attributes = _xfail_search_runs_order(test_order_by_attributes)
 test_order_by_metric_tag_param = _xfail_search_runs_order(test_order_by_metric_tag_param)
 # test_search_with_deterministic_max_results — DONE (overflow cache)
-test_search_runs_start_time_alias = _xfail_search_runs_order(test_search_runs_start_time_alias)
+# test_search_runs_start_time_alias — DONE (created alias)
 
 # --- A4. Search runs: metric/param post-filters (2 tests) ---
 # Root cause: metric/param filter predicates in _apply_post_filter need
