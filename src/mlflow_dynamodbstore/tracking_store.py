@@ -3196,6 +3196,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "tags": {},
             "feedbacks": {},
             "expectations": {},
+            "prompts": {},
             # LSI attributes (must be strings, zero-padded for sort order)
             LSI1_SK: f"{request_time:020d}",
             LSI2_SK: request_time + execution_duration,
@@ -4488,7 +4489,20 @@ class DynamoDBTrackingStore(AbstractStore):
         versions_json = _json.dumps(
             [{"name": pv.name, "version": pv.version} for pv in prompt_versions]
         )
-        self._write_trace_tag(experiment_id, trace_id, "mlflow.promptVersions", versions_json, ttl)
+        self._write_trace_tag(
+            experiment_id, trace_id, TraceTagKey.LINKED_PROMPTS, versions_json, ttl
+        )
+
+        # Denormalize prompt name/version onto trace META for FilterExpression
+        trace_sk = f"{SK_TRACE_PREFIX}{trace_id}"
+        for pv in prompt_versions:
+            key = f"{pv.name}/{pv.version}"
+            self._table._table.update_item(
+                Key={"PK": pk, "SK": trace_sk},
+                UpdateExpression="SET #map.#key = :val",
+                ExpressionAttributeNames={"#map": "prompts", "#key": key},
+                ExpressionAttributeValues={":val": True},
+            )
 
     def batch_get_trace_infos(
         self, trace_ids: list[str], location: str | None = None

@@ -488,7 +488,7 @@ class TestLinkUnlinkOperations:
         tracking_store.link_prompts_to_trace("tr-int-lp-1", [pv])
 
         fetched = tracking_store.get_trace_info("tr-int-lp-1")
-        versions = json.loads(fetched.tags["mlflow.promptVersions"])
+        versions = json.loads(fetched.tags["mlflow.linkedPrompts"])
         assert len(versions) == 1
         assert versions[0]["name"] == "my-prompt"
 

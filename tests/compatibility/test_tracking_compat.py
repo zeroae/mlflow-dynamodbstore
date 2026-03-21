@@ -500,12 +500,7 @@ test_search_traces_with_client_request_id_rlike_filters = _xfail_trace_rlike(
     test_search_traces_with_client_request_id_rlike_filters
 )
 
-# -- C7. Prompt filters (2 tests) --
-_xfail_trace_prompt = pytest.mark.xfail(reason="Trace prompt filters not implemented")
-test_search_traces_with_prompts_filter = _xfail_trace_prompt(test_search_traces_with_prompts_filter)
-test_search_traces_with_prompts_filter_multiple_prompts = _xfail_trace_prompt(
-    test_search_traces_with_prompts_filter_multiple_prompts
-)
+# -- C7. Prompt filters — DONE (denormalized prompts map + FilterExpression) --
 
 # -- C8. Combined/misc — mostly DONE, full_text remaining --
 test_search_traces_with_full_text_filter = pytest.mark.xfail(
