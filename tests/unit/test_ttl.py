@@ -150,7 +150,8 @@ class TestExperimentTTL:
         assert "ttl" in item
         assert item["ttl"] > time.time()
 
-    def test_delete_experiment_does_not_set_ttl_on_children(self, tracking_store):
+    def test_delete_experiment_cascades_to_active_runs(self, tracking_store):
+        """Deleting an experiment cascades lifecycle_stage=deleted to active runs."""
         table = tracking_store._table
         exp_id = tracking_store.create_experiment("exp", artifact_location="s3://b")
         run = tracking_store.create_run(exp_id, user_id="u", start_time=1000, tags=[], run_name="r")
@@ -158,7 +159,7 @@ class TestExperimentTTL:
         run_item = table.get_item(
             f"{PK_EXPERIMENT_PREFIX}{exp_id}", f"{SK_RUN_PREFIX}{run.info.run_id}"
         )
-        assert "ttl" not in run_item  # children untouched
+        assert run_item["lifecycle_stage"] == "deleted"
 
     def test_restore_experiment_removes_ttl(self, tracking_store):
         table = tracking_store._table

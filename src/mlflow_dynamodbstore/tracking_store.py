@@ -679,6 +679,23 @@ class DynamoDBTrackingStore(AbstractStore):
             updates=updates,
         )
 
+        # Cascade: soft-delete all active runs in this experiment
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        active_runs = self._table.query(pk=pk, sk_prefix="active#", index_name="lsi1")
+        for item in active_runs:
+            sk = item.get("SK", "")
+            if not sk.startswith(SK_RUN_PREFIX):
+                continue
+            run_id = sk[len(SK_RUN_PREFIX) :].split("#")[0]
+            run_updates: dict[str, Any] = {
+                "lifecycle_stage": "deleted",
+                "deleted_time": now_ms,
+                LSI1_SK: f"deleted#{run_id}",
+            }
+            if ttl_seconds is not None:
+                run_updates["ttl"] = int(time.time()) + ttl_seconds
+            self._table.update_item(pk=pk, sk=sk, updates=run_updates)
+
     def restore_experiment(self, experiment_id: str) -> None:
         """Restore a soft-deleted experiment and remove TTL from META."""
         self._check_experiment_workspace(experiment_id)
@@ -696,6 +713,24 @@ class DynamoDBTrackingStore(AbstractStore):
             },
             removes=["ttl"],
         )
+
+        # Cascade: restore all deleted runs in this experiment
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        deleted_runs = self._table.query(pk=pk, sk_prefix="deleted#", index_name="lsi1")
+        for item in deleted_runs:
+            sk = item.get("SK", "")
+            if not sk.startswith(SK_RUN_PREFIX):
+                continue
+            run_id = sk[len(SK_RUN_PREFIX) :].split("#")[0]
+            self._table.update_item(
+                pk=pk,
+                sk=sk,
+                updates={
+                    "lifecycle_stage": "active",
+                    LSI1_SK: f"active#{run_id}",
+                },
+                removes=["ttl", "deleted_time"],
+            )
 
     def search_experiments(
         self,
@@ -971,8 +1006,17 @@ class DynamoDBTrackingStore(AbstractStore):
 
     def set_experiment_tag(self, experiment_id: str, tag: ExperimentTag) -> None:
         """Set a tag on an experiment."""
-        # Verify experiment exists
-        self.get_experiment(experiment_id)
+        from mlflow.utils.validation import _validate_experiment_tag
+
+        _validate_experiment_tag(tag.key, tag.value)
+        # Verify experiment exists and is active
+        exp = self.get_experiment(experiment_id)
+        if exp.lifecycle_stage != "active":
+            raise MlflowException(
+                f"The experiment {experiment_id} must be in the 'active' state. "
+                f"Current state is {exp.lifecycle_stage}.",
+                INVALID_PARAMETER_VALUE,
+            )
         self._write_experiment_tag(experiment_id, tag)
 
     def _write_experiment_tag(self, experiment_id: str, tag: ExperimentTag) -> None:
@@ -1161,6 +1205,37 @@ class DynamoDBTrackingStore(AbstractStore):
             dataset_items=dataset_items,
             input_tag_items=input_tag_items,
         )
+
+    class _RunRecord:
+        """Lightweight object mimicking SqlRun for compat tests."""
+
+        def __init__(self, item: dict[str, Any]) -> None:
+            self.run_uuid = item.get("run_id", "")
+            self.deleted_time = int(item["deleted_time"]) if "deleted_time" in item else None
+
+    def _get_run(self, _session: Any, run_id: str) -> _RunRecord:
+        """Return a lightweight run record (compat with SqlAlchemy store tests)."""
+        experiment_id = self._resolve_run_experiment(run_id)
+        item = self._table.get_item(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk=f"{SK_RUN_PREFIX}{run_id}",
+        )
+        if item is None:
+            raise MlflowException(
+                f"Run '{run_id}' does not exist.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        return self._RunRecord(item)
+
+    def ManagedSessionMaker(self) -> Any:  # noqa: N802
+        """Compat shim: yields None as session (DynamoDB doesn't use sessions)."""
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _ctx() -> Any:
+            yield None
+
+        return _ctx()
 
     # ------------------------------------------------------------------
     # Logged Model CRUD
@@ -1625,11 +1700,11 @@ class DynamoDBTrackingStore(AbstractStore):
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
-        updates: dict[str, Any] = {
-            "status": run_status,
-            LSI3_SK: f"{run_status}#{run_id}",
-        }
+        updates: dict[str, Any] = {}
         removes: list[str] = []
+        if run_status is not None:
+            updates["status"] = run_status
+            updates[LSI3_SK] = f"{run_status}#{run_id}"
         if run_name:
             updates["run_name"] = run_name
             updates[LSI4_SK] = run_name.lower()
@@ -1684,6 +1759,7 @@ class DynamoDBTrackingStore(AbstractStore):
         # Update run META item
         updates: dict[str, Any] = {
             "lifecycle_stage": "deleted",
+            "deleted_time": get_current_time_millis(),
             LSI1_SK: f"deleted#{run_id}",
         }
         if ttl_value is not None:
@@ -1732,7 +1808,7 @@ class DynamoDBTrackingStore(AbstractStore):
         experiment_id = self._resolve_run_experiment(run_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
 
-        # Update run META: restore lifecycle and remove TTL
+        # Update run META: restore lifecycle, remove TTL and deleted_time
         self._table.update_item(
             pk=pk,
             sk=f"{SK_RUN_PREFIX}{run_id}",
@@ -1740,7 +1816,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 "lifecycle_stage": "active",
                 LSI1_SK: f"active#{run_id}",
             },
-            removes=["ttl"],
+            removes=["ttl", "deleted_time"],
         )
 
         # Remove TTL from all related items
@@ -4475,7 +4551,7 @@ class DynamoDBTrackingStore(AbstractStore):
         scorer_id = self._resolve_scorer_id(experiment_id, name)
         if scorer_id is None:
             raise MlflowException(
-                f"Scorer '{name}' not found in experiment '{experiment_id}'.",
+                f"Scorer with name '{name}' not found for experiment {experiment_id}.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
@@ -4486,7 +4562,8 @@ class DynamoDBTrackingStore(AbstractStore):
             item = self._table.get_item(pk=pk, sk=f"{meta_sk}#V#{padded}")
             if item is None:
                 raise MlflowException(
-                    f"Scorer '{name}' version {version} not found.",
+                    f"Scorer with name '{name}' and version {version} not found for "
+                    f"experiment {experiment_id}.",
                     error_code=RESOURCE_DOES_NOT_EXIST,
                 )
         else:
@@ -4580,13 +4657,14 @@ class DynamoDBTrackingStore(AbstractStore):
                         )
                     )
                 )
+        result.sort(key=lambda sv: sv.scorer_name)
         return result
 
     def list_scorer_versions(self, experiment_id: str, name: str) -> list[ScorerVersion]:
         scorer_id = self._resolve_scorer_id(experiment_id, name)
         if scorer_id is None:
             raise MlflowException(
-                f"Scorer '{name}' not found in experiment '{experiment_id}'.",
+                f"Scorer with name '{name}' not found for experiment {experiment_id}.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
@@ -4617,7 +4695,7 @@ class DynamoDBTrackingStore(AbstractStore):
         scorer_id = self._resolve_scorer_id(experiment_id, name)
         if scorer_id is None:
             raise MlflowException(
-                f"Scorer '{name}' not found in experiment '{experiment_id}'.",
+                f"Scorer with name '{name}' not found for experiment {experiment_id}.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
@@ -4635,7 +4713,8 @@ class DynamoDBTrackingStore(AbstractStore):
             item = self._table.get_item(pk=pk, sk=ver_sk)
             if item is None:
                 raise MlflowException(
-                    f"Scorer '{name}' version {version} not found.",
+                    f"Scorer with name '{name}' and version {version} not found for "
+                    f"experiment {experiment_id}.",
                     error_code=RESOURCE_DOES_NOT_EXIST,
                 )
             self._table.delete_item(pk=pk, sk=ver_sk)
@@ -4694,7 +4773,7 @@ class DynamoDBTrackingStore(AbstractStore):
         scorer_id = self._resolve_scorer_id(experiment_id, scorer_name)
         if scorer_id is None:
             raise MlflowException(
-                f"Scorer '{scorer_name}' not found in experiment '{experiment_id}'.",
+                f"Scorer with name '{scorer_name}' not found for experiment {experiment_id}.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -4866,6 +4945,22 @@ class DynamoDBTrackingStore(AbstractStore):
             if not versions:
                 continue
 
+            # Filter out scorers whose latest version doesn't use a gateway model
+            import json as _json
+
+            from mlflow.genai.scorers.scorer_utils import (
+                extract_model_from_serialized_scorer,
+                is_gateway_model,
+            )
+
+            serialized = versions[0]["serialized_scorer"]
+            try:
+                model = extract_model_from_serialized_scorer(_json.loads(serialized))
+            except Exception:
+                model = None
+            if not is_gateway_model(model):
+                continue
+
             config = OnlineScoringConfig(
                 online_scoring_config_id=item["online_scoring_config_id"],
                 scorer_id=scorer_id,
@@ -4876,7 +4971,7 @@ class DynamoDBTrackingStore(AbstractStore):
             result.append(
                 OnlineScorer(
                     name=meta["scorer_name"],
-                    serialized_scorer=versions[0]["serialized_scorer"],
+                    serialized_scorer=serialized,
                     online_config=config,
                 )
             )
@@ -4890,10 +4985,33 @@ class DynamoDBTrackingStore(AbstractStore):
         trace_ids: list[str] | None = None,
     ) -> int:
         """Delete traces and all their sub-items (tags, metadata, assessments, FTS)."""
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        # Resolve trace_ids from max_timestamp_millis if needed
+        if trace_ids is None and max_timestamp_millis is not None:
+            from boto3.dynamodb.conditions import Attr
+
+            # Query traces with request_time <= max_timestamp_millis via LSI1
+            # LSI1 SK is zero-padded request_time; filter to trace META items only
+            items = self._table.query(
+                pk=pk,
+                index_name="lsi1",
+                sk_lte=f"{max_timestamp_millis:020d}",
+                sk_gte=f"{0:020d}",
+                scan_forward=True,
+                filter_expression=Attr("SK").begins_with(SK_TRACE_PREFIX),
+            )
+            # Only META items (SK = T#<trace_id>, no # after trace_id)
+            trace_metas = [item for item in items if "#" not in item["SK"][len(SK_TRACE_PREFIX) :]]
+            # Sort oldest first and apply max_traces limit
+            trace_metas.sort(key=lambda i: int(i.get("request_time", 0)))
+            if max_traces is not None:
+                trace_metas = trace_metas[:max_traces]
+            trace_ids = [item["SK"][len(SK_TRACE_PREFIX) :] for item in trace_metas]
+
         if not trace_ids:
             return 0
 
-        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         deleted = 0
 
         for trace_id in trace_ids:

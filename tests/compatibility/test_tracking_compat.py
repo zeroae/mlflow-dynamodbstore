@@ -583,14 +583,3 @@ test_search_logged_models_order_by_dataset = pytest.mark.xfail(
 )(test_search_logged_models_order_by_dataset)
 
 # --- Category 17: misc run/experiment/trace/scorer lifecycle bugs (7 tests) ---
-_xfail_misc = pytest.mark.xfail(reason="DynamoDB store misc lifecycle bugs")
-test_update_run_info = _xfail_misc(test_update_run_info)
-test_delete_restore_experiment_with_runs = _xfail_misc(test_delete_restore_experiment_with_runs)
-test_set_experiment_tag = _xfail_misc(test_set_experiment_tag)
-test_delete_traces_with_max_timestamp = _xfail_misc(test_delete_traces_with_max_timestamp)
-test_delete_traces = _xfail_misc(test_delete_traces)
-test_delete_traces_with_max_count = _xfail_misc(test_delete_traces_with_max_count)
-test_scorer_operations = _xfail_misc(test_scorer_operations)
-test_get_active_online_scorers_filters_non_gateway_model = _xfail_misc(
-    test_get_active_online_scorers_filters_non_gateway_model
-)
