@@ -3632,6 +3632,11 @@ class DynamoDBTrackingStore(AbstractStore):
                     status_str = str(status.get("code", status))
                 else:
                     status_str = str(status)
+                # Normalize "StatusCode.OK" / "SpanStatusCode.OK" → "OK"
+                for prefix in ("SpanStatusCode.", "StatusCode."):
+                    if status_str.startswith(prefix):
+                        status_str = status_str[len(prefix) :]
+                        break
 
                 # Collect for META denormalization
                 if span_type:
@@ -4203,6 +4208,12 @@ class DynamoDBTrackingStore(AbstractStore):
             elif pred.op == "!=":
                 if pred.value in values:
                     return False
+            elif pred.op == "IN":
+                if not values & set(pred.value):
+                    return False
+            elif pred.op == "NOT IN":
+                if not values - set(pred.value):
+                    return False
             elif pred.op in ("LIKE", "ILIKE"):
                 pattern = str(pred.value).replace("%", "*").replace("_", "?")
                 if pred.op == "ILIKE":
@@ -4214,8 +4225,8 @@ class DynamoDBTrackingStore(AbstractStore):
                 if not matched:
                     return False
             else:
-                # Unsupported op for set membership
-                return False
+                # Unsupported op for set membership (e.g. RLIKE)
+                continue
 
         return True
 

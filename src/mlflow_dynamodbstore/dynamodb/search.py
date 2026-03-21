@@ -476,6 +476,33 @@ def plan_trace_query(
     )
 
 
+def _compare_set(values: set[Any], op: str, expected: Any) -> bool:
+    """Evaluate a predicate against a set of values (e.g. denormalized span types).
+
+    Returns True if ANY value in the set satisfies the predicate (for =, LIKE, ILIKE),
+    or if the set semantics match (for IN, NOT IN, !=).
+    """
+    if not values:
+        return op == "IS NULL"
+    if op == "=":
+        return expected in values
+    if op == "!=":
+        return any(v != expected for v in values)
+    if op == "IN":
+        return bool(values & set(expected))
+    if op == "NOT IN":
+        return bool(values - set(expected))
+    if op == "LIKE":
+        pattern = str(expected).replace("%", "*").replace("_", "?")
+        return any(fnmatch.fnmatch(str(v), pattern) for v in values)
+    if op == "ILIKE":
+        pattern = str(expected).lower().replace("%", "*").replace("_", "?")
+        return any(fnmatch.fnmatch(str(v).lower(), pattern) for v in values)
+    if op == "IS NOT NULL":
+        return True
+    return False
+
+
 def _compare(actual: Any, op: str, expected: Any) -> bool:
     """Evaluate a single comparison predicate."""
     if actual is None:
@@ -1011,8 +1038,17 @@ def _apply_trace_post_filter(
         return _compare(actual, pred.op, pred.value)
 
     if pred.field_type == "span":
-        # Span predicates are handled by the hybrid search layer in tracking_store.
-        # Skip here so they don't accidentally pass through.
+        # Map span predicate keys to denormalized set attributes on META
+        span_set_map = {
+            "type": "span_types",
+            "status": "span_statuses",
+            "name": "span_names",
+        }
+        set_attr = span_set_map.get(pred.key)
+        if set_attr:
+            values = item.get(set_attr) or set()
+            return _compare_set(values, pred.op, pred.value)
+        # Other span predicates (attributes, content) need SPANS blob — skip for now
         return True
 
     return True  # Unknown type, don't filter

@@ -447,12 +447,8 @@ test_search_traces_with_span_content_filter = _xfail_trace_span(
 test_search_traces_with_span_name_rlike_filters = _xfail_trace_span(
     test_search_traces_with_span_name_rlike_filters
 )
-test_search_traces_with_span_status_filter = _xfail_trace_span(
-    test_search_traces_with_span_status_filter
-)
-test_search_traces_with_span_type_filter = _xfail_trace_span(
-    test_search_traces_with_span_type_filter
-)
+# test_search_traces_with_span_status_filter — DONE (denormalized sets + IN/NOT IN)
+# test_search_traces_with_span_type_filter — DONE (denormalized sets + IN/NOT IN)
 test_search_traces_with_span_type_rlike_filters = _xfail_trace_span(
     test_search_traces_with_span_type_rlike_filters
 )
