@@ -3996,6 +3996,9 @@ class DynamoDBTrackingStore(AbstractStore):
             else:
                 spans = []
 
+            # Sort spans by start_time_ns ascending (JSON blob is unordered)
+            spans.sort(key=lambda s: getattr(s, "start_time_ns", 0) or 0)
+
             results.append(Trace(info=trace_info, data=TraceData(spans=spans)))
 
         return results

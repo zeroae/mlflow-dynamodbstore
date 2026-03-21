@@ -545,11 +545,6 @@ test_log_batch_logged_model = _xfail_logged_model(test_log_batch_logged_model)
 test_log_outputs = _xfail_logged_model(test_log_outputs)
 
 # --- Category 11: batch_get_traces remaining issues ---
-_xfail_batch_spans = pytest.mark.xfail(
-    reason="DynamoDB store batch_get_traces ordering or token usage issues"
-)
-test_batch_get_traces_ordering = _xfail_batch_spans(test_batch_get_traces_ordering)
-
 # --- Category 12: trace tag/artifact path issues (remaining) ---
 _xfail_trace_path = pytest.mark.xfail(
     reason="DynamoDB store trace artifact path or session tracking issues"
