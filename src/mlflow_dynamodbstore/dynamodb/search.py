@@ -223,14 +223,16 @@ def plan_run_query(
     # ------------------------------------------------------------------ #
     # 2. Check for DLINK strategy (dataset filter)                        #
     # ------------------------------------------------------------------ #
-    for pred in predicates:
-        if pred.field_type == "dataset":
-            return QueryPlan(
-                strategy="dlink",
-                index=None,
-                sk_prefix=None,
-                scan_forward=True,
-            )
+    has_dataset = any(p.field_type == "dataset" for p in predicates)
+    if has_dataset:
+        non_dataset_preds = [p for p in predicates if p.field_type != "dataset"]
+        return QueryPlan(
+            strategy="dlink",
+            index=None,
+            sk_prefix=None,
+            scan_forward=True,
+            post_filters=non_dataset_preds,
+        )
 
     # ------------------------------------------------------------------ #
     # 3. Check for FTS strategy (LIKE '%word%' on FTS-indexed fields)     #
@@ -775,17 +777,18 @@ def _execute_dlink(
     """Execute a dataset-link query strategy."""
     from mlflow_dynamodbstore.dynamodb.schema import SK_DLINK_PREFIX
 
-    # Find the dataset predicate to build the SK prefix
-    ds_name = None
-    ds_digest = None
+    # Separate dataset predicates by key
+    ds_preds: dict[str, FilterPredicate] = {}
     for pred in predicates:
         if pred.field_type == "dataset":
-            if pred.key == "name":
-                ds_name = pred.value
-            elif pred.key == "digest":
-                ds_digest = pred.value
+            ds_preds[pred.key] = pred
 
-    # Build SK prefix from available dataset info
+    # Build SK prefix from exact name/digest predicates
+    ds_name_pred = ds_preds.get("name")
+    ds_digest_pred = ds_preds.get("digest")
+    ds_name = ds_name_pred.value if ds_name_pred and ds_name_pred.op == "=" else None
+    ds_digest = ds_digest_pred.value if ds_digest_pred and ds_digest_pred.op == "=" else None
+
     if ds_name and ds_digest:
         sk_prefix = f"{SK_DLINK_PREFIX}{ds_name}#{ds_digest}#"
     elif ds_name:
@@ -793,10 +796,72 @@ def _execute_dlink(
     else:
         sk_prefix = SK_DLINK_PREFIX
 
-    dlink_items = table.query(pk=pk, sk_prefix=sk_prefix, scan_forward=plan.scan_forward)
+    # Build FilterExpression for predicates not covered by SK prefix
+    filter_expr: ConditionBase | None = None
+    remaining_ds_preds: list[FilterPredicate] = []
 
-    # Extract run_ids from DLINK items
-    run_ids = [item.get("run_id", "") for item in dlink_items if item.get("run_id")]
+    for key, pred in ds_preds.items():
+        if key == "name" and pred.op == "=" and ds_name:
+            continue  # Already in SK prefix
+        if key == "digest" and pred.op == "=" and ds_name and ds_digest:
+            continue  # Already in SK prefix
+
+        # Map dataset predicate keys to DLINK item attributes
+        attr_map = {
+            "name": "dataset_name",
+            "digest": "dataset_digest",
+            "context": "context",
+        }
+        item_attr = attr_map.get(key)
+        if item_attr and pred.op == "=":
+            cond: ConditionBase = Attr(item_attr).eq(pred.value)
+            filter_expr = cond if filter_expr is None else filter_expr & cond
+        elif key == "name" and pred.op == "ILIKE" and isinstance(pred.value, str):
+            # Use name_lower for case-insensitive matching
+            pattern = pred.value.lower()
+            if pattern.endswith("%") and not pattern.startswith("%"):
+                cond = Attr("dataset_name_lower").begins_with(pattern.rstrip("%"))
+                filter_expr = cond if filter_expr is None else filter_expr & cond
+            else:
+                remaining_ds_preds.append(pred)
+        elif key == "name" and pred.op in ("LIKE", "!="):
+            remaining_ds_preds.append(pred)
+        elif key == "digest" and pred.op == "=" and not ds_name:
+            cond = Attr("dataset_digest").eq(pred.value)
+            filter_expr = cond if filter_expr is None else filter_expr & cond
+        else:
+            remaining_ds_preds.append(pred)
+
+    dlink_items = table.query(
+        pk=pk,
+        sk_prefix=sk_prefix,
+        scan_forward=plan.scan_forward,
+        filter_expression=filter_expr,
+    )
+
+    # Apply remaining dataset predicates as post-filter on DLINK items
+    if remaining_ds_preds:
+        filtered = []
+        for item in dlink_items:
+            match = True
+            for pred in remaining_ds_preds:
+                attr_map = {
+                    "name": "dataset_name",
+                    "digest": "dataset_digest",
+                    "context": "context",
+                }
+                actual = item.get(attr_map.get(pred.key, pred.key))
+                if not _compare(actual, pred.op, pred.value):
+                    match = False
+                    break
+            if match:
+                filtered.append(item)
+        dlink_items = filtered
+
+    # Extract unique run_ids and fetch META items
+    run_ids = list(
+        dict.fromkeys(item.get("run_id", "") for item in dlink_items if item.get("run_id"))
+    )
     return _fetch_meta_items(table, pk, run_ids)
 
 
