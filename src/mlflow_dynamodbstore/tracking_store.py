@@ -2830,6 +2830,15 @@ class DynamoDBTrackingStore(AbstractStore):
                 ttl=ttl,
             )
 
+        # Write assessments with backfilled trace_id
+        if trace_info.assessments:
+            for assessment in trace_info.assessments:
+                if assessment.trace_id is None:
+                    assessment.trace_id = trace_id
+                self.create_assessment(assessment)
+            # Reload to return persisted state
+            return self.get_trace_info(trace_id)
+
         return trace_info
 
     def get_trace_info(self, trace_id: str) -> TraceInfo:
@@ -3109,27 +3118,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 self._cache.put("trace_exp", trace_id, experiment_id)
 
             span_dicts = [s.to_dict() for s in trace_spans]
-
-            # Merge with existing cached spans (log_spans may be called multiple
-            # times for the same trace — e.g., parent span first, child span second)
             spans_sk = f"{SK_TRACE_PREFIX}{trace_id}#SPANS"
-            existing = self._table.get_item(pk=pk, sk=spans_sk)
-            if existing is not None:
-                existing_dicts = _json.loads(existing["data"])
-                # Deduplicate by span_id
-                existing_by_id = {sd.get("span_id"): sd for sd in existing_dicts}
-                for sd in span_dicts:
-                    existing_by_id[sd.get("span_id")] = sd
-                span_dicts = list(existing_by_id.values())
-
-            spans_item: dict[str, Any] = {
-                "PK": pk,
-                "SK": spans_sk,
-                "data": _json.dumps(span_dicts),
-            }
-            if ttl is not None:
-                spans_item["ttl"] = ttl
-            self._table.put_item(spans_item)
 
             # Write spansLocation tag (indicates spans are stored in tracking store)
             from mlflow.tracing.constant import SpansLocation
@@ -3156,6 +3145,7 @@ class DynamoDBTrackingStore(AbstractStore):
             total_output_cost = 0.0
             total_total_cost = 0.0
             has_cost = False
+            session_id_from_spans: str | None = None
 
             for span in trace_spans:
                 sd = span.to_dict()
@@ -3221,6 +3211,12 @@ class DynamoDBTrackingStore(AbstractStore):
                         pass
                     if model_provider:
                         span_item["model_provider"] = model_provider
+
+                # Extract session.id from span attributes (OTel semantic convention)
+                if session_id_from_spans is None:
+                    span_session = attrs.get("session.id")
+                    if span_session:
+                        session_id_from_spans = span_session
 
                 if ttl is not None:
                     span_item["ttl"] = ttl
@@ -3345,9 +3341,73 @@ class DynamoDBTrackingStore(AbstractStore):
                     rmeta_cost["ttl"] = ttl
                 extra_items.append(rmeta_cost)
 
-            # Write all extra items in batch
+            # Write all extra items in batch (individual span items, metrics, etc.)
             if extra_items:
                 self._table.batch_write(extra_items)
+
+            # Rebuild SPANS blob with optimistic locking (retry on conflict).
+            # Each write increments a version counter; if another thread wrote
+            # between our read and write, the condition fails and we retry.
+            from botocore.exceptions import ClientError
+
+            for _attempt in range(10):
+                existing_blob = self._table.get_item(pk=pk, sk=spans_sk)
+                if existing_blob is not None:
+                    existing_dicts = _json.loads(existing_blob["data"])
+                    merged = {sd.get("span_id"): sd for sd in existing_dicts}
+                    old_version = int(existing_blob.get("version", 0))
+                else:
+                    merged = {}
+                    old_version = 0
+                for sd in span_dicts:
+                    merged[sd.get("span_id")] = sd
+                new_version = old_version + 1
+                spans_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": spans_sk,
+                    "data": _json.dumps(list(merged.values())),
+                    "version": new_version,
+                }
+                if ttl is not None:
+                    spans_item["ttl"] = ttl
+                try:
+                    if old_version == 0:
+                        self._table.put_item(spans_item, condition="attribute_not_exists(version)")
+                    else:
+                        from mlflow_dynamodbstore.dynamodb.table import convert_floats
+
+                        self._table._table.put_item(
+                            Item=convert_floats(spans_item),
+                            ConditionExpression="version = :v",
+                            ExpressionAttributeValues={":v": old_version},
+                        )
+                    break
+                except ClientError as e:
+                    if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                        continue  # Retry on conflict
+                    raise
+
+            # Write session ID from span attributes if not already set
+            if session_id_from_spans:
+                session_rmeta_sk = (
+                    f"{SK_TRACE_PREFIX}{trace_id}#RMETA#{TraceMetadataKey.TRACE_SESSION}"
+                )
+                existing_session = self._table.get_item(pk=pk, sk=session_rmeta_sk)
+                if existing_session is None:
+                    rmeta_item: dict[str, Any] = {
+                        "PK": pk,
+                        "SK": session_rmeta_sk,
+                        "key": TraceMetadataKey.TRACE_SESSION,
+                        "value": session_id_from_spans,
+                    }
+                    if ttl is not None:
+                        rmeta_item["ttl"] = ttl
+                    self._table.put_item(rmeta_item)
+                    # Also upsert session tracker
+                    request_time = int(meta.get("request_time", 0))
+                    self._upsert_session_tracker(
+                        experiment_id, session_id_from_spans, request_time, ttl
+                    )
 
             # --- Denormalize span attributes on META ---
             updates: dict[str, Any] = {}
@@ -3906,6 +3966,12 @@ class DynamoDBTrackingStore(AbstractStore):
         experiment_id = self._resolve_trace_experiment(trace_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         sk = f"{SK_TRACE_PREFIX}{trace_id}#TAG#{key}"
+        existing = self._table.get_item(pk=pk, sk=sk)
+        if existing is None:
+            raise MlflowException(
+                f"No trace tag with key '{key}'",
+                INVALID_PARAMETER_VALUE,
+            )
         self._table.delete_item(pk=pk, sk=sk)
         if self._config.should_denormalize(experiment_id, key):
             self._remove_denormalized_tag(pk, f"{SK_TRACE_PREFIX}{trace_id}", key)
@@ -4060,6 +4126,16 @@ class DynamoDBTrackingStore(AbstractStore):
 
             # Sort spans by start_time_ns ascending (JSON blob is unordered)
             spans.sort(key=lambda s: getattr(s, "start_time_ns", 0) or 0)
+
+            # Skip incomplete traces (expected span count > actual)
+            from mlflow.tracing.constant import TraceSizeStatsKey
+
+            size_stats_str = trace_info.trace_metadata.get(TraceMetadataKey.SIZE_STATS)
+            if size_stats_str:
+                size_stats = _json.loads(size_stats_str)
+                expected = size_stats.get(TraceSizeStatsKey.NUM_SPANS, 0)
+                if expected > len(spans):
+                    continue
 
             results.append(Trace(info=trace_info, data=TraceData(spans=spans)))
 

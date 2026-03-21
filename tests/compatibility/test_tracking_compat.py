@@ -507,21 +507,6 @@ test_log_inputs_with_large_inputs_limit_check = _xfail_dataset(
 )
 
 # --- Category 7: trace persistence remaining issues ---
-_xfail_trace_persist = pytest.mark.xfail(
-    reason="DynamoDB store trace persistence issues (handler, incomplete, tags, sessions)"
-)
-test_batch_get_traces_with_incomplete_trace = _xfail_trace_persist(
-    test_batch_get_traces_with_incomplete_trace
-)
-# Concurrent log_spans race: multiple threads writing spansLocation tag can lose writes
-test_concurrent_log_spans_spans_location_tag = _xfail_trace_persist(
-    test_concurrent_log_spans_spans_location_tag
-)
-test_log_spans_session_id_handling = _xfail_trace_persist(test_log_spans_session_id_handling)
-test_set_and_delete_tags = _xfail_trace_persist(test_set_and_delete_tags)
-test_start_trace_with_assessments_missing_trace_id = _xfail_trace_persist(
-    test_start_trace_with_assessments_missing_trace_id
-)
 
 # --- Category 8: search experiments filtering/ordering/pagination broken (9 tests) ---
 _xfail_search_exp = pytest.mark.xfail(
