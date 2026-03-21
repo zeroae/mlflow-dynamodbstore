@@ -381,18 +381,11 @@ test_order_by_metric_tag_param = _xfail_search_runs_order(test_order_by_metric_t
 
 # --- A6. Search runs: pagination — DONE (overflow cache) ---
 
-# --- A7. Search runs: dataset inputs via search_runs (3 tests) ---
-# Root cause: search_runs ordering affects dataset input assertion order;
-# also DynamoDB 400KB item size limit on large inputs.
-_xfail_search_runs_inputs = pytest.mark.xfail(
-    reason="search_runs: dataset input ordering and DynamoDB item size limits"
-)
-test_log_input_multiple_times_does_not_overwrite_tags_or_dataset = _xfail_search_runs_inputs(
-    test_log_input_multiple_times_does_not_overwrite_tags_or_dataset
-)
-test_log_inputs_with_large_inputs_limit_check = _xfail_search_runs_inputs(
-    test_log_inputs_with_large_inputs_limit_check
-)
+# --- A7. Search runs: dataset inputs — idempotent DONE, large inputs permanent ---
+# test_log_input_multiple_times_does_not_overwrite_tags_or_dataset — DONE (idempotent check)
+test_log_inputs_with_large_inputs_limit_check = pytest.mark.xfail(
+    reason="DynamoDB 400KB item size limit vs MLflow's 1MB schema / 16MB profile limits"
+)(test_log_inputs_with_large_inputs_limit_check)
 
 # --- B. Metric history schema (2 tests) ---
 # --- B. Metric history — DONE ---

@@ -2995,6 +2995,17 @@ class DynamoDBTrackingStore(AbstractStore):
 
         experiment_id = self._resolve_run_experiment(run_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+        # Query existing INPUT items for this run to detect already-linked datasets.
+        # log_inputs must be idempotent: re-logging the same (name, digest) is a no-op.
+        run_prefix = f"{SK_RUN_PREFIX}{run_id}"
+        existing_inputs = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_INPUT_PREFIX}")
+        already_linked: set[tuple[str, str]] = {
+            (inp["dataset_name"], inp["dataset_digest"])
+            for inp in existing_inputs
+            if SK_INPUT_TAG_SUFFIX not in inp["SK"]
+        }
+
         items: list[dict[str, Any]] = []
 
         # Deduplicate datasets by (name, digest) to avoid duplicate keys in batch_write
@@ -3002,7 +3013,7 @@ class DynamoDBTrackingStore(AbstractStore):
         for dataset_input in datasets:
             ds = dataset_input.dataset
             ds_key = (ds.name, ds.digest)
-            if ds_key in seen_datasets:
+            if ds_key in seen_datasets or ds_key in already_linked:
                 continue
             seen_datasets.add(ds_key)
             ds_uuid = generate_ulid()
@@ -3061,7 +3072,8 @@ class DynamoDBTrackingStore(AbstractStore):
                 dlink_item["context"] = context
             items.append(dlink_item)
 
-        self._table.batch_write(items)
+        if items:
+            self._table.batch_write(items)
 
     def _search_datasets(self, experiment_ids: list[str]) -> list[_DatasetSummary]:
         """Search for legacy V2 datasets (D# and DLINK# items) under experiment partitions.
