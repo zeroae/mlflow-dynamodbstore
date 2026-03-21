@@ -2095,7 +2095,7 @@ class DynamoDBTrackingStore(AbstractStore):
         inner_token = token_data.get("inner_token") if token_data else None
 
         runs: list[Run] = []
-        remaining = max_results
+        remaining = max_results if max_results is not None else 10_000
         next_page_token: str | None = None
 
         for i, exp_id in enumerate(experiment_ids[exp_idx:], start=exp_idx):
