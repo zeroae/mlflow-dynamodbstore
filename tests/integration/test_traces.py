@@ -437,7 +437,7 @@ class TestSessionTracker:
                 request_time=1000,
                 trace_metadata={
                     TraceTagKey.TRACE_NAME: "my-trace",
-                    "mlflow.traceSession": "session-int-1",
+                    TraceMetadataKey.TRACE_SESSION: "session-int-1",
                 },
             )
         )
@@ -457,7 +457,7 @@ class TestSessionTracker:
                     request_time=ts,
                     trace_metadata={
                         TraceTagKey.TRACE_NAME: "my-trace",
-                        "mlflow.traceSession": "sess-find-1",
+                        TraceMetadataKey.TRACE_SESSION: "sess-find-1",
                     },
                 )
             )
