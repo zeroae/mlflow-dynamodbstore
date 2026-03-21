@@ -2731,11 +2731,11 @@ class DynamoDBTrackingStore(AbstractStore):
                     }
                 )
 
-            # History item (unique per key+step+timestamp)
+            # History item (unique per key+step+timestamp+value)
             padded = pad_step(metric.step)
             hist_sk = (
                 f"{SK_RUN_PREFIX}{run_id}{SK_METRIC_HISTORY_PREFIX}"
-                f"{metric.key}#{padded}#{metric.timestamp}"
+                f"{metric.key}#{padded}#{metric.timestamp}#{ddb_value}"
             )
             hist_item: dict[str, Any] = {
                 "PK": pk,
