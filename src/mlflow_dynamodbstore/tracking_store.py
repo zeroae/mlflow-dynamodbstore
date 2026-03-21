@@ -1206,37 +1206,6 @@ class DynamoDBTrackingStore(AbstractStore):
             input_tag_items=input_tag_items,
         )
 
-    class _RunRecord:
-        """Lightweight object mimicking SqlRun for compat tests."""
-
-        def __init__(self, item: dict[str, Any]) -> None:
-            self.run_uuid = item.get("run_id", "")
-            self.deleted_time = int(item["deleted_time"]) if "deleted_time" in item else None
-
-    def _get_run(self, _session: Any, run_id: str) -> _RunRecord:
-        """Return a lightweight run record (compat with SqlAlchemy store tests)."""
-        experiment_id = self._resolve_run_experiment(run_id)
-        item = self._table.get_item(
-            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
-            sk=f"{SK_RUN_PREFIX}{run_id}",
-        )
-        if item is None:
-            raise MlflowException(
-                f"Run '{run_id}' does not exist.",
-                error_code=RESOURCE_DOES_NOT_EXIST,
-            )
-        return self._RunRecord(item)
-
-    def ManagedSessionMaker(self) -> Any:  # noqa: N802
-        """Compat shim: yields None as session (DynamoDB doesn't use sessions)."""
-        from contextlib import contextmanager
-
-        @contextmanager
-        def _ctx() -> Any:
-            yield None
-
-        return _ctx()
-
     # ------------------------------------------------------------------
     # Logged Model CRUD
     # ------------------------------------------------------------------
