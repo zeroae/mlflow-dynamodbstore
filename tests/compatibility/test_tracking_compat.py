@@ -429,37 +429,15 @@ test_search_traces_with_metadata_rlike_filters = _xfail_trace_rlike(
 # -- C4. Span attribute/type/status/content filters (8 tests) --
 # Root cause: span predicates pass through _apply_trace_post_filter (return True).
 # Need to query SPANS blob and match span properties.
-_xfail_trace_span = pytest.mark.xfail(
-    reason="Trace span filters not implemented (need SPANS blob querying)"
-)
-test_search_traces_with_span_attributes_filter = _xfail_trace_span(
-    test_search_traces_with_span_attributes_filter
-)
-test_search_traces_with_span_attributes_rlike_filters = _xfail_trace_span(
+# -- C4. Span filters — DONE for non-RLIKE, RLIKE remaining --
+test_search_traces_with_span_attributes_rlike_filters = _xfail_trace_rlike(
     test_search_traces_with_span_attributes_rlike_filters
 )
-test_search_traces_with_span_attributute_backticks = _xfail_trace_span(
-    test_search_traces_with_span_attributute_backticks
-)
-test_search_traces_with_span_content_filter = _xfail_trace_span(
-    test_search_traces_with_span_content_filter
-)
-test_search_traces_with_span_name_rlike_filters = _xfail_trace_span(
+test_search_traces_with_span_name_rlike_filters = _xfail_trace_rlike(
     test_search_traces_with_span_name_rlike_filters
 )
-# test_search_traces_with_span_status_filter — DONE (denormalized sets + IN/NOT IN)
-# test_search_traces_with_span_type_filter — DONE (denormalized sets + IN/NOT IN)
-test_search_traces_with_span_type_rlike_filters = _xfail_trace_span(
+test_search_traces_with_span_type_rlike_filters = _xfail_trace_rlike(
     test_search_traces_with_span_type_rlike_filters
-)
-test_search_traces_combined_span_filters_match_same_span = _xfail_trace_span(
-    test_search_traces_combined_span_filters_match_same_span
-)
-test_search_traces_with_combined_span_filters = _xfail_trace_span(
-    test_search_traces_with_combined_span_filters
-)
-test_search_traces_span_filters_with_no_results = _xfail_trace_span(
-    test_search_traces_span_filters_with_no_results
 )
 
 # -- C5. Assessment/feedback/expectation filters --
@@ -476,9 +454,7 @@ test_search_traces_with_client_request_id_rlike_filters = _xfail_trace_rlike(
 # -- C7. Prompt filters — DONE (denormalized prompts map + FilterExpression) --
 
 # -- C8. Combined/misc — mostly DONE, full_text remaining --
-test_search_traces_with_full_text_filter = pytest.mark.xfail(
-    reason="Full text search for traces needs FTS indexing of trace fields"
-)(test_search_traces_with_full_text_filter)
+# test_search_traces_with_full_text_filter — DONE (span content filter)
 
 # -- C9. Sessions (depends on trace filter engine) --
 test_find_completed_sessions_with_filter_string = pytest.mark.xfail(
