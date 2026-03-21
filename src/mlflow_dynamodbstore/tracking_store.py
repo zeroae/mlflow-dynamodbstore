@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -75,6 +76,7 @@ from mlflow.utils.mlflow_tags import (
     MLFLOW_EXPERIMENT_IS_GATEWAY,
     MLFLOW_EXPERIMENT_SOURCE_ID,
     MLFLOW_EXPERIMENT_SOURCE_TYPE,
+    MLFLOW_USER,
 )
 from mlflow.utils.proto_json_utils import milliseconds_to_proto_timestamp
 from mlflow.utils.time import get_current_time_millis
@@ -174,6 +176,8 @@ from mlflow_dynamodbstore.dynamodb.schema import (
 from mlflow_dynamodbstore.dynamodb.table import DynamoDBTable
 from mlflow_dynamodbstore.dynamodb.uri import parse_dynamodb_uri
 from mlflow_dynamodbstore.ids import generate_ulid, ulid_from_timestamp
+
+_logger = logging.getLogger(__name__)
 
 
 def _rev(s: str) -> str:
@@ -367,6 +371,22 @@ def _item_to_logged_model(
         tags=tag_dict,
         params=param_dict,
         metrics=metric_list,
+    )
+
+
+def _meta_to_dataset(dataset_id: str, meta: dict[str, Any]) -> EvaluationDataset:
+    """Convert a DynamoDB dataset META item to an EvaluationDataset entity."""
+    return EvaluationDataset(
+        dataset_id=dataset_id,
+        name=meta["name"],
+        digest=meta["digest"],
+        created_time=int(meta["created_time"]),
+        last_update_time=int(meta["last_update_time"]),
+        tags=meta.get("tags") or {},
+        profile=meta.get("profile"),
+        schema=meta.get("schema"),
+        created_by=meta.get("created_by") or None,
+        last_updated_by=meta.get("last_updated_by") or None,
     )
 
 
@@ -2009,32 +2029,36 @@ class DynamoDBTrackingStore(AbstractStore):
                     metric_items = self._table.query(
                         pk=pk, sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}"
                     )
-                    # Fetch dataset inputs for the run
-                    input_items = self._table.query(
+                    # Fetch dataset inputs for the run (INPUT links + ITAG children)
+                    all_input_items = self._table.query(
                         pk=pk, sk_prefix=f"{run_prefix}{SK_INPUT_PREFIX}"
                     )
+                    # Separate INPUT link items from ITAG items
+                    input_items: list[dict[str, Any]] = []
+                    input_tag_items: list[dict[str, Any]] = []
+                    for it in all_input_items:
+                        if SK_INPUT_TAG_SUFFIX in it["SK"]:
+                            input_tag_items.append(it)
+                        else:
+                            input_items.append(it)
                     # Fetch dataset definitions (D# items in experiment partition)
                     dataset_items = (
                         self._table.query(pk=pk, sk_prefix=SK_DATASET_PREFIX) if input_items else []
                     )
-                    # Fetch input tags
-                    input_tag_items: list[dict[str, Any]] = []
-                    if input_items:
-                        for inp in input_items:
-                            inp_sk = inp["SK"]
-                            itags = self._table.query(
-                                pk=pk, sk_prefix=f"{inp_sk}{SK_INPUT_TAG_SUFFIX}"
-                            )
-                            input_tag_items.extend(itags)
+                    # Fetch output items
+                    output_items = self._table.query(
+                        pk=pk, sk_prefix=f"{run_prefix}{SK_OUTPUT_PREFIX}"
+                    )
                     runs.append(
                         _item_to_run(
                             item,
                             tag_items,
                             param_items,
                             metric_items,
-                            input_items,
-                            dataset_items,
-                            input_tag_items,
+                            input_items=input_items,
+                            dataset_items=dataset_items,
+                            input_tag_items=input_tag_items,
+                            output_items=output_items,
                         )
                     )
                     remaining -= 1
@@ -2687,63 +2711,50 @@ class DynamoDBTrackingStore(AbstractStore):
         # Filter experiment_ids to current workspace
         experiment_ids = [eid for eid in experiment_ids if self._experiment_in_workspace(eid)]
 
-        dataset_map: dict[tuple[str, str], dict[str, Any]] = {}
+        # Collect unique (experiment_id, name, digest, context) summaries
+        summaries: set[tuple[str, str, str, str | None]] = set()
+        datasets: dict[tuple[str, str], dict[str, Any]] = {}
 
         for experiment_id in experiment_ids:
             pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
 
-            # Query D# items (dataset items)
-            d_items = self._table.query(
-                pk=pk,
-                sk_prefix=SK_DATASET_PREFIX,
-            )
+            # Query D# items (dataset definitions)
+            d_items = self._table.query(pk=pk, sk_prefix=SK_DATASET_PREFIX)
             for item in d_items:
-                # SK format: D#<name>#<digest>
                 sk = item.get("SK", "")
                 if sk.startswith(SK_DATASET_PREFIX):
                     parts = sk[len(SK_DATASET_PREFIX) :].split("#", 1)
                     if len(parts) == 2:
                         name, digest = parts
-                        key = (name, digest)
-                        if key not in dataset_map:
-                            dataset_map[key] = {
-                                "experiment_id": experiment_id,
-                                "name": item.get("name", name),
-                                "digest": item.get("digest", digest),
-                                "context": None,
-                            }
+                        datasets[(name, digest)] = {
+                            "experiment_id": experiment_id,
+                            "name": item.get("name", name),
+                            "digest": item.get("digest", digest),
+                        }
 
-            # Query DLINK# items (dataset-run link items) for context
-            dlink_items = self._table.query(
-                pk=pk,
-                sk_prefix=SK_DLINK_PREFIX,
-            )
+            # Query DLINK# items for context — each unique context creates a summary
+            dlink_items = self._table.query(pk=pk, sk_prefix=SK_DLINK_PREFIX)
+            linked_datasets: set[tuple[str, str]] = set()
             for item in dlink_items:
-                # Extract context if present (mlflow.data.context tag from log_inputs)
-                if "context" in item:
-                    # SK format: DLINK#<name>#<digest>#R#<run_id>
-                    sk = item.get("SK", "")
-                    if sk.startswith(SK_DLINK_PREFIX):
-                        parts = sk[len(SK_DLINK_PREFIX) :].split("#", 2)
-                        if len(parts) >= 2:
-                            name, digest = parts[0], parts[1]
-                            key = (name, digest)
-                            if key in dataset_map:
-                                dataset_map[key]["context"] = item["context"]
+                sk = item.get("SK", "")
+                if sk.startswith(SK_DLINK_PREFIX):
+                    parts = sk[len(SK_DLINK_PREFIX) :].split("#", 2)
+                    if len(parts) >= 2:
+                        name, digest = parts[0], parts[1]
+                        context = item.get("context")
+                        linked_datasets.add((name, digest))
+                        summaries.add((experiment_id, name, digest, context))
 
-        # Build _DatasetSummary entity objects (handler calls .to_proto() on these)
-        results: list[_DatasetSummary] = []
-        for (name, digest), data in dataset_map.items():
-            results.append(
-                _DatasetSummary(
-                    experiment_id=data["experiment_id"],
-                    name=data["name"],
-                    digest=data["digest"],
-                    context=data["context"],
-                )
-            )
+            # Add datasets without any DLINK (no context)
+            for (name, digest), data in datasets.items():
+                if data["experiment_id"] == experiment_id and (name, digest) not in linked_datasets:
+                    summaries.add((experiment_id, name, digest, None))
 
-        return results
+        results: list[_DatasetSummary] = [
+            _DatasetSummary(experiment_id=eid, name=n, digest=d, context=c)
+            for eid, n, d, c in summaries
+        ]
+        return results[:1000]
 
     # ------------------------------------------------------------------
     # Trace CRUD
@@ -5218,6 +5229,41 @@ class DynamoDBTrackingStore(AbstractStore):
     # Evaluation Dataset CRUD
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _infer_json_type(value: Any) -> str:
+        """Infer the JSON type string for a Python value."""
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, int):
+            return "integer"
+        if isinstance(value, float | Decimal):
+            return "float"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, list):
+            return "array"
+        if isinstance(value, dict):
+            return "object"
+        return "string"
+
+    @staticmethod
+    def _compute_dataset_schema(records: list[dict[str, Any]]) -> dict[str, Any]:
+        """Compute schema from record data by inferring types from all records."""
+        from mlflow_dynamodbstore.dynamodb.table import convert_decimals
+
+        schema: dict[str, dict[str, str]] = {}
+        for record in records:
+            for section in ("inputs", "expectations"):
+                data = convert_decimals(record.get(section))
+                if not isinstance(data, dict):
+                    continue
+                if section not in schema:
+                    schema[section] = {}
+                for key, value in data.items():
+                    if key not in schema[section]:
+                        schema[section][key] = DynamoDBTrackingStore._infer_json_type(value)
+        return schema
+
     def _compute_dataset_digest(self, name: str, last_update_time: int) -> str:
         """Compute a short digest for a dataset from its name and last_update_time."""
         return hashlib.sha256(f"{name}:{last_update_time}".encode()).hexdigest()[:8]
@@ -5246,6 +5292,9 @@ class DynamoDBTrackingStore(AbstractStore):
         digest = self._compute_dataset_digest(name, now_ms)
         pk = f"{PK_DATASET_PREFIX}{dataset_id}"
 
+        # Extract user from mlflow.user tag
+        created_by = (tags or {}).get(MLFLOW_USER)
+
         # Write META item
         meta_item: dict[str, Any] = {
             "PK": pk,
@@ -5256,6 +5305,8 @@ class DynamoDBTrackingStore(AbstractStore):
             "last_update_time": now_ms,
             "workspace": self._workspace,
             "tags": tags or {},
+            "created_by": created_by or "",
+            "last_updated_by": created_by or "",
             # LSI projections
             LSI1_SK: f"{now_ms:020d}",
             LSI2_SK: now_ms,
@@ -5299,6 +5350,8 @@ class DynamoDBTrackingStore(AbstractStore):
             created_time=now_ms,
             last_update_time=now_ms,
             tags=tags or {},
+            created_by=created_by,
+            last_updated_by=created_by,
         )
 
     def get_dataset(self, dataset_id: str) -> EvaluationDataset:
@@ -5307,7 +5360,7 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
         if meta is None:
             raise MlflowException(
-                f"Dataset '{dataset_id}' does not exist.",
+                f"Evaluation dataset with id '{dataset_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
@@ -5315,10 +5368,7 @@ class DynamoDBTrackingStore(AbstractStore):
         tag_items = self._table.query(pk=pk, sk_prefix=SK_DATASET_TAG_PREFIX)
         tags = {item["key"]: item["value"] for item in tag_items}
 
-        # Load experiment IDs
-        experiment_ids = self.get_dataset_experiment_ids(dataset_id)
-
-        ds = EvaluationDataset(
+        return EvaluationDataset(
             dataset_id=dataset_id,
             name=meta["name"],
             digest=meta["digest"],
@@ -5326,9 +5376,10 @@ class DynamoDBTrackingStore(AbstractStore):
             last_update_time=int(meta["last_update_time"]),
             tags=tags,
             profile=meta.get("profile"),
+            schema=meta.get("schema"),
+            created_by=meta.get("created_by") or None,
+            last_updated_by=meta.get("last_updated_by") or None,
         )
-        ds.experiment_ids = experiment_ids
-        return ds
 
     def delete_dataset(self, dataset_id: str) -> None:
         """Delete an evaluation dataset and all its sub-items."""
@@ -5366,7 +5417,6 @@ class DynamoDBTrackingStore(AbstractStore):
         Returns:
             A PagedList of EvaluationDataset objects.
         """
-        import re
 
         from mlflow_dynamodbstore.dynamodb.pagination import (
             decode_page_token,
@@ -5397,16 +5447,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
                 if meta is None:
                     continue
-                all_datasets.append(
-                    EvaluationDataset(
-                        dataset_id=did,
-                        name=meta["name"],
-                        digest=meta["digest"],
-                        created_time=int(meta["created_time"]),
-                        last_update_time=int(meta["last_update_time"]),
-                        tags=meta.get("tags") or {},
-                    )
-                )
+                all_datasets.append(_meta_to_dataset(did, meta))
         else:
             # AP4: query GSI2 for all datasets in workspace
             gsi2_pk = f"{GSI2_DS_LIST_PREFIX}{self._workspace}"
@@ -5418,36 +5459,11 @@ class DynamoDBTrackingStore(AbstractStore):
                 meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
                 if meta is None:
                     continue
-                all_datasets.append(
-                    EvaluationDataset(
-                        dataset_id=did,
-                        name=meta["name"],
-                        digest=meta["digest"],
-                        created_time=int(meta["created_time"]),
-                        last_update_time=int(meta["last_update_time"]),
-                        tags=meta.get("tags") or {},
-                    )
-                )
+                all_datasets.append(_meta_to_dataset(did, meta))
 
         # --- Apply filter_string in-memory ---
         if filter_string:
-            # Support: name LIKE 'pattern%' or name LIKE '%pattern%'
-            like_match = re.match(
-                r"""name\s+LIKE\s+['"](.+)['"]\s*$""", filter_string.strip(), re.IGNORECASE
-            )
-            if like_match:
-                pattern = like_match.group(1)
-                if pattern.startswith("%") and pattern.endswith("%"):
-                    substring = pattern.strip("%")
-                    all_datasets = [d for d in all_datasets if substring in d.name]
-                elif pattern.endswith("%"):
-                    prefix = pattern.rstrip("%")
-                    all_datasets = [d for d in all_datasets if d.name.startswith(prefix)]
-                elif pattern.startswith("%"):
-                    suffix = pattern.lstrip("%")
-                    all_datasets = [d for d in all_datasets if d.name.endswith(suffix)]
-                else:
-                    all_datasets = [d for d in all_datasets if d.name == pattern]
+            all_datasets = self._apply_dataset_filters(all_datasets, filter_string)
 
         # --- Apply order_by in-memory ---
         if order_by:
@@ -5471,10 +5487,106 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return PagedList(page, next_token)
 
+    @staticmethod
+    def _apply_dataset_filters(
+        datasets: list[EvaluationDataset], filter_string: str
+    ) -> list[EvaluationDataset]:
+        """Apply an in-memory filter to a list of EvaluationDataset objects.
+
+        Supports: name LIKE, name =, created_by =, tags.key =/!=,
+        created_time >/</>=/<=/=, AND combinations.
+        """
+        import re
+
+        # Split on AND (case-insensitive)
+        clauses = re.split(r"\s+AND\s+", filter_string.strip(), flags=re.IGNORECASE)
+
+        for clause in clauses:
+            clause = clause.strip()
+
+            # name LIKE 'pattern'
+            m = re.match(r"""name\s+LIKE\s+['"](.+)['"]\s*$""", clause, re.IGNORECASE)
+            if m:
+                pattern = m.group(1)
+                if pattern.startswith("%") and pattern.endswith("%"):
+                    sub = pattern.strip("%")
+                    datasets = [d for d in datasets if sub in d.name]
+                elif pattern.endswith("%"):
+                    pfx = pattern.rstrip("%")
+                    datasets = [d for d in datasets if d.name.startswith(pfx)]
+                elif pattern.startswith("%"):
+                    sfx = pattern.lstrip("%")
+                    datasets = [d for d in datasets if d.name.endswith(sfx)]
+                else:
+                    datasets = [d for d in datasets if d.name == pattern]
+                continue
+
+            # name = 'value'
+            m = re.match(r"""name\s*=\s*['"](.+)['"]\s*$""", clause, re.IGNORECASE)
+            if m:
+                val = m.group(1)
+                datasets = [d for d in datasets if d.name == val]
+                continue
+
+            # created_by = 'value'
+            m = re.match(r"""created_by\s*=\s*['"](.+)['"]\s*$""", clause, re.IGNORECASE)
+            if m:
+                val = m.group(1)
+                datasets = [d for d in datasets if d.created_by == val]
+                continue
+
+            # last_updated_by = 'value'
+            m = re.match(r"""last_updated_by\s*=\s*['"](.+)['"]\s*$""", clause, re.IGNORECASE)
+            if m:
+                val = m.group(1)
+                datasets = [d for d in datasets if d.last_updated_by == val]
+                continue
+
+            # tags.key = 'value' or tags.key != 'value'
+            m = re.match(r"""tags\.(\S+)\s*(!=|=)\s*['"](.+)['"]\s*$""", clause, re.IGNORECASE)
+            if m:
+                tag_key, op, tag_val = m.group(1), m.group(2), m.group(3)
+                if op == "=":
+                    datasets = [d for d in datasets if (d.tags or {}).get(tag_key) == tag_val]
+                else:
+                    datasets = [d for d in datasets if (d.tags or {}).get(tag_key) != tag_val]
+                continue
+
+            # created_time >/</>=/<=/= N
+            m = re.match(r"""created_time\s*(>=|<=|>|<|=)\s*(\d+)\s*$""", clause, re.IGNORECASE)
+            if m:
+                op, val = m.group(1), int(m.group(2))
+                if op == ">":
+                    datasets = [d for d in datasets if d.created_time > val]
+                elif op == ">=":
+                    datasets = [d for d in datasets if d.created_time >= val]
+                elif op == "<":
+                    datasets = [d for d in datasets if d.created_time < val]
+                elif op == "<=":
+                    datasets = [d for d in datasets if d.created_time <= val]
+                elif op == "=":
+                    datasets = [d for d in datasets if d.created_time == val]
+                continue
+
+            # Unrecognized filter clause
+            attr = clause.split()[0] if clause.split() else clause
+            raise MlflowException(
+                f"Invalid attribute key '{attr}' specified.",
+                INVALID_PARAMETER_VALUE,
+            )
+
+        return datasets
+
     def set_dataset_tags(self, dataset_id: str, tags: dict[str, str]) -> None:
-        """Set (upsert) one or more tags on an evaluation dataset."""
+        """Set (upsert) one or more tags on an evaluation dataset.
+
+        Tags with None value are ignored (not written, not deleted).
+        Tag updates do NOT change last_update_time or last_updated_by.
+        """
         pk = f"{PK_DATASET_PREFIX}{dataset_id}"
         for key, value in tags.items():
+            if value is None:
+                continue
             # Write individual tag item (overwrite = upsert)
             self._table.put_item(
                 {
@@ -5486,17 +5598,6 @@ class DynamoDBTrackingStore(AbstractStore):
             )
             # Update denormalized tags map on META item
             self._denormalize_tag(pk=pk, sk=SK_DATASET_META, tag_key=key, tag_value=value)
-
-        # Update last_update_time and digest
-        now_ms = int(time.time() * 1000)
-        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
-        if meta is not None:
-            digest = self._compute_dataset_digest(meta["name"], now_ms)
-            self._table.update_item(
-                pk=pk,
-                sk=SK_DATASET_META,
-                updates={"last_update_time": now_ms, "digest": digest},
-            )
 
     def delete_dataset_tag(self, dataset_id: str, key: str) -> None:
         """Delete a single tag from an evaluation dataset."""
@@ -5521,6 +5622,15 @@ class DynamoDBTrackingStore(AbstractStore):
     ) -> EvaluationDataset:
         """Associate an evaluation dataset with one or more experiments."""
         pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is None:
+            raise MlflowException(
+                f"Dataset '{dataset_id}' not found.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+        # Validate experiments exist
+        for exp_id in experiment_ids:
+            self.get_experiment(exp_id)  # raises if not found
         for exp_id in experiment_ids:
             # put_item overwrites = idempotent
             self._table.put_item(
@@ -5531,16 +5641,6 @@ class DynamoDBTrackingStore(AbstractStore):
                     GSI1_SK: dataset_id,
                 }
             )
-        # Update last_update_time and digest
-        now_ms = int(time.time() * 1000)
-        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
-        if meta is not None:
-            digest = self._compute_dataset_digest(meta["name"], now_ms)
-            self._table.update_item(
-                pk=pk,
-                sk=SK_DATASET_META,
-                updates={"last_update_time": now_ms, "digest": digest},
-            )
         return self.get_dataset(dataset_id)
 
     def remove_dataset_from_experiments(
@@ -5548,18 +5648,23 @@ class DynamoDBTrackingStore(AbstractStore):
     ) -> EvaluationDataset:
         """Remove an evaluation dataset's association from one or more experiments."""
         pk = f"{PK_DATASET_PREFIX}{dataset_id}"
-        for exp_id in experiment_ids:
-            self._table.delete_item(pk=pk, sk=f"{SK_DATASET_EXP_PREFIX}{exp_id}")
-        # Update last_update_time and digest
-        now_ms = int(time.time() * 1000)
         meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
-        if meta is not None:
-            digest = self._compute_dataset_digest(meta["name"], now_ms)
-            self._table.update_item(
-                pk=pk,
-                sk=SK_DATASET_META,
-                updates={"last_update_time": now_ms, "digest": digest},
+        if meta is None:
+            raise MlflowException(
+                f"Dataset '{dataset_id}' not found.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
             )
+        for exp_id in experiment_ids:
+            sk = f"{SK_DATASET_EXP_PREFIX}{exp_id}"
+            existing = self._table.get_item(pk=pk, sk=sk)
+            if existing is None:
+                _logger.warning(
+                    "Dataset '%s' was not associated with experiment '%s'.",
+                    dataset_id,
+                    exp_id,
+                )
+                continue
+            self._table.delete_item(pk=pk, sk=sk)
         return self.get_dataset(dataset_id)
 
     # ------------------------------------------------------------------
@@ -5594,24 +5699,27 @@ class DynamoDBTrackingStore(AbstractStore):
         meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
         if meta is None:
             raise MlflowException(
-                f"Dataset '{dataset_id}' does not exist.",
+                f"Evaluation dataset with id '{dataset_id}' not found.",
                 error_code=RESOURCE_DOES_NOT_EXIST,
             )
 
         inserted = 0
         updated = 0
 
-        for record in records:
-            inputs = record.get("inputs", {})
-            outputs = record.get("outputs")
-            expectations = record.get("expectations")
-            record_tags = record.get("tags")
-            source = record.get("source")
+        from mlflow_dynamodbstore.dynamodb.table import convert_floats
 
-            # Compute input_hash
+        for record in records:
+            raw_inputs = record.get("inputs", {})
+            # Compute input_hash before float→Decimal conversion
             input_hash = hashlib.sha256(
-                _json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
+                _json.dumps(raw_inputs, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()[:8]
+
+            inputs = convert_floats(raw_inputs)
+            outputs = convert_floats(record.get("outputs"))
+            expectations = convert_floats(record.get("expectations"))
+            record_tags = convert_floats(record.get("tags"))
+            source = record.get("source")
 
             # Dedup: query LSI3 for existing record with same input_hash
             existing_items, _ = self._table.query_page(
@@ -5624,7 +5732,7 @@ class DynamoDBTrackingStore(AbstractStore):
             now_ms = int(time.time() * 1000)
 
             if existing_items:
-                # Update the first matching record
+                # Update the first matching record (merge expectations and tags)
                 existing = existing_items[0]
                 updates: dict[str, Any] = {
                     "last_update_time": now_ms,
@@ -5633,11 +5741,14 @@ class DynamoDBTrackingStore(AbstractStore):
                 if outputs is not None:
                     updates["outputs"] = outputs
                 if expectations is not None:
-                    updates["expectations"] = expectations
+                    merged_exp = dict(existing.get("expectations") or {})
+                    merged_exp.update(expectations)
+                    updates["expectations"] = merged_exp
                 if record_tags is not None:
-                    updates["tags"] = record_tags
-                if source is not None:
-                    updates["source"] = source
+                    merged_tags = dict(existing.get("tags") or {})
+                    merged_tags.update(record_tags)
+                    updates["tags"] = merged_tags
+                # Preserve source from first write
                 self._table.update_item(
                     pk=existing["PK"],
                     sk=existing["SK"],
@@ -5680,18 +5791,25 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         num_records = len(all_records)
 
+        # Compute schema from all records
+        schema = self._compute_dataset_schema(all_records)
+
         now_ms = int(time.time() * 1000)
         digest = self._compute_dataset_digest(meta["name"], now_ms)
-        self._table.update_item(
-            pk=pk,
-            sk=SK_DATASET_META,
-            updates={
-                "profile": _json.dumps({"num_records": num_records}),
-                "last_update_time": now_ms,
-                "digest": digest,
-                LSI2_SK: now_ms,
-            },
-        )
+        meta_updates: dict[str, Any] = {
+            "profile": _json.dumps({"num_records": num_records}),
+            "schema": _json.dumps(schema),
+            "last_update_time": now_ms,
+            "digest": digest,
+            LSI2_SK: now_ms,
+        }
+        # Update last_updated_by if any record has mlflow.user tag
+        for record in records:
+            user = (record.get("tags") or {}).get(MLFLOW_USER)
+            if user:
+                meta_updates["last_updated_by"] = user
+                break
+        self._table.update_item(pk=pk, sk=SK_DATASET_META, updates=meta_updates)
 
         return {"inserted": inserted, "updated": updated}
 
@@ -5731,21 +5849,32 @@ class DynamoDBTrackingStore(AbstractStore):
             exclusive_start_key=exclusive_start_key,
         )
 
+        from mlflow.entities.dataset_record_source import DatasetRecordSource
+
         from mlflow_dynamodbstore.dynamodb.table import convert_decimals
 
-        record_list = [
-            DatasetRecord(
-                dataset_id=dataset_id,
-                dataset_record_id=item["dataset_record_id"],
-                inputs=convert_decimals(item.get("inputs", {})),
-                created_time=int(item["created_time"]),
-                last_update_time=int(item["last_update_time"]),
-                outputs=convert_decimals(item.get("outputs")),
-                expectations=convert_decimals(item.get("expectations")),
-                tags=convert_decimals(item.get("tags")),
+        record_list = []
+        for item in items:
+            raw_source = convert_decimals(item.get("source"))
+            source = None
+            if isinstance(raw_source, dict) and "source_type" in raw_source:
+                source = DatasetRecordSource(
+                    source_type=raw_source["source_type"],
+                    source_data=raw_source.get("source_data"),
+                )
+            record_list.append(
+                DatasetRecord(
+                    dataset_id=dataset_id,
+                    dataset_record_id=item["dataset_record_id"],
+                    inputs=convert_decimals(item.get("inputs", {})),
+                    created_time=int(item["created_time"]),
+                    last_update_time=int(item["last_update_time"]),
+                    outputs=convert_decimals(item.get("outputs")),
+                    expectations=convert_decimals(item.get("expectations")),
+                    tags=convert_decimals(item.get("tags")),
+                    source=source,
+                )
             )
-            for item in items
-        ]
 
         next_token = encode_page_token({"lek": lek}) if lek else None
         return record_list, next_token
@@ -5767,8 +5896,14 @@ class DynamoDBTrackingStore(AbstractStore):
         import json as _json
 
         pk = f"{PK_DATASET_PREFIX}{dataset_id}"
-        keys = [{"PK": pk, "SK": f"{SK_DATASET_RECORD_PREFIX}{rec_id}"} for rec_id in record_ids]
-        self._table.batch_delete(keys)
+        # Check which records actually exist before deleting
+        existing_keys = []
+        for rec_id in record_ids:
+            sk = f"{SK_DATASET_RECORD_PREFIX}{rec_id}"
+            if self._table.get_item(pk=pk, sk=sk) is not None:
+                existing_keys.append({"PK": pk, "SK": sk})
+        if existing_keys:
+            self._table.batch_delete(existing_keys)
 
         # Recount and update META profile
         meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
@@ -5792,7 +5927,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 },
             )
 
-        return len(record_ids)
+        return len(existing_keys)
 
     # ------------------------------------------------------------------
     # Trace Metrics Query

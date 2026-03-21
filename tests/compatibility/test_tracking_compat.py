@@ -62,6 +62,13 @@ def _patch_sqlalchemy_compat(store):
     store.ManagedSessionMaker = _managed_session
     store._get_run = _get_run
 
+    # Redirect SqlAlchemy store logger to our logger so mock.patch in tests works
+    import mlflow.store.tracking.sqlalchemy_store as _sqla_mod
+
+    import mlflow_dynamodbstore.tracking_store as _ddb_mod
+
+    _sqla_mod._logger = _ddb_mod._logger
+
 
 from tests.store.tracking.test_sqlalchemy_store import (  # noqa: E402, F401
     # --- Pure unit tests (no store fixture needed) ---
@@ -477,32 +484,18 @@ test_search_with_deterministic_max_results = _xfail_search_runs(
     test_search_with_deterministic_max_results
 )
 
-# --- Category 6: dataset CRUD/association bugs (14 tests) ---
-_xfail_dataset = pytest.mark.xfail(reason="DynamoDB store dataset CRUD/association bugs")
-test_dataset_crud_operations = _xfail_dataset(test_dataset_crud_operations)
-test_dataset_associations_and_lazy_loading = _xfail_dataset(
-    test_dataset_associations_and_lazy_loading
+# --- Category 6: dataset CRUD/association bugs — mostly DONE ---
+# Remaining: tests blocked by search_runs ordering (Cat 5 dependency)
+_xfail_dataset_search_runs = pytest.mark.xfail(
+    reason="Needs search_runs ordering/dataset filter (Cat 5 dependency)"
 )
-test_dataset_experiment_associations = _xfail_dataset(test_dataset_experiment_associations)
-test_dataset_filtering_ordering_pagination = _xfail_dataset(
-    test_dataset_filtering_ordering_pagination
-)
-test_dataset_search_comprehensive = _xfail_dataset(test_dataset_search_comprehensive)
-test_dataset_update_tags = _xfail_dataset(test_dataset_update_tags)
-test_dataset_upsert_comprehensive = _xfail_dataset(test_dataset_upsert_comprehensive)
-test_dataset_user_detection = _xfail_dataset(test_dataset_user_detection)
-test_dataset_delete_records_idempotent = _xfail_dataset(test_dataset_delete_records_idempotent)
-test_search_datasets = _xfail_dataset(test_search_datasets)
-test_search_datasets_returns_no_more_than_max_results = _xfail_dataset(
-    test_search_datasets_returns_no_more_than_max_results
-)
-test_log_input_multiple_times_does_not_overwrite_tags_or_dataset = _xfail_dataset(
+test_log_input_multiple_times_does_not_overwrite_tags_or_dataset = _xfail_dataset_search_runs(
     test_log_input_multiple_times_does_not_overwrite_tags_or_dataset
 )
-test_log_inputs_and_retrieve_runs_behaves_as_expected = _xfail_dataset(
+test_log_inputs_and_retrieve_runs_behaves_as_expected = _xfail_dataset_search_runs(
     test_log_inputs_and_retrieve_runs_behaves_as_expected
 )
-test_log_inputs_with_large_inputs_limit_check = _xfail_dataset(
+test_log_inputs_with_large_inputs_limit_check = _xfail_dataset_search_runs(
     test_log_inputs_with_large_inputs_limit_check
 )
 
@@ -545,14 +538,7 @@ test_log_metric_concurrent_logging_succeeds = _xfail_metric_history(
     test_log_metric_concurrent_logging_succeeds
 )
 
-# --- Reclassified from Cat 9 to Cat 6 (dataset CRUD) ---
-test_dataset_schema_and_profile_computation = _xfail_dataset(
-    test_dataset_schema_and_profile_computation
-)
-test_dataset_schema_and_profile_incremental_updates = _xfail_dataset(
-    test_dataset_schema_and_profile_incremental_updates
-)
-test_dataset_digest_updates_with_changes = _xfail_dataset(test_dataset_digest_updates_with_changes)
+# --- Reclassified from Cat 9 to Cat 6 (dataset CRUD) — DONE ---
 
 # test_delete_traces_with_max_count: reclassified to Cat 17 (see below)
 

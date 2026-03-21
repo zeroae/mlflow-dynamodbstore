@@ -45,7 +45,7 @@ class TestGetDataset:
         assert fetched.name == "get-test"
 
     def test_get_nonexistent_raises(self, tracking_store):
-        with pytest.raises(MlflowException, match="does not exist"):
+        with pytest.raises(MlflowException, match="not found"):
             tracking_store.get_dataset("eval_nonexistent")
 
     def test_get_includes_tags(self, tracking_store):
@@ -54,17 +54,24 @@ class TestGetDataset:
         assert fetched.tags == {"key": "val"}
 
     def test_get_lazy_loads_experiment_ids(self, tracking_store):
+        from unittest import mock
+
         exp_id = tracking_store.create_experiment("lazy-exp")
         ds = tracking_store.create_dataset(name="lazy-test", experiment_ids=[exp_id])
         fetched = tracking_store.get_dataset(ds.dataset_id)
-        assert exp_id in fetched.experiment_ids
+        assert fetched._experiment_ids is None
+        with mock.patch(
+            "mlflow.tracking._tracking_service.utils._get_store",
+            return_value=tracking_store,
+        ):
+            assert exp_id in fetched.experiment_ids
 
 
 class TestDeleteDataset:
     def test_delete_removes_dataset(self, tracking_store):
         ds = tracking_store.create_dataset(name="delete-me")
         tracking_store.delete_dataset(ds.dataset_id)
-        with pytest.raises(MlflowException, match="does not exist"):
+        with pytest.raises(MlflowException, match="not found"):
             tracking_store.get_dataset(ds.dataset_id)
 
     def test_delete_nonexistent_is_idempotent(self, tracking_store):
@@ -136,11 +143,15 @@ class TestSearchDatasets:
 
     def test_search_order_by_last_update_time(self, tracking_store):
         """Test order_by last_update_time (lines 2864-2865)."""
-        ds1 = tracking_store.create_dataset(name="ds-early")
-        tracking_store.create_dataset(name="ds-late")
+        import time
 
-        # Manually update ds1 to have a newer last_update_time
-        tracking_store.set_dataset_tags(ds1.dataset_id, {"tag": "updated"})
+        ds1 = tracking_store.create_dataset(name="ds-early")
+        time.sleep(0.01)
+        tracking_store.create_dataset(name="ds-late")
+        time.sleep(0.01)
+
+        # Upsert records to give ds1 a newer last_update_time
+        tracking_store.upsert_dataset_records(ds1.dataset_id, [{"inputs": {"q": "test"}}])
 
         results = tracking_store.search_datasets(order_by=["last_update_time ASC"])
         names = [r.name for r in results]
@@ -278,7 +289,7 @@ class TestDatasetRecords:
 
     def test_upsert_nonexistent_dataset_raises(self, tracking_store):
         """Test upsert on non-existent dataset raises MlflowException (line 2997)."""
-        with pytest.raises(MlflowException, match="does not exist"):
+        with pytest.raises(MlflowException, match="not found"):
             tracking_store.upsert_dataset_records(
                 "eval_nope",
                 [{"inputs": {"q": "test"}}],
