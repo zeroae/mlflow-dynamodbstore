@@ -68,7 +68,6 @@ from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402, F4
     test_update_webhook_invalid_urls,
     test_update_webhook_not_found,
     test_update_webhook_partial,
-    test_webhook_secret_encryption,
     test_webhook_status_transitions,
 )
 
@@ -124,6 +123,34 @@ test_search_model_versions_order_by_simple = _xfail_search_order(
     test_search_model_versions_order_by_simple
 )
 
-# --- Webhooks: not implemented ---
-_xfail_webhook = pytest.mark.xfail(reason="Webhooks not implemented")
-test_webhook_secret_encryption = _xfail_webhook(test_webhook_secret_encryption)
+
+def test_webhook_secret_encryption(store):
+    """DynamoDB-specific replacement for the vendored test.
+
+    The vendored test does raw SQL to verify encryption. We verify that:
+    1. The raw DynamoDB item stores encrypted_secret (not plaintext)
+    2. The decrypted value matches what we passed in
+    """
+    from mlflow.entities.webhook import WebhookAction, WebhookEntity, WebhookEvent
+
+    webhook = store.create_webhook(
+        name="test_webhook",
+        url="https://example.com/webhook",
+        events=[WebhookEvent(WebhookEntity.MODEL_VERSION, WebhookAction.CREATED)],
+        secret="my_secret",
+    )
+
+    # Read raw DynamoDB item
+    from mlflow_dynamodbstore.dynamodb.schema import PK_WEBHOOK_PREFIX, SK_WEBHOOK_META
+
+    raw_item = store._table.get_item(
+        pk=f"{PK_WEBHOOK_PREFIX}{webhook.webhook_id}",
+        sk=SK_WEBHOOK_META,
+    )
+    assert raw_item is not None
+    assert raw_item.get("encrypted_secret") is not None
+    assert raw_item["encrypted_secret"] != "my_secret"  # Must be encrypted
+
+    # Verify decryption works via get_webhook
+    fetched = store.get_webhook(webhook.webhook_id)
+    assert fetched.secret == "my_secret"
