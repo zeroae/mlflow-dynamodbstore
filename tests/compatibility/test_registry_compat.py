@@ -126,7 +126,4 @@ test_search_model_versions_order_by_simple = _xfail_search_order(
 
 # --- Webhooks: not implemented ---
 _xfail_webhook = pytest.mark.xfail(reason="Webhooks not implemented")
-test_delete_webhook = _xfail_webhook(test_delete_webhook)
-test_delete_webhook_not_found = _xfail_webhook(test_delete_webhook_not_found)
 test_webhook_secret_encryption = _xfail_webhook(test_webhook_secret_encryption)
-test_webhook_status_transitions = _xfail_webhook(test_webhook_status_transitions)

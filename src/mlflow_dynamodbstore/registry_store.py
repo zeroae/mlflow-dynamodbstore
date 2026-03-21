@@ -2427,3 +2427,32 @@ class DynamoDBRegistryStore(AbstractStore):
                 self._table.batch_write(new_event_items)
 
         return self._get_webhook_by_id(webhook_id)
+
+    def delete_webhook(self, webhook_id: str) -> None:
+        self._get_webhook_by_id(webhook_id)
+
+        now = get_current_time_millis()
+        updates: dict[str, Any] = {
+            "deleted_timestamp": now,
+            "last_updated_timestamp": now,
+        }
+
+        ttl_seconds = self._config.get_soft_deleted_ttl_seconds()
+        if ttl_seconds is not None:
+            updates["ttl"] = int(time.time()) + ttl_seconds
+
+        removes = [GSI2_PK, GSI2_SK]
+
+        self._table.update_item(
+            pk=f"{PK_WEBHOOK_PREFIX}{webhook_id}",
+            sk=SK_WEBHOOK_META,
+            updates=updates,
+            removes=removes,
+        )
+
+        event_items = self._table.query(
+            pk=f"{PK_WEBHOOK_PREFIX}{webhook_id}",
+            sk_prefix=SK_WEBHOOK_EVT_PREFIX,
+        )
+        if event_items:
+            self._table.batch_delete([{"PK": item["PK"], "SK": item["SK"]} for item in event_items])
