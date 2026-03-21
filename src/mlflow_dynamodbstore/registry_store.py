@@ -79,14 +79,31 @@ from mlflow_dynamodbstore.ids import generate_ulid
 _PREFETCH_TTL_SECONDS = 60
 
 
+_FERNET_INSTANCE: Fernet | None = None
+_FERNET_KEY_USED: bytes | None = None
+
+
 def _get_fernet() -> Fernet:
-    """Get a Fernet cipher for webhook secret encryption/decryption."""
-    key = MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY.get()
-    if key is None:
+    """Get a Fernet cipher for webhook secret encryption/decryption.
+
+    Caches the instance so that secrets encrypted in one call can be decrypted in another,
+    even when no key is set in the environment (in which case a random key is generated once
+    per process lifetime).
+    """
+    global _FERNET_INSTANCE, _FERNET_KEY_USED
+
+    configured_key = MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY.get()
+    if configured_key is not None:
+        key = configured_key.encode() if isinstance(configured_key, str) else configured_key
+        if key != _FERNET_KEY_USED:
+            _FERNET_INSTANCE = Fernet(key)
+            _FERNET_KEY_USED = key
+    elif _FERNET_INSTANCE is None:
         key = Fernet.generate_key()
-    if isinstance(key, str):
-        key = key.encode()
-    return Fernet(key)
+        _FERNET_INSTANCE = Fernet(key)
+        _FERNET_KEY_USED = key
+
+    return _FERNET_INSTANCE  # type: ignore[return-value]
 
 
 def _encrypt_webhook_secret(secret: str) -> str:
@@ -2337,3 +2354,76 @@ class DynamoDBRegistryStore(AbstractStore):
                 webhooks.append(self._webhook_items_to_entity(webhook_ulid, items))
 
         return PagedList(webhooks, next_page_token)
+
+    def update_webhook(
+        self,
+        webhook_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        url: str | None = None,
+        events: list[WebhookEvent] | None = None,
+        secret: str | None = None,
+        status: WebhookStatus | None = None,
+    ) -> Webhook:
+        if name is not None:
+            _validate_webhook_name(name)
+        if url is not None:
+            _validate_webhook_url(url)
+        if events is not None:
+            _validate_webhook_events(events)
+
+        # Verify webhook exists (checks workspace + not deleted)
+        self._get_webhook_by_id(webhook_id)
+
+        now = get_current_time_millis()
+        updates: dict[str, Any] = {"last_updated_timestamp": now}
+
+        if name is not None:
+            updates["name"] = name
+        if description is not None:
+            updates["description"] = description
+        if url is not None:
+            updates["url"] = url
+        if secret is not None:
+            updates["encrypted_secret"] = _encrypt_webhook_secret(secret)
+        if status is not None:
+            updates["status"] = status.value
+
+        self._table.update_item(
+            pk=f"{PK_WEBHOOK_PREFIX}{webhook_id}",
+            sk=SK_WEBHOOK_META,
+            updates=updates,
+        )
+
+        # If events changed, replace all EVENT items
+        if events is not None:
+            ws = self._workspace
+
+            old_items = self._table.query(
+                pk=f"{PK_WEBHOOK_PREFIX}{webhook_id}",
+                sk_prefix=SK_WEBHOOK_EVT_PREFIX,
+            )
+            if old_items:
+                self._table.batch_delete(
+                    [{"PK": item["PK"], "SK": item["SK"]} for item in old_items]
+                )
+
+            new_event_items = []
+            for event in events:
+                new_event_items.append(
+                    {
+                        "PK": f"{PK_WEBHOOK_PREFIX}{webhook_id}",
+                        "SK": f"{SK_WEBHOOK_EVT_PREFIX}{event.entity.value}#{event.action.value}",
+                        "entity": event.entity.value,
+                        "action": event.action.value,
+                        "workspace": ws,
+                        GSI3_PK: (
+                            f"{GSI3_WH_EVT_PREFIX}{ws}#{event.entity.value}#{event.action.value}"
+                        ),
+                        GSI3_SK: webhook_id,
+                    }
+                )
+            if new_event_items:
+                self._table.batch_write(new_event_items)
+
+        return self._get_webhook_by_id(webhook_id)
