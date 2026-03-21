@@ -11,7 +11,7 @@ compatibility test covers that method.
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Secret encryption | Fernet via `MLFLOW_SECRET_KEY` env var | Matches MLflow SQL store pattern; no extra AWS dependency |
+| Secret encryption | Fernet via `MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY` env var | Matches MLflow SQL store pattern (`mlflow.environment_variables`); no extra AWS dependency |
 | Webhook ID format | ULID (`generate_ulid()`) | Consistent with rest of DynamoDB store (model versions, gateway entities) |
 | Partition design | One partition per webhook (META + EVENT items) | Follows gateway entity pattern; events are first-class items |
 | GSI strategy | Reuse existing gsi2/gsi3 via sparse indexing | No new GSI definitions needed |
@@ -115,9 +115,12 @@ Reuse MLflow's existing validators directly:
 ## Encryption
 
 - Encrypt secrets on write with `cryptography.fernet.Fernet` using key from
-  `MLFLOW_SECRET_KEY` environment variable
+  `MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY` environment variable
+  (defined in `mlflow.environment_variables`)
+- If env var is not set, generate a key with `Fernet.generate_key()` (matches
+  `EncryptedString` behavior in `mlflow.store.model_registry.dbmodels.models`)
 - Decrypt on read; return `None` if no secret stored
-- Matches `mlflow.utils.security_utils` pattern
+- Store encrypted value in `encrypted_secret` attribute on META item
 
 ## Soft Delete Behavior
 
@@ -139,8 +142,9 @@ After deletion:
 ## Pagination
 
 - Default `max_results=100`, valid range 1–1000
-- Use `SearchUtils.create_page_token()` / `parse_start_offset_from_page_token()`
-  for offset-based pagination (matches SQL store)
+- Use DynamoDB-native cursor pagination via `_encode_page_token` /
+  `_decode_page_token` (base64-encoded `LastEvaluatedKey`) — matches
+  existing DynamoDB store pagination pattern
 - `list_webhooks`: ordered by `creation_timestamp` DESC (ULID sort key in GSI2
   gives chronological order; scan_forward=false for DESC)
 
@@ -163,7 +167,7 @@ GSI3_WH_EVT_PREFIX = "WH_EVT#"
 
 | Test File | Changes |
 |-----------|---------|
-| `tests/compatibility/test_registry_compat.py` | Remove `_xfail_webhook` from all 20 webhook tests |
+| `tests/compatibility/test_registry_compat.py` | Remove `_xfail_webhook` from 19 webhook tests; replace `test_webhook_secret_encryption` with DynamoDB-specific version (vendored test does raw SQL `SELECT secret FROM webhooks` which won't work against DynamoDB) |
 | `tests/compatibility/test_registry_workspace_compat.py` | Remove `xfail` from `test_webhook_operations_are_workspace_scoped` |
 | `tests/unit/test_webhook_by_event.py` (new) | Unit tests for `list_webhooks_by_event`: basic filtering, pagination, no results, deleted webhook excluded, multiple events on same webhook |
 
@@ -173,6 +177,6 @@ GSI3_WH_EVT_PREFIX = "WH_EVT#"
 |------|--------|
 | `src/mlflow_dynamodbstore/dynamodb/schema.py` | Add 5 webhook constants |
 | `src/mlflow_dynamodbstore/registry_store.py` | Add 6 public methods + 3 internal helpers |
-| `tests/compatibility/test_registry_compat.py` | Remove xfail from 20 tests |
+| `tests/compatibility/test_registry_compat.py` | Remove xfail from 19 tests; replace `test_webhook_secret_encryption` with DynamoDB-specific version |
 | `tests/compatibility/test_registry_workspace_compat.py` | Remove xfail from 1 test |
 | `tests/unit/test_webhook_by_event.py` | New — unit tests for `list_webhooks_by_event` |
