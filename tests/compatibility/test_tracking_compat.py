@@ -501,27 +501,22 @@ test_log_inputs_with_large_inputs_limit_check = _xfail_dataset_search_runs(
 
 # --- Category 7: trace persistence remaining issues ---
 
-# --- Category 8: search experiments filtering/ordering/pagination broken (9 tests) ---
+# --- Category 8: search experiments — partially DONE ---
+# Permanent xfail: integer experiment ID assumptions
+test_default_experiment_lifecycle = pytest.mark.xfail(
+    reason="DynamoDB uses ULID experiment IDs, not auto-increment integers (permanent)"
+)(test_default_experiment_lifecycle)
+# Remaining: in-memory filter/ordering needed
 _xfail_search_exp = pytest.mark.xfail(
-    reason="DynamoDB store search_experiments filtering, ordering, and pagination incomplete"
+    reason="DynamoDB store search_experiments filtering and time-based ordering incomplete"
 )
-test_default_experiment_lifecycle = _xfail_search_exp(test_default_experiment_lifecycle)
 test_search_experiments_filter_by_attribute = _xfail_search_exp(
     test_search_experiments_filter_by_attribute
 )
 test_search_experiments_filter_by_tag = _xfail_search_exp(test_search_experiments_filter_by_tag)
-test_search_experiments_filter_by_tag_is_null = _xfail_search_exp(
-    test_search_experiments_filter_by_tag_is_null
-)
 test_search_experiments_filter_by_time_attribute = _xfail_search_exp(
     test_search_experiments_filter_by_time_attribute
 )
-test_search_experiments_max_results = _xfail_search_exp(test_search_experiments_max_results)
-test_search_experiments_order_by_time_attribute = _xfail_search_exp(
-    test_search_experiments_order_by_time_attribute
-)
-test_search_experiments_pagination = _xfail_search_exp(test_search_experiments_pagination)
-test_search_experiments_view_type = _xfail_search_exp(test_search_experiments_view_type)
 
 # --- Category 9: metric history dedup (2 tests, schema change needed) ---
 # History SK is key#step#timestamp — same step+timestamp with different values overwrites.
