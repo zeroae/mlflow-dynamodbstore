@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -45,6 +46,7 @@ from mlflow.entities import (
     RunData,
     RunInfo,
     RunInputs,
+    RunOutputs,
     RunTag,
     ScorerVersion,
     TraceInfo,
@@ -245,6 +247,7 @@ def _item_to_run(
     input_items: list[dict[str, Any]] | None = None,
     dataset_items: list[dict[str, Any]] | None = None,
     input_tag_items: list[dict[str, Any]] | None = None,
+    output_items: list[dict[str, Any]] | None = None,
 ) -> Run:
     """Convert DynamoDB items to an MLflow Run entity."""
     info = _item_to_run_info(item)
@@ -301,7 +304,20 @@ def _item_to_run(
 
         run_inputs = RunInputs(dataset_inputs=dataset_inputs)
 
-    return Run(run_info=info, run_data=data, run_inputs=run_inputs)
+    # Build RunOutputs from output items
+    run_outputs = None
+    if output_items:
+        run_outputs = RunOutputs(
+            model_outputs=[
+                LoggedModelOutput(
+                    model_id=o["destination_id"],
+                    step=int(o.get("step", 0)),
+                )
+                for o in output_items
+            ]
+        )
+
+    return Run(run_info=info, run_data=data, run_inputs=run_inputs, run_outputs=run_outputs)
 
 
 def _item_to_logged_model(
@@ -313,15 +329,21 @@ def _item_to_logged_model(
     """Convert DynamoDB items to a LoggedModel entity."""
     tag_dict = {t["key"]: t["value"] for t in (tags or [])}
     param_dict = {p["key"]: p["value"] for p in (params or [])}
-    metric_list = [
-        Metric(
-            key=m["metric_name"],
-            value=float(m["metric_value"]),
-            timestamp=int(m.get("metric_timestamp_ms", 0)),
-            step=int(m.get("metric_step", 0)),
-        )
-        for m in (metrics or [])
-    ]
+    metric_list: list[Metric] | None = None
+    if metrics:
+        metric_list = [
+            Metric(
+                key=m["metric_name"],
+                value=float(m["metric_value"]),
+                timestamp=int(m.get("metric_timestamp_ms", 0)),
+                step=int(m.get("metric_step", 0)),
+                model_id=m.get("model_id"),
+                dataset_name=m.get("dataset_name"),
+                dataset_digest=m.get("dataset_digest"),
+                run_id=m.get("run_id"),
+            )
+            for m in metrics
+        ]
 
     # Merge denormalized tags/params from META item with sub-items
     meta_tags = item.get("tags", {})
@@ -1196,6 +1218,12 @@ class DynamoDBTrackingStore(AbstractStore):
                 sk_prefix=SK_DATASET_PREFIX,
             )
 
+        # Query output items
+        output_items = self._table.query(
+            pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
+            sk_prefix=f"{run_prefix}{SK_OUTPUT_PREFIX}",
+        )
+
         return _item_to_run(
             item,
             tag_items,
@@ -1204,6 +1232,7 @@ class DynamoDBTrackingStore(AbstractStore):
             input_items=input_items,
             dataset_items=dataset_items,
             input_tag_items=input_tag_items,
+            output_items=output_items,
         )
 
     # ------------------------------------------------------------------
@@ -1239,6 +1268,12 @@ class DynamoDBTrackingStore(AbstractStore):
 
         _validate_logged_model_name(name)
         exp = self.get_experiment(experiment_id)
+        if exp.lifecycle_stage != "active":
+            raise MlflowException(
+                f"The experiment {experiment_id} must be in the 'active' state. "
+                f"Current state is {exp.lifecycle_stage}.",
+                INVALID_PARAMETER_VALUE,
+            )
 
         now_ms = int(time.time() * 1000)
         model_id = f"m-{generate_ulid()}"
@@ -1547,12 +1582,48 @@ class DynamoDBTrackingStore(AbstractStore):
             )
             models.append(_item_to_logged_model(item, tag_items, param_items, metric_items))
 
-        # Apply offset-based pagination across the merged result
+        # Default sort: creation_timestamp descending
+        models.sort(key=lambda m: m.creation_timestamp, reverse=True)
+
+        # Validate and apply offset-based pagination
+        sorted_exp_ids = sorted(experiment_ids)
+        order_by_key = json.dumps(order_by, sort_keys=True) if order_by else ""
+        filter_key = filter_string or ""
+
         token_data = decode_page_token(page_token)
-        offset = token_data.get("offset", 0) if token_data else 0
+        offset = 0
+        if token_data:
+            if token_data.get("experiment_ids") != sorted_exp_ids:
+                raise MlflowException(
+                    "Experiment IDs in the page token do not match the requested experiment IDs.",
+                    INVALID_PARAMETER_VALUE,
+                )
+            if token_data.get("order_by", "") != order_by_key:
+                raise MlflowException(
+                    "Order by in the page token does not match the requested order by.",
+                    INVALID_PARAMETER_VALUE,
+                )
+            if token_data.get("filter_string", "") != filter_key:
+                raise MlflowException(
+                    "Filter string in the page token does not match the requested filter string.",
+                    INVALID_PARAMETER_VALUE,
+                )
+            offset = token_data.get("offset", 0)
+
         page = models[offset : offset + max_results]
         has_more = len(models) > offset + max_results
-        next_token = encode_page_token({"offset": offset + max_results}) if has_more else None
+        next_token = (
+            encode_page_token(
+                {
+                    "offset": offset + max_results,
+                    "experiment_ids": sorted_exp_ids,
+                    "order_by": order_by_key,
+                    "filter_string": filter_key,
+                }
+            )
+            if has_more
+            else None
+        )
 
         return PagedList(page, next_token)
 
@@ -2363,6 +2434,22 @@ class DynamoDBTrackingStore(AbstractStore):
                     )
             if fts_param_items:
                 self._table.batch_write(fts_param_items)
+
+        # Route metrics with model_id to logged model metric storage
+        for metric in metrics:
+            model_id = getattr(metric, "model_id", None)
+            if model_id:
+                self._log_logged_model_metric(
+                    experiment_id=experiment_id,
+                    model_id=model_id,
+                    metric_name=metric.key,
+                    metric_value=float(metric.value),
+                    metric_timestamp_ms=metric.timestamp,
+                    metric_step=metric.step,
+                    run_id=run_id,
+                    dataset_name=getattr(metric, "dataset_name", None),
+                    dataset_digest=getattr(metric, "dataset_digest", None),
+                )
 
         # Write tags individually (uses put_item)
         for tag in tags:

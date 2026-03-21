@@ -556,21 +556,7 @@ test_dataset_digest_updates_with_changes = _xfail_dataset(test_dataset_digest_up
 
 # test_delete_traces_with_max_count: reclassified to Cat 17 (see below)
 
-# --- Category 10: logged model search/lifecycle bugs (7 tests) ---
-_xfail_logged_model = pytest.mark.xfail(
-    reason="DynamoDB store logged model search, lifecycle, and metrics incomplete"
-)
-test_create_logged_model = _xfail_logged_model(test_create_logged_model)
-test_search_logged_models = _xfail_logged_model(test_search_logged_models)
-test_search_logged_models_datasets_filter = _xfail_logged_model(
-    test_search_logged_models_datasets_filter
-)
-test_search_logged_models_filter_string = _xfail_logged_model(
-    test_search_logged_models_filter_string
-)
-test_search_logged_models_pagination = _xfail_logged_model(test_search_logged_models_pagination)
-test_log_batch_logged_model = _xfail_logged_model(test_log_batch_logged_model)
-test_log_outputs = _xfail_logged_model(test_log_outputs)
+# --- Category 10: logged model search/lifecycle bugs (7 tests) — DONE ---
 
 # --- Category 11: batch_get_traces remaining issues ---
 # --- Category 12: trace sessions (remaining) ---
