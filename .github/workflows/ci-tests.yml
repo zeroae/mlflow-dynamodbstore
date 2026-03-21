@@ -7,7 +7,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, 'release/v*', 'release/[0-9]*']
-    paths: ['src/**', 'tests/**', 'vendor/**', 'pyproject.toml', 'uv.lock']
+    paths: ['src/**', 'tests/**', 'vendor/**', 'pyproject.toml', 'uv.lock', '.github/workflows/ci-tests.yml']
   workflow_dispatch:
 
 permissions:
