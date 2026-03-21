@@ -396,6 +396,8 @@ _UNSET = object()  # sentinel for optional parameters where None is a valid valu
 class DynamoDBTrackingStore(AbstractStore):
     """MLflow tracking store backed by DynamoDB."""
 
+    DEFAULT_EXPERIMENT_ID = "0"
+
     def __init__(
         self,
         store_uri: str,
@@ -784,6 +786,9 @@ class DynamoDBTrackingStore(AbstractStore):
     ) -> list[Experiment]:
         """Search experiments with filter and order_by support."""
         self._validate_max_results_param(max_results)
+        from mlflow.store.entities import PagedList
+
+        from mlflow_dynamodbstore.dynamodb.pagination import decode_page_token, encode_page_token
         from mlflow_dynamodbstore.dynamodb.search import parse_experiment_filter
 
         predicates = parse_experiment_filter(filter_string)
@@ -795,60 +800,133 @@ class DynamoDBTrackingStore(AbstractStore):
         )
         tag_preds = [p for p in predicates if p.field_type == "tag"]
 
+        has_post_filters = bool(tag_preds) or bool(order_by)
+
         if name_pred and name_pred.op == "=":
             experiments = self._search_experiments_by_name_exact(name_pred.value, view_type)
+            return PagedList(experiments[:max_results], token=None)
         elif name_pred and name_pred.op in ("LIKE", "ILIKE"):
             experiments = self._search_experiments_by_name_like(
                 name_pred.value, name_pred.op, view_type
             )
-        else:
-            experiments = self._search_experiments_by_lifecycle(view_type, max_results)
+            # Apply tag filters as post-filters
+            if tag_preds:
+                experiments = self._filter_experiments_by_tags(experiments, tag_preds)
+            if order_by:
+                experiments = self._sort_experiments(experiments, order_by)
+            return PagedList(experiments[:max_results], token=None)
 
-        # Apply tag filters as post-filters
-        if tag_preds:
-            experiments = self._filter_experiments_by_tags(experiments, tag_preds)
+        # Default path: paginated GSI2 query with ULID-based ordering
+        # Decode pagination state
+        token_data = decode_page_token(page_token)
+        lek = token_data.get("lek") if token_data else None
 
-        # Apply ordering
-        if order_by:
-            experiments = self._sort_experiments(experiments, order_by)
+        if has_post_filters:
+            # When post-filters or custom ordering needed, fetch all and filter
+            experiments = self._search_experiments_by_lifecycle(view_type)
+            if tag_preds:
+                experiments = self._filter_experiments_by_tags(experiments, tag_preds)
+            if order_by:
+                experiments = self._sort_experiments(experiments, order_by)
+            # Offset-based pagination for post-filtered results
+            offset = token_data.get("offset", 0) if token_data else 0
+            page = experiments[offset : offset + max_results]
+            has_more = len(experiments) > offset + max_results
+            next_token = encode_page_token({"offset": offset + max_results}) if has_more else None
+            return PagedList(page, next_token)
 
-        from mlflow.store.entities import PagedList
-
-        results = experiments[:max_results] if max_results else experiments
-        return PagedList(results, token=None)
+        # No post-filters: use native DynamoDB pagination (ULID = creation_time DESC)
+        experiments, next_lek = self._search_experiments_page(view_type, max_results, lek)
+        next_token = encode_page_token({"lek": next_lek}) if next_lek else None
+        return PagedList(experiments, next_token)
 
     # ------------------------------------------------------------------
     # search_experiments helpers
     # ------------------------------------------------------------------
 
-    def _search_experiments_by_lifecycle(
-        self, view_type: int, max_results: int
-    ) -> list[Experiment]:
-        """Query experiments by lifecycle stage using GSI2."""
+    def _search_experiments_by_lifecycle(self, view_type: int) -> list[Experiment]:
+        """Query ALL experiments by lifecycle stage using GSI2 (for post-filter paths)."""
         experiments: list[Experiment] = []
 
         if view_type in (ViewType.ACTIVE_ONLY, ViewType.ALL):
             items = self._table.query(
                 pk=f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#active",
                 index_name="gsi2",
-                limit=max_results,
+                scan_forward=False,
             )
             for item in items:
                 exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
                 experiments.append(self.get_experiment(exp_id))
 
         if view_type in (ViewType.DELETED_ONLY, ViewType.ALL):
-            remaining = max_results - len(experiments) if max_results else None
             items = self._table.query(
                 pk=f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#deleted",
                 index_name="gsi2",
-                limit=remaining,
+                scan_forward=False,
             )
             for item in items:
                 exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
                 experiments.append(self.get_experiment(exp_id))
 
         return experiments
+
+    def _search_experiments_page(
+        self,
+        view_type: int,
+        max_results: int,
+        lek: dict[str, Any] | None = None,
+    ) -> tuple[list[Experiment], dict[str, Any] | None]:
+        """Query a page of experiments using native DynamoDB pagination.
+
+        Uses GSI2 with scan_forward=False for creation_time DESC ordering
+        (ULID experiment_ids are time-ordered).
+
+        Returns (experiments, last_evaluated_key).
+        """
+        experiments: list[Experiment] = []
+        next_lek: dict[str, Any] | None = None
+
+        if view_type == ViewType.ALL:
+            # For ALL, fetch both partitions and merge by ULID DESC
+            active_items = self._table.query(
+                pk=f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#active",
+                index_name="gsi2",
+                scan_forward=False,
+            )
+            deleted_items = self._table.query(
+                pk=f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#deleted",
+                index_name="gsi2",
+                scan_forward=False,
+            )
+            # Merge-sort by experiment_id (ULID) descending
+            all_items = active_items + deleted_items
+            all_items.sort(key=lambda i: i["PK"].replace(PK_EXPERIMENT_PREFIX, ""), reverse=True)
+            # Apply offset-based pagination
+            offset = 0
+            if lek and "offset" in lek:
+                offset = lek["offset"]
+            page_items = all_items[offset : offset + max_results]
+            for item in page_items:
+                exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
+                experiments.append(self.get_experiment(exp_id))
+            has_more = len(all_items) > offset + max_results
+            next_lek = {"offset": offset + max_results} if has_more else None
+        else:
+            # Single partition: use native DynamoDB pagination
+            partition = "active" if view_type == ViewType.ACTIVE_ONLY else "deleted"
+            items, raw_lek = self._table.query_page(
+                pk=f"{GSI2_EXPERIMENTS_PREFIX}{self._workspace}#{partition}",
+                index_name="gsi2",
+                scan_forward=False,
+                limit=max_results,
+                exclusive_start_key=lek,
+            )
+            for item in items:
+                exp_id = item["PK"].replace(PK_EXPERIMENT_PREFIX, "")
+                experiments.append(self.get_experiment(exp_id))
+            next_lek = raw_lek
+
+        return experiments, next_lek
 
     def _search_experiments_by_name_exact(self, name: str, view_type: int) -> list[Experiment]:
         """Exact name lookup via GSI3."""
