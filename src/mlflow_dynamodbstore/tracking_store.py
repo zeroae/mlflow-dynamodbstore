@@ -390,6 +390,123 @@ def _meta_to_dataset(dataset_id: str, meta: dict[str, Any]) -> EvaluationDataset
     )
 
 
+def _reverse_same_start_time_blocks(runs: list[Run]) -> list[Run]:
+    """Reverse contiguous blocks of runs sharing the same start_time.
+
+    DynamoDB returns runs ordered by ULID DESC (= start_time DESC, run_id DESC).
+    MLflow expects start_time DESC, run_id ASC. Since ULIDs are monotonic within
+    the same start_time, reversing each tied block fixes the tiebreaker.
+    """
+    if len(runs) <= 1:
+        return runs
+
+    result: list[Run] = []
+    block_start = 0
+
+    for i in range(1, len(runs) + 1):
+        if i == len(runs) or runs[i].info.start_time != runs[block_start].info.start_time:
+            # End of block — reverse it and append
+            result.extend(reversed(runs[block_start:i]))
+            block_start = i
+
+    return result
+
+
+def _serialize_run(run: Run) -> dict[str, Any]:
+    """Serialize a Run for overflow cache storage."""
+    info = run.info
+    data = run.data
+    d: dict[str, Any] = {
+        "info": {
+            "run_id": info.run_id,
+            "experiment_id": info.experiment_id,
+            "user_id": info.user_id,
+            "status": info.status,
+            "start_time": info.start_time,
+            "end_time": info.end_time,
+            "lifecycle_stage": info.lifecycle_stage,
+            "artifact_uri": info.artifact_uri,
+            "run_name": info.run_name,
+        },
+        "metrics": [
+            {"key": m.key, "value": m.value, "timestamp": m.timestamp, "step": m.step}
+            for m in data._metric_objs
+        ],
+        "params": [{"key": k, "value": v} for k, v in data.params.items()],
+        "tags": [{"key": k, "value": v} for k, v in data.tags.items()],
+    }
+    if run.inputs and run.inputs.dataset_inputs:
+        d["dataset_inputs"] = [
+            {
+                "dataset": {
+                    "name": di.dataset.name,
+                    "digest": di.dataset.digest,
+                    "source_type": di.dataset.source_type,
+                    "source": di.dataset.source,
+                    "schema": di.dataset.schema,
+                    "profile": di.dataset.profile,
+                },
+                "tags": [{"key": t.key, "value": t.value} for t in (di.tags or [])],
+            }
+            for di in run.inputs.dataset_inputs
+        ]
+    if run.outputs and run.outputs.model_outputs:
+        d["model_outputs"] = [
+            {"model_id": o.model_id, "step": o.step} for o in run.outputs.model_outputs
+        ]
+    return d
+
+
+def _deserialize_run(d: dict[str, Any]) -> Run:
+    """Deserialize a Run from overflow cache data."""
+    info_d = d["info"]
+    info = RunInfo(
+        run_id=info_d["run_id"],
+        experiment_id=info_d["experiment_id"],
+        user_id=info_d["user_id"],
+        status=info_d["status"],
+        start_time=info_d["start_time"],
+        end_time=info_d["end_time"],
+        lifecycle_stage=info_d["lifecycle_stage"],
+        artifact_uri=info_d.get("artifact_uri"),
+        run_name=info_d.get("run_name"),
+    )
+    data = RunData(
+        metrics=[
+            Metric(m["key"], m["value"], m["timestamp"], m["step"]) for m in d.get("metrics", [])
+        ],
+        params=[Param(p["key"], p["value"]) for p in d.get("params", [])],
+        tags=[RunTag(t["key"], t["value"]) for t in d.get("tags", [])],
+    )
+    run_inputs = RunInputs(dataset_inputs=[])
+    if "dataset_inputs" in d:
+        run_inputs = RunInputs(
+            dataset_inputs=[
+                DatasetInput(
+                    dataset=Dataset(
+                        name=di["dataset"]["name"],
+                        digest=di["dataset"]["digest"],
+                        source_type=di["dataset"]["source_type"],
+                        source=di["dataset"]["source"],
+                        schema=di["dataset"].get("schema"),
+                        profile=di["dataset"].get("profile"),
+                    ),
+                    tags=[InputTag(t["key"], t["value"]) for t in di.get("tags", [])],
+                )
+                for di in d["dataset_inputs"]
+            ]
+        )
+    run_outputs = None
+    if "model_outputs" in d:
+        run_outputs = RunOutputs(
+            model_outputs=[
+                LoggedModelOutput(model_id=o["model_id"], step=o["step"])
+                for o in d["model_outputs"]
+            ]
+        )
+    return Run(run_info=info, run_data=data, run_inputs=run_inputs, run_outputs=run_outputs)
+
+
 _UNSET = object()  # sentinel for optional parameters where None is a valid value
 
 
@@ -2058,6 +2175,34 @@ class DynamoDBTrackingStore(AbstractStore):
                 deleted_model_ids.append(model_id)
         return deleted_model_ids
 
+    def _build_run_from_meta_item(self, item: dict[str, Any], pk: str) -> Run:
+        """Build a full Run entity from a META item by fetching sub-items."""
+        run_id = item["run_id"]
+        run_prefix = f"{SK_RUN_PREFIX}{run_id}"
+        tag_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_TAG_PREFIX}")
+        param_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_PARAM_PREFIX}")
+        metric_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}")
+        all_input_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_INPUT_PREFIX}")
+        input_items: list[dict[str, Any]] = []
+        input_tag_items: list[dict[str, Any]] = []
+        for it in all_input_items:
+            if SK_INPUT_TAG_SUFFIX in it["SK"]:
+                input_tag_items.append(it)
+            else:
+                input_items.append(it)
+        dataset_items = self._table.query(pk=pk, sk_prefix=SK_DATASET_PREFIX) if input_items else []
+        output_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_OUTPUT_PREFIX}")
+        return _item_to_run(
+            item,
+            tag_items,
+            param_items,
+            metric_items,
+            input_items=input_items,
+            dataset_items=dataset_items,
+            input_tag_items=input_tag_items,
+            output_items=output_items,
+        )
+
     def _search_runs(
         self,
         experiment_ids: list[str],
@@ -2078,6 +2223,8 @@ class DynamoDBTrackingStore(AbstractStore):
             plan_run_query,
         )
 
+        needs_tiebreak = not order_by
+
         # 0. Filter experiment_ids to current workspace
         experiment_ids = [eid for eid in experiment_ids if self._experiment_in_workspace(eid)]
 
@@ -2088,21 +2235,27 @@ class DynamoDBTrackingStore(AbstractStore):
         denormalized_patterns = self._config.get_denormalize_patterns()
         plan = plan_run_query(predicates, order_by, run_view_type, denormalized_patterns)
 
-        # 3. For each experiment: execute query
-        # Handle multi-experiment pagination
+        # 3. Check for overflow token (tiebreak pagination cache)
         token_data = decode_page_token(page_token)
+        if needs_tiebreak and token_data is not None:
+            from mlflow_dynamodbstore.dynamodb.overflow_cache import is_overflow_token
+
+            if is_overflow_token(token_data):
+                return self._consume_run_overflow_page(token_data, max_results)
+
+        # 4. Multi-experiment pagination state
         exp_idx = token_data.get("exp_idx", 0) if token_data else 0
         inner_token = token_data.get("inner_token") if token_data else None
 
         runs: list[Run] = []
         remaining = max_results if max_results is not None else 10_000
         next_page_token: str | None = None
+        exhausted = True
 
         for i, exp_id in enumerate(experiment_ids[exp_idx:], start=exp_idx):
             pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
             current_token = inner_token if i == exp_idx else None
 
-            # Loop within experiment to handle non-run items in results
             inner_next: str | None = None
             while remaining > 0:
                 items, inner_next = execute_query(
@@ -2117,64 +2270,20 @@ class DynamoDBTrackingStore(AbstractStore):
                 for item in items:
                     if "run_id" not in item:
                         continue
-                    run_id = item["run_id"]
-                    self._cache.put("run_exp", run_id, exp_id)
-
-                    # Build full Run with tags/params/metrics
-                    run_prefix = f"{SK_RUN_PREFIX}{run_id}"
-                    tag_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_TAG_PREFIX}")
-                    param_items = self._table.query(
-                        pk=pk, sk_prefix=f"{run_prefix}{SK_PARAM_PREFIX}"
-                    )
-                    metric_items = self._table.query(
-                        pk=pk, sk_prefix=f"{run_prefix}{SK_METRIC_PREFIX}"
-                    )
-                    # Fetch dataset inputs for the run (INPUT links + ITAG children)
-                    all_input_items = self._table.query(
-                        pk=pk, sk_prefix=f"{run_prefix}{SK_INPUT_PREFIX}"
-                    )
-                    # Separate INPUT link items from ITAG items
-                    input_items: list[dict[str, Any]] = []
-                    input_tag_items: list[dict[str, Any]] = []
-                    for it in all_input_items:
-                        if SK_INPUT_TAG_SUFFIX in it["SK"]:
-                            input_tag_items.append(it)
-                        else:
-                            input_items.append(it)
-                    # Fetch dataset definitions (D# items in experiment partition)
-                    dataset_items = (
-                        self._table.query(pk=pk, sk_prefix=SK_DATASET_PREFIX) if input_items else []
-                    )
-                    # Fetch output items
-                    output_items = self._table.query(
-                        pk=pk, sk_prefix=f"{run_prefix}{SK_OUTPUT_PREFIX}"
-                    )
-                    runs.append(
-                        _item_to_run(
-                            item,
-                            tag_items,
-                            param_items,
-                            metric_items,
-                            input_items=input_items,
-                            dataset_items=dataset_items,
-                            input_tag_items=input_tag_items,
-                            output_items=output_items,
-                        )
-                    )
+                    self._cache.put("run_exp", item["run_id"], exp_id)
+                    runs.append(self._build_run_from_meta_item(item, pk))
                     remaining -= 1
 
                     if remaining <= 0:
                         break
 
-                # If no more pages in this experiment, move on
                 if not inner_next:
                     break
-                # If we still need more, fetch the next page
                 current_token = inner_next
 
             if remaining <= 0:
-                # Create pagination token
                 if inner_next or i < len(experiment_ids) - 1:
+                    exhausted = False
                     next_page_token = encode_page_token(
                         {
                             "exp_idx": i if inner_next else i + 1,
@@ -2184,15 +2293,152 @@ class DynamoDBTrackingStore(AbstractStore):
                 break
 
             if inner_next:
-                next_page_token = encode_page_token(
-                    {
-                        "exp_idx": i,
-                        "inner_token": inner_next,
-                    }
-                )
+                exhausted = False
+                next_page_token = encode_page_token({"exp_idx": i, "inner_token": inner_next})
                 break
 
-        return runs, next_page_token
+        # No tiebreak needed or fetched everything
+        if not needs_tiebreak or max_results is None:
+            if not order_by:
+                runs = _reverse_same_start_time_blocks(runs)
+            return runs, next_page_token
+
+        # --- Tiebreak path: complete tie group at boundary ---
+        if len(runs) >= max_results and not exhausted:
+            boundary_ts = runs[-1].info.start_time
+
+            # Peek at the next item to detect a tie at the page boundary.
+            # execute_query uses offset-based pagination, so peeking is
+            # idempotent — the original next_page_token remains valid.
+            cont = decode_page_token(next_page_token) or {}
+            cont_exp_idx = cont.get("exp_idx", 0)
+            cont_inner_token = cont.get("inner_token")
+
+            pk = f"{PK_EXPERIMENT_PREFIX}{experiment_ids[cont_exp_idx]}"
+            peek_items, _ = execute_query(
+                table=self._table,
+                plan=plan,
+                pk=pk,
+                max_results=1,
+                page_token=cont_inner_token,
+                predicates=predicates,
+            )
+            peek_item = next((it for it in peek_items if "run_id" in it), None)
+            has_tie = (
+                peek_item is not None and _int_or_none(peek_item.get("start_time")) == boundary_ts
+            )
+
+            if has_tie:
+                # Complete the tie group by fetching all items with the same
+                # start_time, then cache overflow for subsequent pages.
+                for ci, exp_id in enumerate(experiment_ids[cont_exp_idx:], start=cont_exp_idx):
+                    pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+                    ct = cont_inner_token if ci == cont_exp_idx else None
+                    tie_done = False
+
+                    while not tie_done:
+                        items, inner_next = execute_query(
+                            table=self._table,
+                            plan=plan,
+                            pk=pk,
+                            max_results=max_results,
+                            page_token=ct,
+                            predicates=predicates,
+                        )
+
+                        for item in items:
+                            if "run_id" not in item:
+                                continue
+                            self._cache.put("run_exp", item["run_id"], exp_id)
+                            run = self._build_run_from_meta_item(item, pk)
+                            if run.info.start_time != boundary_ts:
+                                runs.append(run)
+                                tie_done = True
+                                break
+                            runs.append(run)
+
+                        if tie_done:
+                            next_page_token = encode_page_token(
+                                {
+                                    "exp_idx": ci if inner_next else ci + 1,
+                                    "inner_token": inner_next,
+                                }
+                            )
+                            exhausted = False
+                            break
+
+                        if not inner_next:
+                            exhausted = True
+                            next_page_token = None
+                            break
+                        ct = inner_next
+
+                    if tie_done or exhausted:
+                        break
+
+        # DynamoDB returns start_time DESC, run_id DESC via LSI1 (ULID order).
+        # MLflow expects start_time DESC, run_id ASC. Reverse contiguous
+        # blocks sharing the same start_time to fix the tiebreaker.
+        runs = _reverse_same_start_time_blocks(runs)
+
+        if len(runs) <= max_results:
+            return runs, None if exhausted else next_page_token
+
+        # Split into page + overflow, cache excess runs
+        page = runs[:max_results]
+        overflow = runs[max_results:]
+
+        from mlflow_dynamodbstore.dynamodb.overflow_cache import (
+            cache_put_overflow,
+            compute_cache_hash,
+            encode_overflow_token,
+        )
+
+        ddb_lek = decode_page_token(next_page_token) if not exhausted else None
+        cache_hash = compute_cache_hash(
+            pk=",".join(experiment_ids),
+            index_name=plan.index or "table",
+            order_by=order_by,
+            lek=ddb_lek,
+        )
+        overflow_data = [_serialize_run(r) for r in overflow]
+        cache_put_overflow(self._table, cache_hash, overflow_data, ddb_lek, max_results)
+        return page, encode_overflow_token(cache_hash, 0)
+
+    def _consume_run_overflow_page(
+        self,
+        decoded_token: dict[str, Any],
+        max_results: int,
+    ) -> tuple[list[Run], str | None]:
+        """Read a page from the overflow cache and return runs + next token."""
+        from mlflow_dynamodbstore.dynamodb.overflow_cache import (
+            cache_get_overflow_page,
+            encode_overflow_token,
+        )
+        from mlflow_dynamodbstore.dynamodb.pagination import encode_page_token
+
+        cache_hash = decoded_token["overflow"]
+        page_idx = decoded_token["page"]
+
+        models_data, ddb_lek, is_last = cache_get_overflow_page(self._table, cache_hash, page_idx)
+
+        if models_data is None:
+            raise MlflowException(
+                "Pagination overflow cache expired. Please restart your search.",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+
+        results = [_deserialize_run(d) for d in models_data]
+
+        if not is_last:
+            next_token = encode_overflow_token(cache_hash, page_idx + 1)
+        elif ddb_lek is not None:
+            # Overflow exhausted, resume normal DDB pagination
+            next_token = encode_page_token(ddb_lek)
+        else:
+            next_token = None
+
+        return results, next_token
 
     # ------------------------------------------------------------------
     # Run helpers

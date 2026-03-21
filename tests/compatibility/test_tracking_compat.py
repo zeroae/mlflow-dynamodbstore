@@ -378,9 +378,7 @@ _xfail_search_runs_order = pytest.mark.xfail(
 )
 test_order_by_attributes = _xfail_search_runs_order(test_order_by_attributes)
 test_order_by_metric_tag_param = _xfail_search_runs_order(test_order_by_metric_tag_param)
-test_search_with_deterministic_max_results = _xfail_search_runs_order(
-    test_search_with_deterministic_max_results
-)
+# test_search_with_deterministic_max_results — DONE (overflow cache)
 test_search_runs_start_time_alias = _xfail_search_runs_order(test_search_runs_start_time_alias)
 
 # --- A4. Search runs: metric/param post-filters (2 tests) ---
@@ -403,19 +401,7 @@ test_search_runs_datasets_with_param_filters = _xfail_search_runs_dataset(
     test_search_runs_datasets_with_param_filters
 )
 
-# --- A6. Search runs: pagination (3 tests) ---
-# Root cause: offset-based pagination in execute_query needs proper
-# cursor handling across experiments.
-_xfail_search_runs_page = pytest.mark.xfail(
-    reason="search_runs: pagination across experiments incomplete"
-)
-test_search_runs_pagination = _xfail_search_runs_page(test_search_runs_pagination)
-test_search_runs_pagination_last_page_exact = _xfail_search_runs_page(
-    test_search_runs_pagination_last_page_exact
-)
-test_search_runs_pagination_with_max_results_none = _xfail_search_runs_page(
-    test_search_runs_pagination_with_max_results_none
-)
+# --- A6. Search runs: pagination — DONE (overflow cache) ---
 
 # --- A7. Search runs: dataset inputs via search_runs (3 tests) ---
 # Root cause: search_runs ordering affects dataset input assertion order;
