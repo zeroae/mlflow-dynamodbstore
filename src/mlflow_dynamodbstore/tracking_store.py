@@ -2830,6 +2830,15 @@ class DynamoDBTrackingStore(AbstractStore):
                 ttl=ttl,
             )
 
+        # Write assessments with backfilled trace_id
+        if trace_info.assessments:
+            for assessment in trace_info.assessments:
+                if assessment.trace_id is None:
+                    assessment.trace_id = trace_id
+                self.create_assessment(assessment)
+            # Reload to return persisted state
+            return self.get_trace_info(trace_id)
+
         return trace_info
 
     def get_trace_info(self, trace_id: str) -> TraceInfo:
