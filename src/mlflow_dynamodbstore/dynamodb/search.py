@@ -126,6 +126,7 @@ class QueryPlan:
 # LSI mapping for order_by attributes
 _ORDER_BY_LSI: dict[str, str] = {
     "start_time": "lsi1",
+    "created": "lsi1",  # MLflow alias for start_time
     "end_time": "lsi2",
     "status": "lsi3",
     "run_name": "lsi4",
@@ -169,6 +170,7 @@ def _parse_order_by_token(token: str) -> tuple[str | None, str | None, bool]:
         field_type, key = token_body.split(".", 1)
         field_type = field_type.lower()
         field_type = _FIELD_TYPE_ALIASES.get(field_type, field_type)
+        key = key.lower()
         return field_type, key, scan_forward
     else:
         return None, token_body.lower(), scan_forward
@@ -256,7 +258,7 @@ def plan_run_query(
     if order_by:
         for token in order_by:
             field_type, key, sf = _parse_order_by_token(token)
-            if field_type is None and key in _ORDER_BY_LSI:
+            if field_type in (None, "attribute") and key in _ORDER_BY_LSI:
                 chosen_index = _ORDER_BY_LSI[key]
                 scan_forward = sf
                 break
@@ -492,9 +494,29 @@ def _compare(actual: Any, op: str, expected: Any) -> bool:
     return False
 
 
+_ATTRIBUTE_KEY_ALIASES: dict[str, str] = {
+    "created": "start_time",
+}
+
+
+_NUMERIC_ATTRIBUTES = {"start_time", "end_time"}
+
+
 def _apply_attribute_filter(item: dict[str, Any], pred: FilterPredicate) -> bool:
     """Check an attribute-level predicate against a META item."""
-    return _compare(item.get(pred.key), pred.op, pred.value)
+    key = _ATTRIBUTE_KEY_ALIASES.get(pred.key, pred.key)
+    actual = item.get(key)
+    value = pred.value
+    # Coerce to comparable types for numeric attributes
+    if key in _NUMERIC_ATTRIBUTES:
+        if actual is not None:
+            actual = int(actual)
+        if isinstance(value, str):
+            try:
+                value = int(value)
+            except (ValueError, TypeError):
+                pass
+    return _compare(actual, pred.op, value)
 
 
 def _apply_denormalized_tag_filters(
@@ -689,6 +711,15 @@ def _execute_index(
             for item in items
             if _apply_denormalized_tag_filters(item, plan.filter_expressions, predicates)
         ]
+
+    # For DESC on LSI2 (end_time), move null-sentinel items to the end
+    # so that nulls sort last regardless of direction.
+    if plan.index == "lsi2" and not plan.scan_forward:
+        from mlflow_dynamodbstore.dynamodb.schema import LSI2_NULL_SENTINEL, LSI2_SK
+
+        real = [it for it in items if it.get(LSI2_SK) != LSI2_NULL_SENTINEL]
+        nulls = [it for it in items if it.get(LSI2_SK) == LSI2_NULL_SENTINEL]
+        items = real + nulls
 
     return items
 

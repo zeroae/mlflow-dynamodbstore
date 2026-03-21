@@ -126,6 +126,7 @@ from mlflow_dynamodbstore.dynamodb.schema import (
     GSI5_PK,
     GSI5_SK,
     LSI1_SK,
+    LSI2_NULL_SENTINEL,
     LSI2_SK,
     LSI3_SK,
     LSI4_SK,
@@ -1361,6 +1362,7 @@ class DynamoDBTrackingStore(AbstractStore):
             "tags": {},
             # LSI attributes
             LSI1_SK: f"active#{run_id}",
+            LSI2_SK: LSI2_NULL_SENTINEL,
             LSI3_SK: f"RUNNING#{run_id}",
             # GSI1: reverse lookup run_id -> experiment_id
             GSI1_PK: f"{GSI1_RUN_PREFIX}{run_id}",

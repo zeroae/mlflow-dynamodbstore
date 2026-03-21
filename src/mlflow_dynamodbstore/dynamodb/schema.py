@@ -81,6 +81,9 @@ LSI3_SK = "lsi3sk"
 LSI4_SK = "lsi4sk"
 LSI5_SK = "lsi5sk"
 
+# Sentinel for null end_time in LSI2 (ensures runs appear in sparse index)
+LSI2_NULL_SENTINEL = 9999999999999
+
 # ---------------------------------------------------------------------------
 # GSI PK value prefixes
 # ---------------------------------------------------------------------------
