@@ -13,9 +13,11 @@ Excluded tests (11 total):
   ORM queries with ManagedSessionMaker
 """
 
+import json
 import uuid
 
 import pytest
+from mlflow.entities import GatewayEndpointModelConfig, GatewayModelLinkageType
 from mlflow.environment_variables import MLFLOW_ENABLE_WORKSPACES
 from mlflow.utils.workspace_context import WorkspaceContext
 
@@ -124,10 +126,48 @@ from tests.store.tracking.test_gateway_sql_store import (  # noqa: E402, F401
     test_update_gateway_secret_with_auth_config,
 )
 
-# --- Scorer-gateway integration gaps ---
-test_register_scorer_with_nonexistent_endpoint_raises = pytest.mark.xfail(
-    reason="DynamoDB store register_scorer does not validate gateway endpoint existence"
-)(test_register_scorer_with_nonexistent_endpoint_raises)
-test_get_scorer_with_deleted_endpoint_sets_model_to_null = pytest.mark.xfail(
-    reason="DynamoDB store get_scorer does not null out model when endpoint is deleted"
-)(test_get_scorer_with_deleted_endpoint_sets_model_to_null)
+
+def test_list_scorer_versions_resolves_endpoint_id_to_name(store):
+    """list_scorer_versions should resolve gateway endpoint IDs back to names."""
+    secret = store.create_gateway_secret(
+        secret_name=f"lsv-key-{uuid.uuid4().hex[:8]}",
+        secret_value={"api_key": "value"},
+    )
+    model_def = store.create_gateway_model_definition(
+        name=f"lsv-model-{uuid.uuid4().hex[:8]}",
+        secret_id=secret.secret_id,
+        provider="openai",
+        model_name="gpt-4",
+    )
+    endpoint = store.create_gateway_endpoint(
+        name=f"lsv-endpoint-{uuid.uuid4().hex[:8]}",
+        model_configs=[
+            GatewayEndpointModelConfig(
+                model_definition_id=model_def.model_definition_id,
+                linkage_type=GatewayModelLinkageType.PRIMARY,
+                weight=1.0,
+            ),
+        ],
+    )
+
+    experiment_id = store.create_experiment(f"lsv-test-{uuid.uuid4().hex}")
+    serialized_scorer = json.dumps(
+        {
+            "instructions_judge_pydantic_data": {
+                "model": f"gateway:/{endpoint.name}",
+                "instructions": "Rate the response",
+            }
+        }
+    )
+
+    # Register two versions
+    store.register_scorer(experiment_id, "my-scorer", serialized_scorer)
+    store.register_scorer(experiment_id, "my-scorer", serialized_scorer)
+
+    versions = store.list_scorer_versions(experiment_id, "my-scorer")
+    assert len(versions) == 2
+
+    for v in versions:
+        data = json.loads(v._serialized_scorer)
+        model = data["instructions_judge_pydantic_data"]["model"]
+        assert model == f"gateway:/{endpoint.name}"
