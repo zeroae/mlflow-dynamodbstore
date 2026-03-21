@@ -441,76 +441,91 @@ test_search_traces_with_tag_rlike_filters = _xfail_trace_filter(
     test_search_traces_with_tag_rlike_filters
 )
 
-# --- Category 2: missing input validation (remaining xfails) ---
-# test_log_batch_internal_error: patches SqlAlchemy-specific internal methods (_log_metrics, etc.)
-test_log_batch_internal_error = pytest.mark.xfail(
-    reason="Test patches SqlAlchemy-specific internal methods, not applicable to DynamoDB store"
-)(test_log_batch_internal_error)
-# search_logged_models order_by: needs sorting feature implementation
-test_search_logged_models_order_by = pytest.mark.xfail(
-    reason="DynamoDB store does not yet support search_logged_models order_by"
-)(test_search_logged_models_order_by)
 
-# --- Category 3: experiment ID format mismatch (permanent) ---
-_xfail_error_msg = pytest.mark.xfail(reason="DynamoDB store uses ULID experiment IDs, not integers")
-test_get_experiment_invalid_id = _xfail_error_msg(test_get_experiment_invalid_id)
+# =====================================================================
+# REMAINING XFAILS — grouped by root cause
+# =====================================================================
 
+# --- A1. Search runs: ViewType.ALL fix + basic filters (2 tests) ---
+# Root cause: plan_run_query used sk_prefix="active#" for ViewType.ALL,
+# missing deleted runs. Fixed with sk_prefix=None + SK FilterExpression.
+# Also: RunOutputs should always be non-None in search results.
 
-# --- Category 5: search runs ordering/pagination/filtering broken (15 tests) ---
-_xfail_search_runs = pytest.mark.xfail(
-    reason="DynamoDB store search_runs ordering, pagination, and filtering incomplete"
+# --- A2. Search runs: attribute LIKE needs FTS indexing (2 tests) ---
+# Root cause: attribute.artifact_uri LIKE '%..%' triggers FTS strategy but
+# artifact_uri is not FTS-indexed. Need to index more run fields in FTS.
+_xfail_search_runs_fts = pytest.mark.xfail(
+    reason="search_runs: attribute LIKE needs FTS indexing for artifact_uri and other fields"
 )
-test_order_by_attributes = _xfail_search_runs(test_order_by_attributes)
-test_order_by_metric_tag_param = _xfail_search_runs(test_order_by_metric_tag_param)
-test_search_attrs = _xfail_search_runs(test_search_attrs)
-test_search_metrics = _xfail_search_runs(test_search_metrics)
-test_search_params = _xfail_search_runs(test_search_params)
-test_search_runs_datasets = _xfail_search_runs(test_search_runs_datasets)
-test_search_runs_datasets_with_param_filters = _xfail_search_runs(
-    test_search_runs_datasets_with_param_filters
+test_search_attrs = _xfail_search_runs_fts(test_search_attrs)
+test_search_tags = _xfail_search_runs_fts(test_search_tags)
+
+# --- A3. Search runs: ordering (4 tests) ---
+# Root cause: order_by for start_time, end_time, attributes needs proper
+# LSI mapping and sort key handling.
+_xfail_search_runs_order = pytest.mark.xfail(
+    reason="search_runs: ordering by start_time/attributes incomplete"
 )
-test_search_runs_pagination = _xfail_search_runs(test_search_runs_pagination)
-test_search_runs_pagination_last_page_exact = _xfail_search_runs(
-    test_search_runs_pagination_last_page_exact
-)
-test_search_runs_pagination_with_max_results_none = _xfail_search_runs(
-    test_search_runs_pagination_with_max_results_none
-)
-test_search_runs_returns_outputs = _xfail_search_runs(test_search_runs_returns_outputs)
-test_search_runs_start_time_alias = _xfail_search_runs(test_search_runs_start_time_alias)
-test_search_tags = _xfail_search_runs(test_search_tags)
-test_search_vanilla = _xfail_search_runs(test_search_vanilla)
-test_search_with_deterministic_max_results = _xfail_search_runs(
+test_order_by_attributes = _xfail_search_runs_order(test_order_by_attributes)
+test_order_by_metric_tag_param = _xfail_search_runs_order(test_order_by_metric_tag_param)
+test_search_with_deterministic_max_results = _xfail_search_runs_order(
     test_search_with_deterministic_max_results
 )
+test_search_runs_start_time_alias = _xfail_search_runs_order(test_search_runs_start_time_alias)
 
-# --- Category 6: dataset CRUD/association bugs — mostly DONE ---
-# Remaining: tests blocked by search_runs ordering (Cat 5 dependency)
-_xfail_dataset_search_runs = pytest.mark.xfail(
-    reason="Needs search_runs ordering/dataset filter (Cat 5 dependency)"
+# --- A4. Search runs: metric/param post-filters (2 tests) ---
+# Root cause: metric/param filter predicates in _apply_post_filter need
+# sub-item lookups for non-denormalized values.
+_xfail_search_runs_filter = pytest.mark.xfail(
+    reason="search_runs: metric/param post-filter predicates incomplete"
 )
-test_log_input_multiple_times_does_not_overwrite_tags_or_dataset = _xfail_dataset_search_runs(
+test_search_metrics = _xfail_search_runs_filter(test_search_metrics)
+test_search_params = _xfail_search_runs_filter(test_search_params)
+
+# --- A5. Search runs: dataset filters (2 tests) ---
+# Root cause: DLINK strategy for dataset.name/digest/context filters
+# needs work in _execute_dlink.
+_xfail_search_runs_dataset = pytest.mark.xfail(
+    reason="search_runs: dataset filter predicates incomplete"
+)
+test_search_runs_datasets = _xfail_search_runs_dataset(test_search_runs_datasets)
+test_search_runs_datasets_with_param_filters = _xfail_search_runs_dataset(
+    test_search_runs_datasets_with_param_filters
+)
+
+# --- A6. Search runs: pagination (3 tests) ---
+# Root cause: offset-based pagination in execute_query needs proper
+# cursor handling across experiments.
+_xfail_search_runs_page = pytest.mark.xfail(
+    reason="search_runs: pagination across experiments incomplete"
+)
+test_search_runs_pagination = _xfail_search_runs_page(test_search_runs_pagination)
+test_search_runs_pagination_last_page_exact = _xfail_search_runs_page(
+    test_search_runs_pagination_last_page_exact
+)
+test_search_runs_pagination_with_max_results_none = _xfail_search_runs_page(
+    test_search_runs_pagination_with_max_results_none
+)
+
+# --- A7. Search runs: dataset inputs via search_runs (3 tests) ---
+# Root cause: search_runs ordering affects dataset input assertion order;
+# also DynamoDB 400KB item size limit on large inputs.
+_xfail_search_runs_inputs = pytest.mark.xfail(
+    reason="search_runs: dataset input ordering and DynamoDB item size limits"
+)
+test_log_input_multiple_times_does_not_overwrite_tags_or_dataset = _xfail_search_runs_inputs(
     test_log_input_multiple_times_does_not_overwrite_tags_or_dataset
 )
-test_log_inputs_and_retrieve_runs_behaves_as_expected = _xfail_dataset_search_runs(
+test_log_inputs_and_retrieve_runs_behaves_as_expected = _xfail_search_runs_inputs(
     test_log_inputs_and_retrieve_runs_behaves_as_expected
 )
-test_log_inputs_with_large_inputs_limit_check = _xfail_dataset_search_runs(
+test_log_inputs_with_large_inputs_limit_check = _xfail_search_runs_inputs(
     test_log_inputs_with_large_inputs_limit_check
 )
 
-# --- Category 7: trace persistence remaining issues ---
-
-# --- Category 8: search experiments — partially DONE ---
-# Permanent xfail: integer experiment ID assumptions
-test_default_experiment_lifecycle = pytest.mark.xfail(
-    reason="DynamoDB uses ULID experiment IDs, not auto-increment integers (permanent)"
-)(test_default_experiment_lifecycle)
-# Remaining Cat 8 — DONE (all use FilterExpression, no in-memory filtering)
-
-# --- Category 9: metric history dedup (2 tests, schema change needed) ---
-# History SK is key#step#timestamp — same step+timestamp with different values overwrites.
-# Fixing requires adding value to SK, which is a schema-breaking change.
+# --- B. Metric history schema (2 tests) ---
+# Root cause: History SK is key#step#timestamp — same step+timestamp with
+# different values overwrites. Fixing requires adding value to SK.
 _xfail_metric_history = pytest.mark.xfail(
     reason="Metric history SK dedup: same step+timestamp different values overwrites"
 )
@@ -523,30 +538,157 @@ test_log_metric_concurrent_logging_succeeds = _xfail_metric_history(
     test_log_metric_concurrent_logging_succeeds
 )
 
-# --- Reclassified from Cat 9 to Cat 6 (dataset CRUD) — DONE ---
+# --- C. Trace search filter engine (31 tests) ---
 
-# test_delete_traces_with_max_count: reclassified to Cat 17 (see below)
+# -- C1. Trace name LIKE/ILIKE/RLIKE (3 tests) --
+# Root cause: trace META item has no "name" field — trace name is only in
+# LSI4_SK (lowercase). _apply_trace_post_filter can't find it.
+_xfail_trace_name = pytest.mark.xfail(
+    reason="Trace META missing 'name' field for LIKE/ILIKE/RLIKE filters"
+)
+test_search_traces_with_name_like_filters = _xfail_trace_name(
+    test_search_traces_with_name_like_filters
+)
+test_search_traces_with_name_ilike_variations = _xfail_trace_name(
+    test_search_traces_with_name_ilike_variations
+)
+test_search_traces_with_name_rlike_filters = _xfail_trace_name(
+    test_search_traces_with_name_rlike_filters
+)
 
-# --- Category 10: logged model search/lifecycle bugs (7 tests) — DONE ---
+# -- C2. Tag LIKE/RLIKE (2 tests) --
+# Root cause: tag LIKE/RLIKE not implemented in _apply_trace_post_filter
+_xfail_trace_tag = pytest.mark.xfail(reason="Trace tag LIKE/RLIKE filters not implemented")
+test_search_traces_with_tag_like_filters = _xfail_trace_tag(
+    test_search_traces_with_tag_like_filters
+)
+test_search_traces_with_tag_rlike_filters = _xfail_trace_tag(
+    test_search_traces_with_tag_rlike_filters
+)
 
-# --- Category 11: batch_get_traces remaining issues ---
-# --- Category 12: trace sessions (remaining) ---
-# find_completed_sessions_with_filter_string: trace search filter not applied correctly
+# -- C3. Metadata LIKE/RLIKE (2 tests) --
+# Root cause: metadata LIKE/RLIKE not implemented in _apply_trace_post_filter
+_xfail_trace_meta = pytest.mark.xfail(reason="Trace metadata LIKE/RLIKE filters not implemented")
+test_search_traces_with_metadata_like_filters = _xfail_trace_meta(
+    test_search_traces_with_metadata_like_filters
+)
+test_search_traces_with_metadata_rlike_filters = _xfail_trace_meta(
+    test_search_traces_with_metadata_rlike_filters
+)
+
+# -- C4. Span attribute/type/status/content filters (8 tests) --
+# Root cause: span predicates pass through _apply_trace_post_filter (return True).
+# Need to query SPANS blob and match span properties.
+_xfail_trace_span = pytest.mark.xfail(
+    reason="Trace span filters not implemented (need SPANS blob querying)"
+)
+test_search_traces_with_span_attributes_filter = _xfail_trace_span(
+    test_search_traces_with_span_attributes_filter
+)
+test_search_traces_with_span_attributes_rlike_filters = _xfail_trace_span(
+    test_search_traces_with_span_attributes_rlike_filters
+)
+test_search_traces_with_span_attributute_backticks = _xfail_trace_span(
+    test_search_traces_with_span_attributute_backticks
+)
+test_search_traces_with_span_content_filter = _xfail_trace_span(
+    test_search_traces_with_span_content_filter
+)
+test_search_traces_with_span_name_rlike_filters = _xfail_trace_span(
+    test_search_traces_with_span_name_rlike_filters
+)
+test_search_traces_with_span_status_filter = _xfail_trace_span(
+    test_search_traces_with_span_status_filter
+)
+test_search_traces_with_span_type_filter = _xfail_trace_span(
+    test_search_traces_with_span_type_filter
+)
+test_search_traces_with_span_type_rlike_filters = _xfail_trace_span(
+    test_search_traces_with_span_type_rlike_filters
+)
+test_search_traces_combined_span_filters_match_same_span = _xfail_trace_span(
+    test_search_traces_combined_span_filters_match_same_span
+)
+test_search_traces_with_combined_span_filters = _xfail_trace_span(
+    test_search_traces_with_combined_span_filters
+)
+test_search_traces_span_filters_with_no_results = _xfail_trace_span(
+    test_search_traces_span_filters_with_no_results
+)
+
+# -- C5. Assessment/feedback/expectation filters (2 tests) --
+_xfail_trace_assess = pytest.mark.xfail(
+    reason="Trace assessment/feedback/expectation filters not implemented"
+)
+test_search_traces_with_assessment_is_null_filters = _xfail_trace_assess(
+    test_search_traces_with_assessment_is_null_filters
+)
+test_search_traces_with_feedback_and_expectation_filters = _xfail_trace_assess(
+    test_search_traces_with_feedback_and_expectation_filters
+)
+test_search_traces_with_feedback_rlike_filters = _xfail_trace_assess(
+    test_search_traces_with_feedback_rlike_filters
+)
+
+# -- C6. Client request ID filters (3 tests) --
+_xfail_trace_crid = pytest.mark.xfail(reason="Trace client_request_id filters not implemented")
+test_search_traces_with_client_request_id_filter = _xfail_trace_crid(
+    test_search_traces_with_client_request_id_filter
+)
+test_search_traces_with_client_request_id_edge_cases = _xfail_trace_crid(
+    test_search_traces_with_client_request_id_edge_cases
+)
+test_search_traces_with_client_request_id_rlike_filters = _xfail_trace_crid(
+    test_search_traces_with_client_request_id_rlike_filters
+)
+
+# -- C7. Prompt filters (2 tests) --
+_xfail_trace_prompt = pytest.mark.xfail(reason="Trace prompt filters not implemented")
+test_search_traces_with_prompts_filter = _xfail_trace_prompt(test_search_traces_with_prompts_filter)
+test_search_traces_with_prompts_filter_multiple_prompts = _xfail_trace_prompt(
+    test_search_traces_with_prompts_filter_multiple_prompts
+)
+
+# -- C8. Combined/misc filters (4 tests) --
+_xfail_trace_combined = pytest.mark.xfail(reason="Trace combined/misc filters incomplete")
+test_search_traces_with_combined_filters = _xfail_trace_combined(
+    test_search_traces_with_combined_filters
+)
+test_search_traces_with_combined_numeric_and_string_filters = _xfail_trace_combined(
+    test_search_traces_with_combined_numeric_and_string_filters
+)
+test_search_traces_with_empty_and_special_characters = _xfail_trace_combined(
+    test_search_traces_with_empty_and_special_characters
+)
+test_search_traces_with_full_text_filter = _xfail_trace_combined(
+    test_search_traces_with_full_text_filter
+)
+
+# -- C9. Sessions (depends on trace filter engine) --
 test_find_completed_sessions_with_filter_string = pytest.mark.xfail(
-    reason="find_completed_sessions filter_string post-filtering incomplete (Cat 1 dependency)"
+    reason="Depends on trace search filter engine"
 )(test_find_completed_sessions_with_filter_string)
 
-# --- Category 13: missing methods (remaining) ---
-# deprecated_start_trace_v2: legacy V2 trace API, not worth implementing
+# --- D. Permanent xfails (7 tests) ---
+# Integer experiment ID assumptions
+test_default_experiment_lifecycle = pytest.mark.xfail(
+    reason="DynamoDB uses ULID experiment IDs, not auto-increment integers (permanent)"
+)(test_default_experiment_lifecycle)
+test_get_experiment_invalid_id = pytest.mark.xfail(
+    reason="DynamoDB uses ULID experiment IDs, not integers (permanent)"
+)(test_get_experiment_invalid_id)
+# SqlAlchemy-specific internal method patching
+test_log_batch_internal_error = pytest.mark.xfail(
+    reason="Test patches SqlAlchemy-specific internal methods (permanent)"
+)(test_log_batch_internal_error)
+# Deprecated V2 trace API
 test_legacy_start_and_end_trace_v2 = pytest.mark.xfail(
-    reason="Deprecated V2 trace API not implemented in DynamoDB store"
+    reason="Deprecated V2 trace API not implemented (permanent)"
 )(test_legacy_start_and_end_trace_v2)
-
-
-# --- Category 15: DynamoDB key size/duplicate key constraints (remaining) ---
-# search_logged_models order_by_dataset: needs sorting feature implementation (same as Cat 2)
+# search_logged_models order_by — needs sort implementation
+test_search_logged_models_order_by = pytest.mark.xfail(
+    reason="search_logged_models order_by not yet implemented (permanent)"
+)(test_search_logged_models_order_by)
 test_search_logged_models_order_by_dataset = pytest.mark.xfail(
-    reason="DynamoDB store does not yet support search_logged_models order_by"
+    reason="search_logged_models order_by not yet implemented (permanent)"
 )(test_search_logged_models_order_by_dataset)
-
-# --- Category 17: misc run/experiment/trace/scorer lifecycle bugs (7 tests) ---
