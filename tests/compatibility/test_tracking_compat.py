@@ -409,10 +409,7 @@ test_log_metric_concurrent_logging_succeeds = pytest.mark.moto_server(
 # -- C8. Combined/misc — mostly DONE, full_text remaining --
 # test_search_traces_with_full_text_filter — DONE (span content filter)
 
-# -- C9. Sessions (depends on trace filter engine) --
-test_find_completed_sessions_with_filter_string = pytest.mark.xfail(
-    reason="Depends on trace search filter engine"
-)(test_find_completed_sessions_with_filter_string)
+# -- C9. Sessions — DONE (first-trace filter) --
 
 # --- D. Permanent xfails (7 tests) ---
 # Integer experiment ID assumptions
@@ -430,10 +427,4 @@ test_log_batch_internal_error = pytest.mark.xfail(
 test_legacy_start_and_end_trace_v2 = pytest.mark.xfail(
     reason="Deprecated V2 trace API not implemented (permanent)"
 )(test_legacy_start_and_end_trace_v2)
-# search_logged_models order_by — needs sort implementation
-test_search_logged_models_order_by = pytest.mark.xfail(
-    reason="search_logged_models order_by not yet implemented (permanent)"
-)(test_search_logged_models_order_by)
-test_search_logged_models_order_by_dataset = pytest.mark.xfail(
-    reason="search_logged_models order_by not yet implemented (permanent)"
-)(test_search_logged_models_order_by_dataset)
+# search_logged_models order_by — DONE (Python-side sort with nulls last)
