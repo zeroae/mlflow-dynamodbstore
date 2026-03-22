@@ -456,12 +456,13 @@ def plan_trace_query(
     if chosen_index is None:
         chosen_index = "lsi1"
 
-    # Build FilterExpression for prompt predicates (server-side)
+    # Build FilterExpression for prompt predicates (server-side).
+    # Prompts are stored as a DynamoDB StringSet, so we use contains().
     post_filters: list[FilterPredicate] = []
     prompt_conditions: list[ConditionBase] = []
     for pred in predicates:
         if pred.key == "mlflow.linkedPrompts" and pred.op == "=":
-            prompt_conditions.append(Attr(f"prompts.{pred.value}").exists())
+            prompt_conditions.append(Attr("prompts").contains(pred.value))
         else:
             post_filters.append(pred)
 
@@ -1014,9 +1015,9 @@ def _apply_trace_post_filter(
         if pred.key == "mlflow.traceName":
             actual = item.get("trace_name")
             return _compare(actual, pred.op, pred.value)
-        # Prompt filter: handled by FilterExpression via denormalized prompts map
+        # Prompt filter: handled by FilterExpression via denormalized prompts set
         if pred.key == "mlflow.linkedPrompts":
-            prompts = item.get("prompts", {})
+            prompts = item.get("prompts", set())
             return pred.value in prompts
         # Check denormalized tags first
         tags = item.get("tags", {})
@@ -1156,7 +1157,11 @@ def _execute_trace_index(
 
     # For numeric LSIs (lsi1, lsi2, lsi5): query main table by SK prefix T#
     # to get all trace items, then sort in Python by the LSI attribute.
-    items = table.query(pk=pk, sk_prefix=SK_TRACE_PREFIX, filter_expression=plan.filter_expression)
+    items = table.query(
+        pk=pk,
+        sk_prefix=SK_TRACE_PREFIX,
+        filter_expression=plan.filter_expression,
+    )
     # Filter to META items only (exclude sub-items like T#<id>#TAG#...)
     meta_items = [item for item in items if _is_trace_meta_item(item)]
 

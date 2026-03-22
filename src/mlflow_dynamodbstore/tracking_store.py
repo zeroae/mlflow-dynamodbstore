@@ -3288,7 +3288,6 @@ class DynamoDBTrackingStore(AbstractStore):
             "tags": {},
             "feedbacks": {},
             "expectations": {},
-            "prompts": {},
             # LSI attributes (must be strings, zero-padded for sort order)
             LSI1_SK: f"{request_time:020d}",
             LSI2_SK: request_time + execution_duration,
@@ -4584,6 +4583,25 @@ class DynamoDBTrackingStore(AbstractStore):
         self._table.put_item(item)
         if self._config.should_denormalize(experiment_id, tag_key):
             self._denormalize_tag(pk, f"{SK_TRACE_PREFIX}{trace_id}", tag_key, tag_value)
+
+        # Denormalize prompts as a StringSet when linkedPrompts tag is written.
+        # ADD creates the set if it doesn't exist — no conditional init needed.
+        if tag_key == TraceTagKey.LINKED_PROMPTS:
+            import json as _json
+
+            trace_sk = f"{SK_TRACE_PREFIX}{trace_id}"
+            try:
+                versions = _json.loads(tag_value)
+            except (ValueError, TypeError):
+                versions = []
+            prompt_keys = {f"{pv['name']}/{pv['version']}" for pv in versions}
+            if prompt_keys:
+                self._table._table.update_item(
+                    Key={"PK": pk, "SK": trace_sk},
+                    UpdateExpression="ADD #prompts :vals",
+                    ExpressionAttributeNames={"#prompts": "prompts"},
+                    ExpressionAttributeValues={":vals": prompt_keys},
+                )
         # Update FTS items for tag value if configured
         if self._config.should_trigram("trace_tag_value") and (tag_value or old_value):
             field_suffix = f"#{tag_key}"
@@ -4629,7 +4647,8 @@ class DynamoDBTrackingStore(AbstractStore):
         experiment_id = self._resolve_trace_experiment(trace_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         # Read TTL from the trace META item
-        meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+        trace_sk = f"{SK_TRACE_PREFIX}{trace_id}"
+        meta = self._table.get_item(pk=pk, sk=trace_sk)
         if meta is None:
             raise MlflowException(
                 f"Trace with ID {trace_id} is not found.",
@@ -4712,20 +4731,10 @@ class DynamoDBTrackingStore(AbstractStore):
         versions_json = _json.dumps(
             [{"name": pv.name, "version": pv.version} for pv in prompt_versions]
         )
+        # _write_trace_tag handles prompts map denormalization automatically
         self._write_trace_tag(
             experiment_id, trace_id, TraceTagKey.LINKED_PROMPTS, versions_json, ttl
         )
-
-        # Denormalize prompt name/version onto trace META for FilterExpression
-        trace_sk = f"{SK_TRACE_PREFIX}{trace_id}"
-        for pv in prompt_versions:
-            key = f"{pv.name}/{pv.version}"
-            self._table._table.update_item(
-                Key={"PK": pk, "SK": trace_sk},
-                UpdateExpression="SET #map.#key = :val",
-                ExpressionAttributeNames={"#map": "prompts", "#key": key},
-                ExpressionAttributeValues={":val": True},
-            )
 
     def batch_get_trace_infos(
         self, trace_ids: list[str], location: str | None = None
@@ -5011,7 +5020,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 value = str(int(value))
             else:
                 value = str(value)
-        # SET feedbacks.#name = :val (nested map update)
+        # SET feedbacks.#name = :val (nested map update, create map if missing)
         self._table._table.update_item(
             Key={"PK": pk, "SK": trace_sk},
             UpdateExpression="SET #map.#name = :val",
