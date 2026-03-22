@@ -569,3 +569,116 @@ class TestCorrelationIntegration:
         assert result.filter1_count == 2
         assert result.filter2_count == 2
         assert result.joint_count == 1
+
+
+class TestRegistryLinkPromptsToTrace:
+    """Test that DynamoDBRegistryStore.link_prompts_to_trace works end-to-end.
+
+    Verifies the fix for the missing _link_to_trace_lock and the override
+    that bypasses the abstract store's REST roundtrip.
+    """
+
+    def test_link_prompts_sets_tag_and_denormalizes(self, tracking_store, registry_store):
+        """link_prompts_to_trace should set the LINKED_PROMPTS tag and
+        populate the prompts StringSet on the trace META item."""
+        import json
+        from unittest.mock import patch
+
+        from mlflow.entities.model_registry import PromptVersion
+
+        exp_id = tracking_store.create_experiment("link-prompt-exp")
+        ti = _make_trace_info(exp_id, "tr-link-1")
+        tracking_store.start_trace(ti)
+
+        pvs = [
+            PromptVersion(name="mlflow-demo.prompts.code-reviewer", version=4, template="t"),
+            PromptVersion(name="simple-prompt", version=1, template="t"),
+        ]
+
+        # Patch _get_tracking_store to return our tracking store
+        with patch("mlflow.tracking._get_store", return_value=tracking_store):
+            registry_store.link_prompts_to_trace(prompt_versions=pvs, trace_id="tr-link-1")
+
+        # Verify tag was written
+        trace_info = tracking_store.get_trace_info("tr-link-1")
+        linked = json.loads(trace_info.tags[TraceTagKey.LINKED_PROMPTS])
+        assert len(linked) == 2
+        names = {f"{p['name']}/{p['version']}" for p in linked}
+        assert "mlflow-demo.prompts.code-reviewer/4" in names
+        assert "simple-prompt/1" in names
+
+        # Verify prompts StringSet was denormalized on META
+        from mlflow_dynamodbstore.dynamodb.schema import PK_EXPERIMENT_PREFIX, SK_TRACE_PREFIX
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-link-1")
+        prompts_set = meta.get("prompts", set())
+        assert "mlflow-demo.prompts.code-reviewer/4" in prompts_set
+        assert "simple-prompt/1" in prompts_set
+
+    def test_link_prompts_merge_is_additive(self, tracking_store, registry_store):
+        """Calling link_prompts_to_trace twice should merge, not overwrite."""
+        import json
+        from unittest.mock import patch
+
+        from mlflow.entities.model_registry import PromptVersion
+
+        exp_id = tracking_store.create_experiment("link-merge-exp")
+        ti = _make_trace_info(exp_id, "tr-link-2")
+        tracking_store.start_trace(ti)
+
+        with patch("mlflow.tracking._get_store", return_value=tracking_store):
+            registry_store.link_prompts_to_trace(
+                prompt_versions=[PromptVersion(name="prompt-a", version=1, template="t")],
+                trace_id="tr-link-2",
+            )
+            registry_store.link_prompts_to_trace(
+                prompt_versions=[PromptVersion(name="prompt-b", version=2, template="t")],
+                trace_id="tr-link-2",
+            )
+
+        trace_info = tracking_store.get_trace_info("tr-link-2")
+        linked = json.loads(trace_info.tags[TraceTagKey.LINKED_PROMPTS])
+        assert len(linked) == 2
+        names = {f"{p['name']}/{p['version']}" for p in linked}
+        assert "prompt-a/1" in names
+        assert "prompt-b/2" in names
+
+    def test_link_prompts_searchable_with_filter(self, tracking_store, registry_store):
+        """Traces with linked prompts should be findable via prompt filter."""
+        from unittest.mock import patch
+
+        from mlflow.entities.model_registry import PromptVersion
+
+        exp_id = tracking_store.create_experiment("link-search-exp")
+        ti1 = _make_trace_info(exp_id, "tr-search-1")
+        ti2 = _make_trace_info(exp_id, "tr-search-2")
+        tracking_store.start_trace(ti1)
+        tracking_store.start_trace(ti2)
+
+        with patch("mlflow.tracking._get_store", return_value=tracking_store):
+            registry_store.link_prompts_to_trace(
+                prompt_versions=[
+                    PromptVersion(
+                        name="mlflow-demo.prompts.code-reviewer",
+                        version=4,
+                        template="t",
+                    )
+                ],
+                trace_id="tr-search-1",
+            )
+
+        # Should find tr-search-1 with prompt filter
+        traces, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string='prompt = "mlflow-demo.prompts.code-reviewer/4"',
+        )
+        assert len(traces) == 1
+        assert traces[0].trace_id == "tr-search-1"
+
+        # Should NOT find tr-search-2
+        traces, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string='prompt = "other-prompt/1"',
+        )
+        assert len(traces) == 0
