@@ -4629,7 +4629,8 @@ class DynamoDBTrackingStore(AbstractStore):
         experiment_id = self._resolve_trace_experiment(trace_id)
         pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
         # Read TTL from the trace META item
-        meta = self._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+        trace_sk = f"{SK_TRACE_PREFIX}{trace_id}"
+        meta = self._table.get_item(pk=pk, sk=trace_sk)
         if meta is None:
             raise MlflowException(
                 f"Trace with ID {trace_id} is not found.",
@@ -4637,6 +4638,24 @@ class DynamoDBTrackingStore(AbstractStore):
             )
         ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
         self._write_trace_tag(experiment_id, trace_id, key, value, ttl)
+
+        # When linkedPrompts tag is set (e.g. via registry's link_prompts_to_trace
+        # fallback path), denormalize the prompts map on META for FilterExpression.
+        if key == TraceTagKey.LINKED_PROMPTS:
+            import json as _json
+
+            try:
+                versions = _json.loads(value)
+            except (ValueError, TypeError):
+                versions = []
+            for pv in versions:
+                pv_key = f"{pv['name']}/{pv['version']}"
+                self._table._table.update_item(
+                    Key={"PK": pk, "SK": trace_sk},
+                    UpdateExpression="SET #map.#key = :val",
+                    ExpressionAttributeNames={"#map": "prompts", "#key": pv_key},
+                    ExpressionAttributeValues={":val": True},
+                )
 
     def delete_trace_tag(self, trace_id: str, key: str) -> None:
         """Delete a tag from a trace."""
