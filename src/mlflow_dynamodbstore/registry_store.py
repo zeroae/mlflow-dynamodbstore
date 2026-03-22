@@ -236,6 +236,8 @@ class DynamoDBRegistryStore(AbstractStore):
     """MLflow model registry store backed by DynamoDB."""
 
     def __init__(self, store_uri: str) -> None:
+        import threading
+
         uri = parse_dynamodb_uri(store_uri)
         if uri.deploy:
             ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
@@ -244,6 +246,8 @@ class DynamoDBRegistryStore(AbstractStore):
         self._prefetch: dict[str, tuple[float, list[dict[str, Any]], dict[str, Any] | None]] = {}
         self._config = ConfigReader(self._table)
         self._config.reconcile()
+        # Required by AbstractStore.link_prompts_to_trace
+        self._link_to_trace_lock = threading.RLock()
 
     @property
     def supports_workspaces(self) -> bool:
