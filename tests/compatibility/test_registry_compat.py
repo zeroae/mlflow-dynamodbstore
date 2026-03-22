@@ -146,3 +146,8 @@ def test_webhook_secret_encryption(store):
     # Verify decryption works via get_webhook
     fetched = store.get_webhook(webhook.webhook_id)
     assert fetched.secret == "my_secret"
+
+
+# test_search_prompt_versions: requires PromptVersion entity and
+# model_version_to_prompt_version helper not available in MLflow 3.10.1.
+# Will be added when vendored MLflow is updated.
