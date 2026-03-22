@@ -7,6 +7,40 @@ from typing import Any
 import boto3
 from boto3.dynamodb.conditions import ConditionBase, Key
 
+
+class RawFilterExpression:
+    """A raw DynamoDB filter expression with explicit ExpressionAttributeNames.
+
+    Use this instead of boto3's ``Attr()`` when attribute names contain dots,
+    since ``Attr("map.dotted.key")`` incorrectly splits on dots as nested
+    map access.
+
+    Example::
+
+        expr = RawFilterExpression.map_key_exists("prompts", "my.dotted.name/1")
+        # expression: "attribute_exists(#_map.#_key0)"
+        # names: {"#_map": "prompts", "#_key0": "my.dotted.name/1"}
+    """
+
+    def __init__(self, expression: str, attribute_names: dict[str, str] | None = None) -> None:
+        self.expression = expression
+        self.attribute_names = attribute_names or {}
+
+    def __and__(self, other: RawFilterExpression) -> RawFilterExpression:
+        merged_names = {**self.attribute_names, **other.attribute_names}
+        return RawFilterExpression(f"({self.expression}) AND ({other.expression})", merged_names)
+
+    @classmethod
+    def map_key_exists(cls, map_attr: str, key: str, idx: int = 0) -> RawFilterExpression:
+        """Build ``attribute_exists(#map.#key)`` for a map key that may contain dots."""
+        map_placeholder = f"#_map{idx}"
+        key_placeholder = f"#_key{idx}"
+        return cls(
+            f"attribute_exists({map_placeholder}.{key_placeholder})",
+            {map_placeholder: map_attr, key_placeholder: key},
+        )
+
+
 # Mapping from index name to (pk_attr, sk_attr)
 _INDEX_KEY_ATTRS: dict[str, tuple[str, str]] = {
     "gsi1": ("gsi1pk", "gsi1sk"),
@@ -236,7 +270,14 @@ class DynamoDBTable:
         if index_name:
             kwargs["IndexName"] = index_name
         if filter_expression is not None:
-            kwargs["FilterExpression"] = filter_expression
+            if isinstance(filter_expression, RawFilterExpression):
+                kwargs["FilterExpression"] = filter_expression.expression
+                expression_attribute_names = {
+                    **(expression_attribute_names or {}),
+                    **filter_expression.attribute_names,
+                }
+            else:
+                kwargs["FilterExpression"] = filter_expression
         if expression_attribute_names:
             kwargs["ExpressionAttributeNames"] = expression_attribute_names
 

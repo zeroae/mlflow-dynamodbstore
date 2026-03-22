@@ -2232,3 +2232,106 @@ class TestLogSpansAsync:
         pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
         cached = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}tr-async-1#SPANS")
         assert cached is not None
+
+
+class TestRawFilterExpression:
+    """Tests for RawFilterExpression handling of dotted map keys."""
+
+    def test_map_key_exists_with_dotted_name(self, tracking_store):
+        """Prompt names with dots must work in FilterExpression."""
+        from mlflow_dynamodbstore.dynamodb.table import RawFilterExpression
+
+        expr = RawFilterExpression.map_key_exists("prompts", "my.dotted.name/1")
+        assert "attribute_exists" in expr.expression
+        assert any(v == "prompts" for v in expr.attribute_names.values())
+        assert any(v == "my.dotted.name/1" for v in expr.attribute_names.values())
+
+    def test_and_combines_expressions(self):
+        """Two RawFilterExpressions combined with & should merge names."""
+        from mlflow_dynamodbstore.dynamodb.table import RawFilterExpression
+
+        a = RawFilterExpression.map_key_exists("prompts", "a.b/1", idx=0)
+        b = RawFilterExpression.map_key_exists("prompts", "c.d/2", idx=1)
+        combined = a & b
+        assert "AND" in combined.expression
+        assert len(combined.attribute_names) == 4  # 2 placeholders per expr
+
+    def test_search_traces_with_dotted_prompt_name(self, tracking_store):
+        """search_traces must find traces linked to prompts with dotted names."""
+        exp_id = tracking_store.create_experiment("dotted-prompt-exp")
+
+        # Create a trace and link a prompt with dots in the name
+        trace_id = "tr-dotted-prompt"
+        ti = TraceInfo(
+            trace_id=trace_id,
+            trace_location=TraceLocation(
+                type=TraceLocationType.MLFLOW_EXPERIMENT,
+                mlflow_experiment=MlflowExperimentLocation(experiment_id=exp_id),
+            ),
+            request_time=int(time.time() * 1000),
+            execution_duration=100,
+            state=TraceState.OK,
+            tags={},
+            trace_metadata={},
+        )
+        tracking_store.start_trace(ti)
+
+        # Simulate linking a dotted prompt name via denormalized prompts map
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        tracking_store._table._table.update_item(
+            Key={"PK": pk, "SK": f"{SK_TRACE_PREFIX}{trace_id}"},
+            UpdateExpression="SET #p.#k = :v",
+            ExpressionAttributeNames={
+                "#p": "prompts",
+                "#k": "mlflow-demo.prompts.code-reviewer/4",
+            },
+            ExpressionAttributeValues={":v": True},
+        )
+
+        # Search with dotted prompt filter — should find the trace
+        traces, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string='prompt = "mlflow-demo.prompts.code-reviewer/4"',
+        )
+        assert len(traces) == 1
+        assert traces[0].trace_id == trace_id
+
+        # Non-matching prompt should return empty
+        traces, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string='prompt = "other.prompt/1"',
+        )
+        assert len(traces) == 0
+
+    def test_search_traces_with_simple_prompt_name(self, tracking_store):
+        """Prompt names without dots should also work via RawFilterExpression."""
+        exp_id = tracking_store.create_experiment("simple-prompt-exp")
+
+        trace_id = "tr-simple-prompt"
+        ti = TraceInfo(
+            trace_id=trace_id,
+            trace_location=TraceLocation(
+                type=TraceLocationType.MLFLOW_EXPERIMENT,
+                mlflow_experiment=MlflowExperimentLocation(experiment_id=exp_id),
+            ),
+            request_time=int(time.time() * 1000),
+            execution_duration=100,
+            state=TraceState.OK,
+            tags={},
+            trace_metadata={},
+        )
+        tracking_store.start_trace(ti)
+
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        tracking_store._table._table.update_item(
+            Key={"PK": pk, "SK": f"{SK_TRACE_PREFIX}{trace_id}"},
+            UpdateExpression="SET #p.#k = :v",
+            ExpressionAttributeNames={"#p": "prompts", "#k": "simple-prompt/1"},
+            ExpressionAttributeValues={":v": True},
+        )
+
+        traces, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string='prompt = "simple-prompt/1"',
+        )
+        assert len(traces) == 1
