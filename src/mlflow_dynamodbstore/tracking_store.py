@@ -2581,9 +2581,9 @@ class DynamoDBTrackingStore(AbstractStore):
         """Write tag value into a nested map attribute on the META item."""
         self._table._table.update_item(
             Key={"PK": pk, "SK": sk},
-            UpdateExpression="SET #map.#k = :v",
+            UpdateExpression="SET #map = if_not_exists(#map, :empty), #map.#k = :v",
             ExpressionAttributeNames={"#map": map_attr, "#k": tag_key},
-            ExpressionAttributeValues={":v": tag_value},
+            ExpressionAttributeValues={":v": tag_value, ":empty": {}},
         )
 
     def _remove_denormalized_tag(
@@ -4598,9 +4598,9 @@ class DynamoDBTrackingStore(AbstractStore):
                 pv_key = f"{pv['name']}/{pv['version']}"
                 self._table._table.update_item(
                     Key={"PK": pk, "SK": trace_sk},
-                    UpdateExpression="SET #map.#key = :val",
+                    UpdateExpression=("SET #map = if_not_exists(#map, :empty), #map.#key = :val"),
                     ExpressionAttributeNames={"#map": "prompts", "#key": pv_key},
-                    ExpressionAttributeValues={":val": True},
+                    ExpressionAttributeValues={":val": True, ":empty": {}},
                 )
         # Update FTS items for tag value if configured
         if self._config.should_trigram("trace_tag_value") and (tag_value or old_value):
@@ -4731,20 +4731,10 @@ class DynamoDBTrackingStore(AbstractStore):
         versions_json = _json.dumps(
             [{"name": pv.name, "version": pv.version} for pv in prompt_versions]
         )
+        # _write_trace_tag handles prompts map denormalization automatically
         self._write_trace_tag(
             experiment_id, trace_id, TraceTagKey.LINKED_PROMPTS, versions_json, ttl
         )
-
-        # Denormalize prompt name/version onto trace META for FilterExpression
-        trace_sk = f"{SK_TRACE_PREFIX}{trace_id}"
-        for pv in prompt_versions:
-            key = f"{pv.name}/{pv.version}"
-            self._table._table.update_item(
-                Key={"PK": pk, "SK": trace_sk},
-                UpdateExpression="SET #map.#key = :val",
-                ExpressionAttributeNames={"#map": "prompts", "#key": key},
-                ExpressionAttributeValues={":val": True},
-            )
 
     def batch_get_trace_infos(
         self, trace_ids: list[str], location: str | None = None
@@ -5030,12 +5020,12 @@ class DynamoDBTrackingStore(AbstractStore):
                 value = str(int(value))
             else:
                 value = str(value)
-        # SET feedbacks.#name = :val (nested map update)
+        # SET feedbacks.#name = :val (nested map update, create map if missing)
         self._table._table.update_item(
             Key={"PK": pk, "SK": trace_sk},
-            UpdateExpression="SET #map.#name = :val",
+            UpdateExpression="SET #map = if_not_exists(#map, :empty), #map.#name = :val",
             ExpressionAttributeNames={"#map": map_attr, "#name": name},
-            ExpressionAttributeValues={":val": value},
+            ExpressionAttributeValues={":val": value, ":empty": {}},
         )
 
     def _remove_assessment_from_trace(
