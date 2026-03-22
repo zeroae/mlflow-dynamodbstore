@@ -4584,6 +4584,24 @@ class DynamoDBTrackingStore(AbstractStore):
         self._table.put_item(item)
         if self._config.should_denormalize(experiment_id, tag_key):
             self._denormalize_tag(pk, f"{SK_TRACE_PREFIX}{trace_id}", tag_key, tag_value)
+
+        # Denormalize prompts map when linkedPrompts tag is written (from any path)
+        if tag_key == TraceTagKey.LINKED_PROMPTS:
+            import json as _json
+
+            trace_sk = f"{SK_TRACE_PREFIX}{trace_id}"
+            try:
+                versions = _json.loads(tag_value)
+            except (ValueError, TypeError):
+                versions = []
+            for pv in versions:
+                pv_key = f"{pv['name']}/{pv['version']}"
+                self._table._table.update_item(
+                    Key={"PK": pk, "SK": trace_sk},
+                    UpdateExpression="SET #map.#key = :val",
+                    ExpressionAttributeNames={"#map": "prompts", "#key": pv_key},
+                    ExpressionAttributeValues={":val": True},
+                )
         # Update FTS items for tag value if configured
         if self._config.should_trigram("trace_tag_value") and (tag_value or old_value):
             field_suffix = f"#{tag_key}"
@@ -4638,24 +4656,6 @@ class DynamoDBTrackingStore(AbstractStore):
             )
         ttl = int(meta["ttl"]) if "ttl" in meta else self._get_trace_ttl()
         self._write_trace_tag(experiment_id, trace_id, key, value, ttl)
-
-        # When linkedPrompts tag is set (e.g. via registry's link_prompts_to_trace
-        # fallback path), denormalize the prompts map on META for FilterExpression.
-        if key == TraceTagKey.LINKED_PROMPTS:
-            import json as _json
-
-            try:
-                versions = _json.loads(value)
-            except (ValueError, TypeError):
-                versions = []
-            for pv in versions:
-                pv_key = f"{pv['name']}/{pv['version']}"
-                self._table._table.update_item(
-                    Key={"PK": pk, "SK": trace_sk},
-                    UpdateExpression="SET #map.#key = :val",
-                    ExpressionAttributeNames={"#map": "prompts", "#key": pv_key},
-                    ExpressionAttributeValues={":val": True},
-                )
 
     def delete_trace_tag(self, trace_id: str, key: str) -> None:
         """Delete a tag from a trace."""
