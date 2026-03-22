@@ -8,8 +8,9 @@ before any user code runs. It patches:
 2. ``mlflow.server.handlers._get_job_store`` — to return DynamoDBJobStore
    for dynamodb:// URIs instead of the hardcoded SqlAlchemyJobStore.
 
-Both patches are lazy — they only activate when the backend store URI
-starts with dynamodb://, and only import DynamoDBJobStore on first call.
+Patches are installed unconditionally (the URI check happens at call time,
+not at patch time) since the backend store URI may be passed via CLI flag
+rather than environment variable.
 """
 
 from __future__ import annotations
@@ -18,12 +19,6 @@ import os
 
 
 def _install_patches() -> None:
-    store_uri = os.environ.get("_MLFLOW_SERVER_FILE_STORE", "") or os.environ.get(
-        "MLFLOW_BACKEND_STORE_URI", ""
-    )
-    if not store_uri.startswith("dynamodb://"):
-        return
-
     # Patch _check_requirements to accept dynamodb:// URIs
     try:
         import mlflow.server.jobs.utils as jobs_utils
@@ -31,7 +26,12 @@ def _install_patches() -> None:
         _original_check = jobs_utils._check_requirements
 
         def _patched_check_requirements(backend_store_uri: str | None = None) -> None:
-            resolved = backend_store_uri or store_uri
+            resolved: str = (
+                backend_store_uri
+                or os.environ.get("_MLFLOW_SERVER_FILE_STORE")
+                or os.environ.get("MLFLOW_BACKEND_STORE_URI")
+                or ""
+            )
             if resolved.startswith("dynamodb://"):
                 return  # DynamoDB is a valid backend
             _original_check(backend_store_uri)
@@ -48,7 +48,12 @@ def _install_patches() -> None:
         _cached_store: dict[str, object] = {}
 
         def _patched_get_job_store(backend_store_uri: str | None = None) -> object:
-            resolved = backend_store_uri or store_uri
+            resolved: str = (
+                backend_store_uri
+                or os.environ.get("_MLFLOW_SERVER_FILE_STORE")
+                or os.environ.get("MLFLOW_BACKEND_STORE_URI")
+                or ""
+            )
             if resolved.startswith("dynamodb://"):
                 if "store" not in _cached_store:
                     from mlflow_dynamodbstore.job_store import DynamoDBJobStore
