@@ -1865,8 +1865,7 @@ class DynamoDBRegistryStore(AbstractStore):
 
         while len(results) < max_results + 1:
             needed = max_results + 1 - len(results)
-            has_filters = filter_fn or filter_expression
-            batch_size = needed * 2 if has_filters else needed
+            batch_size = needed * 2 if filter_fn else needed
             items, lek = self._table.query_page(
                 pk=pk,
                 index_name=index_name,
