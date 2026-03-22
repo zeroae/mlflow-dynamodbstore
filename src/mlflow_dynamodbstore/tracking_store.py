@@ -3215,10 +3215,19 @@ class DynamoDBTrackingStore(AbstractStore):
         return int(time.time()) + days * 86400
 
     def _resolve_trace_experiment(self, trace_id: str) -> str:
-        """Resolve trace_id to experiment_id, using cache then GSI1."""
+        """Resolve trace_id to experiment_id, using cache then GSI1.
+
+        Raises MlflowException if the trace doesn't exist or belongs to
+        a different workspace.
+        """
         cached = self._cache.get("trace_exp", trace_id)
         if cached:
-            return cached
+            if self._experiment_in_workspace(cached):
+                return cached
+            raise MlflowException(
+                f"Trace with ID {trace_id} is not found.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
 
         results = self._table.query(
             pk=f"{GSI1_TRACE_PREFIX}{trace_id}",
@@ -3234,6 +3243,13 @@ class DynamoDBTrackingStore(AbstractStore):
         # GSI1 SK is EXP#<exp_id>
         gsi1sk: str = results[0][GSI1_SK]
         experiment_id = gsi1sk[len(PK_EXPERIMENT_PREFIX) :]
+
+        if not self._experiment_in_workspace(experiment_id):
+            raise MlflowException(
+                f"Trace with ID {trace_id} is not found.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
         self._cache.put("trace_exp", trace_id, experiment_id)
         return experiment_id
 
@@ -4021,6 +4037,9 @@ class DynamoDBTrackingStore(AbstractStore):
 
         if not experiment_ids:
             experiment_ids = locations or []
+
+        # Filter experiment_ids to current workspace
+        experiment_ids = [eid for eid in experiment_ids if self._experiment_in_workspace(eid)]
 
         # 1. Parse filter (validates syntax including prompt filter format)
         predicates = parse_trace_filter(filter_string)
