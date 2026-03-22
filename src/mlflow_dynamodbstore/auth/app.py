@@ -21,48 +21,6 @@ _DEFAULT_ADMIN_USERNAME = "admin"
 _DEFAULT_ADMIN_PASSWORD = "password1234"
 
 
-_job_runner_launched = False
-
-
-def _maybe_launch_job_runner() -> None:
-    """Launch the Huey job runner if not already running.
-
-    MLflow's ``mlflow server`` skips job runner launch for non-SQL backends.
-    We set up ``HUEY_STORAGE_PATH_ENV_VAR`` and launch our custom job runner
-    which patches ``_get_job_store`` before starting Huey consumers.
-
-    Only launches once per process (guarded by ``_job_runner_launched``).
-    Only launches when ``MLFLOW_SERVER_ENABLE_JOB_EXECUTION`` is set.
-    """
-    global _job_runner_launched  # noqa: PLW0603
-    if _job_runner_launched:
-        return
-    _job_runner_launched = True
-
-    from mlflow.environment_variables import MLFLOW_SERVER_ENABLE_JOB_EXECUTION
-
-    if not MLFLOW_SERVER_ENABLE_JOB_EXECUTION.get():  # type: ignore[no-untyped-call]
-        return
-
-    import subprocess
-    import sys
-    import tempfile
-
-    from mlflow.server import HUEY_STORAGE_PATH_ENV_VAR  # type: ignore[attr-defined]
-
-    # Set up Huey storage path if not already set by the parent process
-    if not os.environ.get(HUEY_STORAGE_PATH_ENV_VAR):
-        os.environ[HUEY_STORAGE_PATH_ENV_VAR] = (
-            tempfile.mkdtemp(dir="/dev/shm") if os.path.exists("/dev/shm") else tempfile.mkdtemp()
-        )
-
-    subprocess.Popen(
-        [sys.executable, "-m", "mlflow_dynamodbstore.jobs._job_runner"],
-        env={**os.environ, "MLFLOW_SERVER_PID": str(os.getppid())},
-    )
-    _logger.info("Launched DynamoDB job runner for Huey background workers.")
-
-
 def create_app(app: Flask | None = None) -> Flask:
     """Initialize DynamoDB auth on an existing MLflow Flask app.
 
@@ -73,6 +31,10 @@ def create_app(app: Flask | None = None) -> Flask:
     2. Creates a :class:`DynamoDBAuthStore`
     3. Monkey-patches it into ``mlflow.server.auth`` as the module-level ``store``
     4. Delegates to MLflow's own ``create_app`` for route/hook registration
+
+    Job store and Huey integration are handled globally via the .pth file
+    (``jobs/_early_patch.py``), which patches ``_check_requirements`` and
+    ``_get_job_store`` at Python startup in all processes.
 
     Environment variables:
         MLFLOW_BACKEND_STORE_URI: DynamoDB URI (e.g. ``dynamodb://us-east-1/my-table``)
@@ -114,14 +76,6 @@ def create_app(app: Flask | None = None) -> Flask:
     except Exception:
         # User already exists (race between workers) — safe to ignore
         pass
-
-    # Job store patch is handled globally via .pth file (jobs/_early_patch.py).
-    # It runs at Python startup in all processes including Huey consumers.
-
-    # Launch the Huey job runner if job execution is enabled.
-    # MLflow's server startup skips this for dynamodb:// URIs because
-    # _check_requirements rejects non-SQL backends. We launch it ourselves.
-    _maybe_launch_job_runner()
 
     # Delegate to MLflow's own create_app for route and hook registration.
     # Since we already replaced the store, MLflow's create_app will use our
