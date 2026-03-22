@@ -1803,7 +1803,9 @@ class DynamoDBTrackingStore(AbstractStore):
             parse_filter_string(filter_string)
 
         predicates = parse_logged_model_filter(filter_string)
-        plan = plan_logged_model_query(predicates, order_by, datasets)
+        # Don't use RANK strategy for order_by — we sort Python-side.
+        # Pass order_by=None so the plan uses default strategy (gets all models).
+        plan = plan_logged_model_query(predicates, None, datasets)
 
         # Collect all matching items across experiments (pagination applied later)
         all_items: list[dict[str, Any]] = []
@@ -1829,8 +1831,51 @@ class DynamoDBTrackingStore(AbstractStore):
             )
             models.append(_item_to_logged_model(item, tag_items, param_items, metric_items))
 
-        # Default sort: creation_timestamp descending
-        models.sort(key=lambda m: m.creation_timestamp, reverse=True)
+        # Apply order_by sorting
+        if order_by:
+            for ob in reversed(order_by):
+                field = ob.get("field_name", "")
+                ascending = ob.get("ascending", True)
+                # Alias
+                if field == "creation_time":
+                    field = "creation_timestamp"
+
+                if field == "creation_timestamp":
+                    models.sort(key=lambda m: m.creation_timestamp, reverse=not ascending)
+                elif field == "name":
+                    models.sort(key=lambda m: m.name or "", reverse=not ascending)
+                elif field.startswith("metrics."):
+                    metric_key = field[len("metrics.") :]
+                    ds_name = ob.get("dataset_name")
+                    ds_digest = ob.get("dataset_digest")
+
+                    def _metric_sort_key(
+                        m: LoggedModel,
+                        k: str = metric_key,
+                        asc: bool = ascending,
+                        dn: str | None = ds_name,
+                        dd: str | None = ds_digest,
+                    ) -> tuple[int, float]:
+                        for md in m.metrics or []:
+                            if md.key != k:
+                                continue
+                            # If dataset-scoped, match dataset
+                            if dn and getattr(md, "dataset_name", None) != dn:
+                                continue
+                            if dd and getattr(md, "dataset_digest", None) != dd:
+                                continue
+                            return (0, md.value if asc else -md.value)
+                        return (1, 0.0)  # nulls always last
+
+                    models.sort(key=_metric_sort_key)
+                else:
+                    models.sort(
+                        key=lambda m: getattr(m, field, "") or "",
+                        reverse=not ascending,
+                    )
+        else:
+            # Default sort: creation_timestamp descending
+            models.sort(key=lambda m: m.creation_timestamp, reverse=True)
 
         # Validate and apply offset-based pagination
         sorted_exp_ids = sorted(experiment_ids)
@@ -2805,9 +2850,12 @@ class DynamoDBTrackingStore(AbstractStore):
                 }
             )
 
-        # Write all items in batch
+        # Write all items in batch (deduplicate by PK+SK, last wins)
         if items:
-            self._table.batch_write(items)
+            deduped: dict[tuple[str, str], dict[str, Any]] = {}
+            for item in items:
+                deduped[(item["PK"], item["SK"])] = item
+            self._table.batch_write(list(deduped.values()))
 
         # Write FTS items for param values if configured
         if self._config.should_trigram("run_param_value"):
@@ -4785,7 +4833,7 @@ class DynamoDBTrackingStore(AbstractStore):
             scan_forward=True,
         )
 
-        # Optional: post-filter sessions by trace attributes
+        # Optional: filter on the FIRST trace of each session
         if filter_string:
             from mlflow_dynamodbstore.dynamodb.search import (
                 _apply_trace_post_filter,
@@ -4793,29 +4841,38 @@ class DynamoDBTrackingStore(AbstractStore):
             )
 
             preds = parse_trace_filter(filter_string)
+            exp_pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+
+            # Find the first trace (earliest request_time) for each session.
+            # Query all trace META items and pick the earliest per session.
+            session_ids = {item["session_id"] for item in items}
+            first_trace_by_session: dict[str, tuple[str, dict[str, Any]]] = {}
+
+            trace_items = self._table.query(pk=exp_pk, sk_prefix=SK_TRACE_PREFIX)
+            # Filter to META items only (SK = "T#<trace_id>", no sub-items)
+            meta_items = [t for t in trace_items if "trace_id" in t and t["SK"].count("#") == 1]
+            # Sort by request_time ASC to find first trace per session
+            meta_items.sort(key=lambda t: int(t.get("request_time", 0)))
+
+            for t_item in meta_items:
+                tid = t_item["trace_id"]
+                rmeta_sk = f"{SK_TRACE_PREFIX}{tid}#RMETA#{TraceMetadataKey.TRACE_SESSION}"
+                rmeta = self._table.get_item(pk=exp_pk, sk=rmeta_sk)
+                if rmeta and rmeta.get("value") in session_ids:
+                    sid = rmeta["value"]
+                    if sid not in first_trace_by_session:
+                        first_trace_by_session[sid] = (tid, t_item)
+
+            # Filter sessions where the first trace matches all predicates
             filtered_items = []
             for item in items:
-                session_id = item["session_id"]
-                exp_pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
-                trace_items = self._table.query(
-                    pk=exp_pk,
-                    sk_prefix=SK_TRACE_PREFIX,
-                )
-                session_qualifies = False
-                for t_item in trace_items:
-                    if "trace_id" not in t_item:
-                        continue
-                    tid = t_item["trace_id"]
-                    rmeta_sk = f"{SK_TRACE_PREFIX}{tid}#RMETA#{TraceMetadataKey.TRACE_SESSION}"
-                    rmeta = self._table.get_item(pk=exp_pk, sk=rmeta_sk)
-                    if rmeta and rmeta.get("value") == session_id:
-                        if all(
-                            _apply_trace_post_filter(self._table, exp_pk, tid, t_item, p)
-                            for p in preds
-                        ):
-                            session_qualifies = True
-                            break
-                if session_qualifies:
+                sid = item["session_id"]
+                if sid not in first_trace_by_session:
+                    continue
+                tid, t_item = first_trace_by_session[sid]
+                if all(
+                    _apply_trace_post_filter(self._table, exp_pk, tid, t_item, p) for p in preds
+                ):
                     filtered_items.append(item)
             items = filtered_items
 

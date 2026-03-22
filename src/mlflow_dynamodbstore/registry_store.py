@@ -1751,6 +1751,27 @@ class DynamoDBRegistryStore(AbstractStore):
         else:
             versions = [v for v in versions if not self._version_is_prompt(v)]
 
+        # Apply order_by sorting
+        if order_by:
+            from mlflow.utils.search_utils import SearchModelVersionUtils
+
+            for clause in reversed(order_by):
+                _, key, ascending = (
+                    SearchModelVersionUtils.parse_order_by_for_search_model_versions(clause)
+                )
+                if key == "name":
+                    versions.sort(key=lambda v: v.name, reverse=not ascending)
+                elif key == "version_number":
+                    versions.sort(key=lambda v: int(v.version), reverse=not ascending)
+                elif key == "creation_timestamp":
+                    versions.sort(key=lambda v: v.creation_timestamp or 0, reverse=not ascending)
+                elif key == "last_updated_timestamp":
+                    versions.sort(
+                        key=lambda v: v.last_updated_timestamp or 0, reverse=not ascending
+                    )
+                elif key == "source_path":
+                    versions.sort(key=lambda v: v.source or "", reverse=not ascending)
+
         if max_results is not None:
             versions = versions[:max_results]
 
@@ -1877,6 +1898,8 @@ class DynamoDBRegistryStore(AbstractStore):
                 padded = sk.replace(SK_VERSION_PREFIX, "")
                 tags = self._get_version_tags(model_ulid, padded)
                 versions.append(_item_to_model_version(vi, tags))
+        # Sort across partitions by last_updated_timestamp DESC
+        versions.sort(key=lambda v: v.last_updated_timestamp or 0, reverse=True)
         return versions
 
     def get_latest_versions(self, name: str, stages: list[str] | None = None) -> list[ModelVersion]:
