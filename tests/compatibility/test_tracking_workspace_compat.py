@@ -34,10 +34,4 @@ test_search_and_history_calls_are_workspace_scoped = _xfail_sqlalchemy(
     test_search_and_history_calls_are_workspace_scoped
 )
 
-# --- Tests using unimplemented search_entities_by_source ---
-_xfail_not_implemented = pytest.mark.xfail(
-    reason="DynamoDB store does not implement search_entities_by_source"
-)
-test_entity_associations_are_workspace_scoped = _xfail_not_implemented(
-    test_entity_associations_are_workspace_scoped
-)
+# --- Entity associations — DONE (search_entities_by_source/destination) ---

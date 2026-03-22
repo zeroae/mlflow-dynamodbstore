@@ -6032,6 +6032,74 @@ class DynamoDBTrackingStore(AbstractStore):
         items = self._table.query(pk=pk, sk_prefix=SK_DATASET_EXP_PREFIX)
         return [item["SK"][len(SK_DATASET_EXP_PREFIX) :] for item in items]
 
+    def search_entities_by_source(
+        self,
+        source_ids: str | list[str],
+        source_type: str,
+        destination_type: str,
+        max_results: int | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[str]:
+        """Get destination IDs associated with source entity/entities."""
+        if isinstance(source_ids, str):
+            source_ids = [source_ids]
+
+        # Filter source IDs to current workspace
+        source_ids = [sid for sid in source_ids if self._dataset_in_workspace(sid)]
+
+        results: list[str] = []
+        for source_id in source_ids:
+            pk = f"{PK_DATASET_PREFIX}{source_id}"
+            items = self._table.query(pk=pk, sk_prefix=SK_DATASET_EXP_PREFIX)
+            for item in items:
+                exp_id = item["SK"][len(SK_DATASET_EXP_PREFIX) :]
+                if self._experiment_in_workspace(exp_id):
+                    results.append(exp_id)
+
+        # Deduplicate preserving order
+        results = list(dict.fromkeys(results))
+        if max_results is not None:
+            results = results[:max_results]
+        return PagedList(results, None)
+
+    def search_entities_by_destination(
+        self,
+        destination_ids: str | list[str],
+        destination_type: str,
+        source_type: str,
+        max_results: int | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[str]:
+        """Get source IDs associated with destination entity/entities."""
+        if isinstance(destination_ids, str):
+            destination_ids = [destination_ids]
+
+        results: list[str] = []
+        for dest_id in destination_ids:
+            if not self._experiment_in_workspace(dest_id):
+                continue
+            items = self._table.query(
+                pk=f"{GSI1_DS_EXP_PREFIX}{dest_id}",
+                index_name="gsi1",
+            )
+            for item in items:
+                dataset_id = item.get(GSI1_SK, "")
+                if dataset_id and self._dataset_in_workspace(dataset_id):
+                    results.append(dataset_id)
+
+        results = list(dict.fromkeys(results))
+        if max_results is not None:
+            results = results[:max_results]
+        return PagedList(results, None)
+
+    def _dataset_in_workspace(self, dataset_id: str) -> bool:
+        """Check if a dataset belongs to the current workspace."""
+        pk = f"{PK_DATASET_PREFIX}{dataset_id}"
+        meta = self._table.get_item(pk=pk, sk=SK_DATASET_META)
+        if meta is None:
+            return False
+        return str(meta.get("workspace", "default")) == self._workspace
+
     def search_datasets(
         self,
         experiment_ids: list[str] | None = None,
