@@ -2234,27 +2234,8 @@ class TestLogSpansAsync:
         assert cached is not None
 
 
-class TestRawFilterExpression:
-    """Tests for RawFilterExpression handling of dotted map keys."""
-
-    def test_map_key_exists_with_dotted_name(self, tracking_store):
-        """Prompt names with dots must work in FilterExpression."""
-        from mlflow_dynamodbstore.dynamodb.table import RawFilterExpression
-
-        expr = RawFilterExpression.map_key_exists("prompts", "my.dotted.name/1")
-        assert "attribute_exists" in expr.expression
-        assert any(v == "prompts" for v in expr.attribute_names.values())
-        assert any(v == "my.dotted.name/1" for v in expr.attribute_names.values())
-
-    def test_and_combines_expressions(self):
-        """Two RawFilterExpressions combined with & should merge names."""
-        from mlflow_dynamodbstore.dynamodb.table import RawFilterExpression
-
-        a = RawFilterExpression.map_key_exists("prompts", "a.b/1", idx=0)
-        b = RawFilterExpression.map_key_exists("prompts", "c.d/2", idx=1)
-        combined = a & b
-        assert "AND" in combined.expression
-        assert len(combined.attribute_names) == 4  # 2 placeholders per expr
+class TestPromptFilterSearch:
+    """Tests for prompt filter search using denormalized StringSet."""
 
     def test_search_traces_with_dotted_prompt_name(self, tracking_store):
         """search_traces must find traces linked to prompts with dotted names."""
@@ -2276,16 +2257,13 @@ class TestRawFilterExpression:
         )
         tracking_store.start_trace(ti)
 
-        # Simulate linking a dotted prompt name via denormalized prompts map
+        # Simulate linking a dotted prompt name via denormalized prompts set
         pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
         tracking_store._table._table.update_item(
             Key={"PK": pk, "SK": f"{SK_TRACE_PREFIX}{trace_id}"},
-            UpdateExpression="SET #p.#k = :v",
-            ExpressionAttributeNames={
-                "#p": "prompts",
-                "#k": "mlflow-demo.prompts.code-reviewer/4",
-            },
-            ExpressionAttributeValues={":v": True},
+            UpdateExpression="ADD #p :vals",
+            ExpressionAttributeNames={"#p": "prompts"},
+            ExpressionAttributeValues={":vals": {"mlflow-demo.prompts.code-reviewer/4"}},
         )
 
         # Search with dotted prompt filter — should find the trace
@@ -2334,10 +2312,10 @@ class TestRawFilterExpression:
         ]
         tracking_store.set_trace_tag(trace_id, TraceTagKey.LINKED_PROMPTS, _json.dumps(prompt_data))
 
-        # Verify the prompts map was denormalized on META
+        # Verify the prompts set was denormalized on META
         pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
         meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
-        prompts = meta.get("prompts", {})
+        prompts = meta.get("prompts", set())
         assert "mlflow-demo.prompts.code-reviewer/4" in prompts
         assert "simple-prompt/1" in prompts
 
@@ -2357,7 +2335,7 @@ class TestRawFilterExpression:
         assert len(traces) == 1
 
     def test_search_traces_with_simple_prompt_name(self, tracking_store):
-        """Prompt names without dots should also work via RawFilterExpression."""
+        """Prompt names without dots should also work via StringSet contains."""
         exp_id = tracking_store.create_experiment("simple-prompt-exp")
 
         trace_id = "tr-simple-prompt"
@@ -2378,9 +2356,9 @@ class TestRawFilterExpression:
         pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
         tracking_store._table._table.update_item(
             Key={"PK": pk, "SK": f"{SK_TRACE_PREFIX}{trace_id}"},
-            UpdateExpression="SET #p.#k = :v",
-            ExpressionAttributeNames={"#p": "prompts", "#k": "simple-prompt/1"},
-            ExpressionAttributeValues={":v": True},
+            UpdateExpression="ADD #p :vals",
+            ExpressionAttributeNames={"#p": "prompts"},
+            ExpressionAttributeValues={":vals": {"simple-prompt/1"}},
         )
 
         traces, _ = tracking_store.search_traces(

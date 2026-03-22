@@ -115,7 +115,7 @@ class QueryPlan:
     post_filters: list[FilterPredicate] = field(default_factory=list)
     rank_key: str | None = None  # For strategy="rank"
     fts_query: str | None = None  # For strategy="fts"
-    # Boto3 FilterExpression (ConditionBase or RawFilterExpression) for server-side filtering
+    # Boto3 FilterExpression (ConditionBase) for server-side filtering
     filter_expression: Any = None
     # Metric predicates applied after RANK/index fetch (logged model search)
     rank_filters: list[FilterPredicate] = field(default_factory=list)
@@ -457,22 +457,18 @@ def plan_trace_query(
         chosen_index = "lsi1"
 
     # Build FilterExpression for prompt predicates (server-side).
-    # Prompt names may contain dots (e.g. "mlflow-demo.prompts.code-reviewer/4")
-    # so we use RawFilterExpression to avoid boto3's Attr dot-splitting.
-    from mlflow_dynamodbstore.dynamodb.table import RawFilterExpression
-
+    # Prompts are stored as a DynamoDB StringSet, so we use contains().
     post_filters: list[FilterPredicate] = []
-    prompt_filter: RawFilterExpression | None = None
+    prompt_conditions: list[ConditionBase] = []
     for pred in predicates:
         if pred.key == "mlflow.linkedPrompts" and pred.op == "=":
-            expr = RawFilterExpression.map_key_exists(
-                "prompts", pred.value, idx=0 if prompt_filter is None else 1
-            )
-            prompt_filter = expr if prompt_filter is None else prompt_filter & expr
+            prompt_conditions.append(Attr("prompts").contains(pred.value))
         else:
             post_filters.append(pred)
 
-    filter_expression: Any = prompt_filter
+    filter_expression: ConditionBase | None = None
+    for cond in prompt_conditions:
+        filter_expression = cond if filter_expression is None else filter_expression & cond
 
     return QueryPlan(
         strategy="index",
@@ -1019,9 +1015,9 @@ def _apply_trace_post_filter(
         if pred.key == "mlflow.traceName":
             actual = item.get("trace_name")
             return _compare(actual, pred.op, pred.value)
-        # Prompt filter: handled by FilterExpression via denormalized prompts map
+        # Prompt filter: handled by FilterExpression via denormalized prompts set
         if pred.key == "mlflow.linkedPrompts":
-            prompts = item.get("prompts", {})
+            prompts = item.get("prompts", set())
             return pred.value in prompts
         # Check denormalized tags first
         tags = item.get("tags", {})
