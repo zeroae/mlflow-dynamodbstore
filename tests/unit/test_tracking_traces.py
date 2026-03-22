@@ -2303,6 +2303,59 @@ class TestRawFilterExpression:
         )
         assert len(traces) == 0
 
+    def test_set_trace_tag_linked_prompts_denormalizes_map(self, tracking_store):
+        """set_trace_tag with LINKED_PROMPTS must denormalize the prompts map on META.
+
+        This is the code path used by the registry's link_prompts_to_trace
+        fallback when the tracking store is accessed via REST proxy.
+        """
+        exp_id = tracking_store.create_experiment("tag-denorm-exp")
+        trace_id = "tr-tag-denorm"
+        ti = TraceInfo(
+            trace_id=trace_id,
+            trace_location=TraceLocation(
+                type=TraceLocationType.MLFLOW_EXPERIMENT,
+                mlflow_experiment=MlflowExperimentLocation(experiment_id=exp_id),
+            ),
+            request_time=int(time.time() * 1000),
+            execution_duration=100,
+            state=TraceState.OK,
+            tags={},
+            trace_metadata={},
+        )
+        tracking_store.start_trace(ti)
+
+        # Simulate the registry fallback: set_trace_tag with LINKED_PROMPTS
+        import json as _json
+
+        prompt_data = [
+            {"name": "mlflow-demo.prompts.code-reviewer", "version": 4},
+            {"name": "simple-prompt", "version": 1},
+        ]
+        tracking_store.set_trace_tag(trace_id, TraceTagKey.LINKED_PROMPTS, _json.dumps(prompt_data))
+
+        # Verify the prompts map was denormalized on META
+        pk = f"{PK_EXPERIMENT_PREFIX}{exp_id}"
+        meta = tracking_store._table.get_item(pk=pk, sk=f"{SK_TRACE_PREFIX}{trace_id}")
+        prompts = meta.get("prompts", {})
+        assert "mlflow-demo.prompts.code-reviewer/4" in prompts
+        assert "simple-prompt/1" in prompts
+
+        # Verify search_traces finds the trace with dotted prompt filter
+        traces, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string='prompt = "mlflow-demo.prompts.code-reviewer/4"',
+        )
+        assert len(traces) == 1
+        assert traces[0].trace_id == trace_id
+
+        # And with the simple prompt filter
+        traces, _ = tracking_store.search_traces(
+            experiment_ids=[exp_id],
+            filter_string='prompt = "simple-prompt/1"',
+        )
+        assert len(traces) == 1
+
     def test_search_traces_with_simple_prompt_name(self, tracking_store):
         """Prompt names without dots should also work via RawFilterExpression."""
         exp_id = tracking_store.create_experiment("simple-prompt-exp")
