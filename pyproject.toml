@@ -103,7 +103,7 @@ module = ["mlflow_dynamodbstore.cli", "mlflow_dynamodbstore.cli.*"]
 disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
-module = ["mlflow_dynamodbstore.tracking_store", "mlflow_dynamodbstore.registry_store", "mlflow_dynamodbstore.workspace_store"]
+module = ["mlflow_dynamodbstore.tracking_store", "mlflow_dynamodbstore.registry_store", "mlflow_dynamodbstore.workspace_store", "mlflow_dynamodbstore.job_store"]
 disallow_untyped_calls = false
 
 [tool.pytest.ini_options]

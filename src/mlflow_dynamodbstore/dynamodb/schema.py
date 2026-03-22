@@ -205,3 +205,14 @@ SK_WEBHOOK_EVT_PREFIX = "WH#EVT#"
 # GSI prefixes for webhooks
 GSI2_WEBHOOKS_PREFIX = "WEBHOOKS#"
 GSI3_WH_EVT_PREFIX = "WH_EVT#"
+
+# --- Phase 7: Job Store ---
+
+PK_JOB_PREFIX = "JOB#"
+SK_JOB_META = "JOB#META"
+
+# GSI2: list all jobs in workspace (gsi2sk = ulid for creation_time ASC)
+GSI2_JOBS_PREFIX = "JOBS#"
+
+# GSI1: list jobs by status within workspace
+GSI1_JOB_STATUS_PREFIX = "JOB_STATUS#"
