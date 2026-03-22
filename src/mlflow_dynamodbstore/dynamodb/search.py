@@ -115,8 +115,10 @@ class QueryPlan:
     post_filters: list[FilterPredicate] = field(default_factory=list)
     rank_key: str | None = None  # For strategy="rank"
     fts_query: str | None = None  # For strategy="fts"
-    # Boto3 FilterExpression (ConditionBase) for server-side filtering
+    # Boto3 FilterExpression (ConditionBase or raw string) for server-side filtering
     filter_expression: Any = None
+    # ExpressionAttributeNames for raw string FilterExpression (dotted map keys)
+    expression_attribute_names: dict[str, str] | None = None
     # Metric predicates applied after RANK/index fetch (logged model search)
     rank_filters: list[FilterPredicate] = field(default_factory=list)
     # Dataset scope for logged model metric search
@@ -458,16 +460,27 @@ def plan_trace_query(
 
     # Build FilterExpression for prompt predicates (server-side)
     post_filters: list[FilterPredicate] = []
-    prompt_conditions: list[ConditionBase] = []
+
+    # Build FilterExpression for prompt predicates.
+    # Prompt names may contain dots (e.g. "mlflow-demo.prompts.code-reviewer/4")
+    # so we use raw expression strings with ExpressionAttributeNames to avoid
+    # boto3's Attr dot-splitting behavior.
+    prompt_exprs: list[str] = []
+    prompt_attr_names: dict[str, str] = {}
     for pred in predicates:
         if pred.key == "mlflow.linkedPrompts" and pred.op == "=":
-            prompt_conditions.append(Attr(f"prompts.{pred.value}").exists())
+            placeholder = f"#prompt{len(prompt_exprs)}"
+            prompt_exprs.append(f"attribute_exists(#prompts.{placeholder})")
+            prompt_attr_names["#prompts"] = "prompts"
+            prompt_attr_names[placeholder] = pred.value
         else:
             post_filters.append(pred)
 
-    filter_expression: ConditionBase | None = None
-    for cond in prompt_conditions:
-        filter_expression = cond if filter_expression is None else filter_expression & cond
+    filter_expression: ConditionBase | str | None = None
+    expr_attr_names: dict[str, str] | None = None
+    if prompt_exprs:
+        filter_expression = " AND ".join(prompt_exprs)
+        expr_attr_names = prompt_attr_names
 
     return QueryPlan(
         strategy="index",
@@ -476,6 +489,7 @@ def plan_trace_query(
         scan_forward=scan_forward,
         post_filters=post_filters,
         filter_expression=filter_expression,
+        expression_attribute_names=expr_attr_names,
     )
 
 
@@ -1150,13 +1164,19 @@ def _execute_trace_index(
             index_name=plan.index,
             scan_forward=plan.scan_forward,
             filter_expression=plan.filter_expression,
+            expression_attribute_names=plan.expression_attribute_names,
         )
         # Filter to trace META items only
         return [item for item in items if _is_trace_meta_item(item)]
 
     # For numeric LSIs (lsi1, lsi2, lsi5): query main table by SK prefix T#
     # to get all trace items, then sort in Python by the LSI attribute.
-    items = table.query(pk=pk, sk_prefix=SK_TRACE_PREFIX, filter_expression=plan.filter_expression)
+    items = table.query(
+        pk=pk,
+        sk_prefix=SK_TRACE_PREFIX,
+        filter_expression=plan.filter_expression,
+        expression_attribute_names=plan.expression_attribute_names,
+    )
     # Filter to META items only (exclude sub-items like T#<id>#TAG#...)
     meta_items = [item for item in items if _is_trace_meta_item(item)]
 

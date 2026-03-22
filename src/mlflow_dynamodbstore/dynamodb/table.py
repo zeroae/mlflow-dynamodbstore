@@ -208,6 +208,7 @@ class DynamoDBTable:
         scan_forward: bool = True,
         consistent: bool = False,
         filter_expression: ConditionBase | None = None,
+        expression_attribute_names: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """Query the table or an index with flexible key conditions.
 
@@ -236,6 +237,8 @@ class DynamoDBTable:
             kwargs["IndexName"] = index_name
         if filter_expression is not None:
             kwargs["FilterExpression"] = filter_expression
+        if expression_attribute_names:
+            kwargs["ExpressionAttributeNames"] = expression_attribute_names
 
         # Collect items, handling pagination
         items: list[dict[str, Any]] = []
