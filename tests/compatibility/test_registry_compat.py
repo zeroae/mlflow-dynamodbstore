@@ -10,8 +10,6 @@ Excluded tests:
 import functools
 from unittest import mock
 
-import pytest
-
 from tests.store.model_registry.test_sqlalchemy_store import (  # noqa: E402, F401
     test_copy_model_version,
     test_create_model_version,
@@ -115,13 +113,7 @@ def _sync_time_mock(fn):
 # --- Category 13: registered model order_by needs time mock sync ---
 test_search_registered_model_order_by = _sync_time_mock(test_search_registered_model_order_by)
 
-# --- Category 13: model version cross-partition ordering incomplete ---
-_xfail_search_order = pytest.mark.xfail(
-    reason="DynamoDB store model version cross-partition ordering incomplete"
-)
-test_search_model_versions_order_by_simple = _xfail_search_order(
-    test_search_model_versions_order_by_simple
-)
+# --- Category 13: model version cross-partition ordering — DONE ---
 
 
 def test_webhook_secret_encryption(store):
