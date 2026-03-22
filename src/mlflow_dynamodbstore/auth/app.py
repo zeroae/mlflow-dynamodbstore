@@ -32,6 +32,10 @@ def create_app(app: Flask | None = None) -> Flask:
     3. Monkey-patches it into ``mlflow.server.auth`` as the module-level ``store``
     4. Delegates to MLflow's own ``create_app`` for route/hook registration
 
+    Job store and Huey integration are handled globally via the .pth file
+    (``jobs/_early_patch.py``), which patches ``_check_requirements`` and
+    ``_get_job_store`` at Python startup in all processes.
+
     Environment variables:
         MLFLOW_BACKEND_STORE_URI: DynamoDB URI (e.g. ``dynamodb://us-east-1/my-table``)
         MLFLOW_AUTH_ADMIN_USERNAME: Admin username (default: ``admin``)
