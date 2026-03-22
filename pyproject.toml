@@ -74,6 +74,9 @@ version-file = "src/mlflow_dynamodbstore/_version.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/mlflow_dynamodbstore"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/mlflow_dynamodbstore_init.pth" = "mlflow_dynamodbstore_init.pth"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
