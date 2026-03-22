@@ -249,6 +249,56 @@ class DynamoDBRegistryStore(AbstractStore):
         # Required by AbstractStore.link_prompts_to_trace
         self._link_to_trace_lock = threading.RLock()
 
+    def link_prompts_to_trace(self, prompt_versions: list[Any], trace_id: str) -> None:
+        """Link prompt versions to a trace using DynamoDB atomic operations.
+
+        Overrides the abstract store's default which uses an in-process lock
+        and REST roundtrip. Instead:
+        - Reads the current LINKED_PROMPTS tag and merges new entries
+        - Writes the merged tag via _write_trace_tag which also uses ADD on
+          the StringSet (atomic, no lock needed for the set itself)
+        """
+
+        import json as _json
+
+        from mlflow.tracing.constant import TraceTagKey
+        from mlflow.tracking import _get_store as _get_tracking_store
+
+        tracking_store = _get_tracking_store()
+
+        # Verify trace exists (raises if not found / wrong workspace)
+        try:
+            tracking_store._resolve_trace_experiment(trace_id)
+        except MlflowException:
+            raise MlflowException(
+                f"Could not find trace with ID '{trace_id}' to which to link prompts.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        # Read current tag, merge new entries, write back.
+        # The StringSet ADD in _write_trace_tag is atomic; the JSON tag
+        # merge uses read-then-write but concurrent overwrites are benign
+        # (ADD ensures the set is always correct for FilterExpression).
+        current_value = None
+        try:
+            trace_info = tracking_store.get_trace_info(trace_id)
+            current_value = trace_info.tags.get(TraceTagKey.LINKED_PROMPTS)
+        except Exception:
+            pass
+
+        # Merge new entries into existing tag (deduplicate)
+        existing: list[dict[str, str]] = _json.loads(current_value) if current_value else []
+        existing_set = {(e["name"], str(e["version"])) for e in existing}
+        for pv in prompt_versions:
+            key = (pv.name, str(pv.version))
+            if key not in existing_set:
+                existing.append({"name": pv.name, "version": str(pv.version)})
+                existing_set.add(key)
+
+        updated_value = _json.dumps(existing)
+        if updated_value != current_value:
+            tracking_store.set_trace_tag(trace_id, TraceTagKey.LINKED_PROMPTS, updated_value)
+
     @property
     def supports_workspaces(self) -> bool:
         """DynamoDB registry store always supports workspaces."""
