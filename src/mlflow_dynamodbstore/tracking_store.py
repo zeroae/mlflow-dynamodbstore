@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -4330,7 +4331,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 attr_name = pred.key[len("attributes.") :]
                 actual = attrs.get(attr_name)
                 if actual is not None:
-                    actual = str(actual)
+                    actual = str(actual).strip('"')
             else:
                 actual = None
 
@@ -4358,8 +4359,11 @@ class DynamoDBTrackingStore(AbstractStore):
             elif pred.op == "NOT IN":
                 if actual in pred.value:
                     return False
+            elif pred.op == "RLIKE":
+                if not re.search(str(pred.value), str(actual)):
+                    return False
             else:
-                continue  # RLIKE etc — skip
+                continue
 
         return True
 

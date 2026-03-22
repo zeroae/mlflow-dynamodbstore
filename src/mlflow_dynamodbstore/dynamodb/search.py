@@ -501,6 +501,8 @@ def _compare_set(values: set[Any], op: str, expected: Any) -> bool:
     if op == "ILIKE":
         pattern = str(expected).lower().replace("%", "*").replace("_", "?")
         return any(fnmatch.fnmatch(str(v).lower(), pattern) for v in values)
+    if op == "RLIKE":
+        return any(re.search(str(expected), str(v)) for v in values)
     if op == "IS NOT NULL":
         return True
     return False
@@ -534,6 +536,8 @@ def _compare(actual: Any, op: str, expected: Any) -> bool:
         return actual in expected
     if op == "NOT IN":
         return actual not in expected
+    if op == "RLIKE":
+        return bool(re.search(str(expected), str(actual)))
     if op == "IS NULL":
         return actual is None
     if op == "IS NOT NULL":
