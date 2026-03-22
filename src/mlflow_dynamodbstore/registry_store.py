@@ -1751,17 +1751,27 @@ class DynamoDBRegistryStore(AbstractStore):
         else:
             versions = [v for v in versions if not self._version_is_prompt(v)]
 
-        # Apply order_by sorting
+        # Apply order_by sorting with tiebreakers matching SQLAlchemy:
+        # default tiebreakers are name ASC, version_number DESC.
+        # Uses stable multi-pass sort (last tiebreaker first, primary last).
         if order_by:
             from mlflow.utils.search_utils import SearchModelVersionUtils
 
-            for clause in reversed(order_by):
+            parsed_clauses: list[tuple[str, bool]] = []
+            seen_keys: set[str] = set()
+            for clause in order_by:
                 _, key, ascending = (
                     SearchModelVersionUtils.parse_order_by_for_search_model_versions(clause)
                 )
-                if key == "name":
-                    versions.sort(key=lambda v: v.name, reverse=not ascending)
-                elif key == "version_number":
+                parsed_clauses.append((key, ascending))
+                seen_keys.add(key)
+            if "name" not in seen_keys:
+                parsed_clauses.append(("name", True))
+            if "version_number" not in seen_keys:
+                parsed_clauses.append(("version_number", False))
+
+            for key, ascending in reversed(parsed_clauses):
+                if key == "version_number":
                     versions.sort(key=lambda v: int(v.version), reverse=not ascending)
                 elif key == "creation_timestamp":
                     versions.sort(key=lambda v: v.creation_timestamp or 0, reverse=not ascending)
@@ -1769,6 +1779,8 @@ class DynamoDBRegistryStore(AbstractStore):
                     versions.sort(
                         key=lambda v: v.last_updated_timestamp or 0, reverse=not ascending
                     )
+                elif key == "name":
+                    versions.sort(key=lambda v: v.name, reverse=not ascending)
                 elif key == "source_path":
                     versions.sort(key=lambda v: v.source or "", reverse=not ascending)
 
