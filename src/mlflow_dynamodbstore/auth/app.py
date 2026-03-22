@@ -21,6 +21,32 @@ _DEFAULT_ADMIN_USERNAME = "admin"
 _DEFAULT_ADMIN_PASSWORD = "password1234"
 
 
+def _patch_job_store(store_uri: str) -> None:
+    """Replace MLflow's _get_job_store with a DynamoDB-aware version.
+
+    MLflow's default _get_job_store() rejects non-SQL URIs. This patches
+    it to return a DynamoDBJobStore for ``dynamodb://`` URIs, enabling
+    Huey background workers in both Flask worker and Huey consumer processes.
+    """
+    import mlflow.server.handlers as handlers_module
+
+    from mlflow_dynamodbstore.job_store import DynamoDBJobStore
+
+    _dynamodb_job_store = DynamoDBJobStore(store_uri)
+    _original_get_job_store = handlers_module._get_job_store
+
+    def _patched_get_job_store(
+        backend_store_uri: str | None = None,
+    ) -> DynamoDBJobStore:
+        resolved = backend_store_uri or store_uri
+        if resolved.startswith("dynamodb://"):
+            return _dynamodb_job_store
+        return _original_get_job_store(backend_store_uri)  # type: ignore[return-value]
+
+    handlers_module._get_job_store = _patched_get_job_store
+    _logger.info("Patched _get_job_store for DynamoDB job store support.")
+
+
 def create_app(app: Flask | None = None) -> Flask:
     """Initialize DynamoDB auth on an existing MLflow Flask app.
 
@@ -72,6 +98,10 @@ def create_app(app: Flask | None = None) -> Flask:
     except Exception:
         # User already exists (race between workers) — safe to ignore
         pass
+
+    # Patch _get_job_store so both Flask workers and Huey consumers use
+    # our DynamoDB job store instead of the hardcoded SqlAlchemyJobStore.
+    _patch_job_store(store_uri)
 
     # Delegate to MLflow's own create_app for route and hook registration.
     # Since we already replaced the store, MLflow's create_app will use our
