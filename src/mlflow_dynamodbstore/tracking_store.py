@@ -218,6 +218,64 @@ def _int_or_none(value: Any) -> int | None:
     return int(value) if value is not None else None
 
 
+# ---------------------------------------------------------------------------
+# Special float helpers (NaN / Infinity / -Infinity)
+# DynamoDB's Decimal type rejects these values. We store them as a string
+# attribute ``value_special`` alongside a zero ``value`` placeholder.
+# ---------------------------------------------------------------------------
+
+_SPECIAL_FLOATS: dict[str, float] = {
+    "NaN": float("nan"),
+    "Infinity": float("inf"),
+    "-Infinity": float("-inf"),
+}
+
+# RANK sort-key sentinels.  ASC order: -inf < numbers < inf < nan < None.
+# Normal numbers are inverted as ``max_val - value`` (range ~0..20000000000).
+# Sentinels must sort accordingly when the SK is scanned forward (ASC).
+_RANK_MAX_VAL = 9999999999.9999
+_RANK_SENTINEL_NEGINF = f"{_RANK_MAX_VAL * 2:020.4f}"  # largest  → first in ASC
+_RANK_SENTINEL_INF = f"{0:020.4f}"  # smallest → last among numbers
+_RANK_SENTINEL_NAN = "!NaN"  # '!' < '0', so sorts before digits in SK
+
+
+def _metric_to_ddb(value: float) -> tuple[Decimal | int, str | None]:
+    """Convert a metric float to (ddb_value, value_special).
+
+    Returns a (Decimal, None) for normal numbers, or (0, marker) for specials.
+    """
+    import math
+
+    if math.isnan(value):
+        return 0, "NaN"
+    if math.isinf(value):
+        return 0, "Infinity" if value > 0 else "-Infinity"
+    return Decimal(str(value)), None
+
+
+def _metric_from_ddb(item: dict[str, Any]) -> float:
+    """Read a metric value from a DynamoDB item, handling value_special."""
+    special = item.get("value_special")
+    if special is not None:
+        return _SPECIAL_FLOATS[special]
+    return float(item["value"])
+
+
+def _metric_rank_sk(key: str, value: float, run_id: str) -> str:
+    """Build a RANK sort key for a metric, handling special floats."""
+    import math
+
+    prefix = f"{SK_RANK_PREFIX}m#{key}#"
+    if math.isnan(value):
+        return f"{prefix}{_RANK_SENTINEL_NAN}#{run_id}"
+    if math.isinf(value):
+        sentinel = _RANK_SENTINEL_INF if value > 0 else _RANK_SENTINEL_NEGINF
+        return f"{prefix}{sentinel}#{run_id}"
+    inv = _RANK_MAX_VAL - value
+    inv_str = f"{inv:020.4f}"
+    return f"{prefix}{inv_str}#{run_id}"
+
+
 def _item_to_experiment(
     item: dict[str, Any], tags: list[ExperimentTag] | None = None
 ) -> Experiment:
@@ -270,7 +328,7 @@ def _item_to_run(
         tags=[RunTag(t["key"], t["value"]) for t in tags],
         params=[Param(p["key"], p["value"]) for p in params],
         metrics=[
-            Metric(m["key"], float(m["value"]), int(m.get("timestamp", 0)), int(m.get("step", 0)))
+            Metric(m["key"], _metric_from_ddb(m), int(m.get("timestamp", 0)), int(m.get("step", 0)))
             for m in metrics
         ],
     )
@@ -393,6 +451,83 @@ def _meta_to_dataset(dataset_id: str, meta: dict[str, Any]) -> EvaluationDataset
         created_by=meta.get("created_by") or None,
         last_updated_by=meta.get("last_updated_by") or None,
     )
+
+
+class _NegStr:
+    """Wrapper for reverse string comparison in sorted()."""
+
+    __slots__ = ("_s",)
+
+    def __init__(self, s: str):
+        self._s = s
+
+    def __lt__(self, other: _NegStr) -> bool:
+        return self._s > other._s
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _NegStr) and self._s == other._s
+
+
+def _run_sort_value(run: Run, field_type: str, key: str | None) -> tuple[int, float | str]:
+    """Extract a sortable value from a run for a given order_by column.
+
+    Returns (tier, value) where tier controls group ordering:
+      0 = normal numbers, 1 = +inf, 2 = nan, 3 = None/missing, -1 = -inf
+    """
+    import math
+
+    if field_type == "metric":
+        metrics = {m.key: m.value for m in run.data._metric_objs}
+        val = metrics.get(key)
+        if val is None:
+            return (3, 0.0)
+        if math.isnan(val):
+            return (2, 0.0)
+        if math.isinf(val):
+            return (1, 0.0) if val > 0 else (-1, 0.0)
+        return (0, val)
+    elif field_type == "param":
+        params = dict(run.data.params)
+        val = params.get(key)
+        return (0, val) if val is not None else (3, "")
+    elif field_type == "tag":
+        tags = dict(run.data.tags)
+        val = tags.get(key)
+        return (0, val) if val is not None else (3, "")
+    return (3, 0.0)
+
+
+def _apply_secondary_sort(runs: list[Run], order_by: list[str]) -> list[Run]:
+    """Apply multi-column sorting using Python's stable sort (last column first).
+
+    The RANK strategy handles the primary sort. This applies remaining columns
+    as tiebreakers using multi-pass stable sort.
+    """
+    from mlflow_dynamodbstore.dynamodb.search import _parse_order_by_token
+
+    # Parse all order_by tokens
+    clauses = [_parse_order_by_token(token) for token in order_by]
+
+    # Multi-pass stable sort: last column first, primary column last
+    for field_type, key, scan_forward in reversed(clauses):
+        ft = field_type or "attribute"
+
+        def _sort_key(
+            r: Run, _ft: str = ft, _k: str | None = key, _asc: bool = scan_forward
+        ) -> tuple[int, int, float | str | _NegStr]:
+            tier, val = _run_sort_value(r, _ft, _k)
+            # Tiers 2 (NaN) and 3 (None) always sort last regardless of direction
+            if tier >= 2:
+                return (1, tier, "")
+            # For normal values (tiers -1, 0, 1), use _NegStr for DESC strings
+            if _asc:
+                return (0, tier, val)
+            neg_val = -val if isinstance(val, int | float) else _NegStr(val)
+            return (0, -tier, neg_val)
+
+        runs = sorted(runs, key=_sort_key)
+
+    return runs
 
 
 def _reverse_same_start_time_blocks(runs: list[Run]) -> list[Run]:
@@ -2374,6 +2509,8 @@ class DynamoDBTrackingStore(AbstractStore):
         if not needs_tiebreak or max_results is None:
             if not order_by:
                 runs = _reverse_same_start_time_blocks(runs)
+            elif len(order_by) > 1 and plan.strategy == "rank":
+                runs = _apply_secondary_sort(runs, order_by)
             return runs, next_page_token
 
         # --- Tiebreak path: complete tie group at boundary ---
@@ -2800,32 +2937,35 @@ class DynamoDBTrackingStore(AbstractStore):
 
         items: list[dict[str, Any]] = []
         for metric in metrics:
+            ddb_value, value_special = _metric_to_ddb(metric.value)
+
             # Latest metric item — only update if (step, timestamp, value)
             # tuple is greater than existing, matching MLflow's semantics.
             latest_sk = f"{SK_RUN_PREFIX}{run_id}{SK_METRIC_PREFIX}{metric.key}"
-            ddb_value = Decimal(str(metric.value))
             existing = self._table.get_item(pk=pk, sk=latest_sk)
-            if existing is None or (metric.step, metric.timestamp, float(ddb_value)) > (
+            if existing is None or (metric.step, metric.timestamp, metric.value) > (
                 int(existing.get("step", 0)),
                 int(existing.get("timestamp", 0)),
-                float(existing.get("value", 0)),
+                _metric_from_ddb(existing),
             ):
-                items.append(
-                    {
-                        "PK": pk,
-                        "SK": latest_sk,
-                        "key": metric.key,
-                        "value": ddb_value,
-                        "timestamp": metric.timestamp,
-                        "step": metric.step,
-                    }
-                )
+                latest_item: dict[str, Any] = {
+                    "PK": pk,
+                    "SK": latest_sk,
+                    "key": metric.key,
+                    "value": ddb_value,
+                    "timestamp": metric.timestamp,
+                    "step": metric.step,
+                }
+                if value_special is not None:
+                    latest_item["value_special"] = value_special
+                items.append(latest_item)
 
             # History item (unique per key+step+timestamp+value)
             padded = pad_step(metric.step)
+            value_str = value_special if value_special is not None else str(ddb_value)
             hist_sk = (
                 f"{SK_RUN_PREFIX}{run_id}{SK_METRIC_HISTORY_PREFIX}"
-                f"{metric.key}#{padded}#{metric.timestamp}#{ddb_value}"
+                f"{metric.key}#{padded}#{metric.timestamp}#{value_str}"
             )
             hist_item: dict[str, Any] = {
                 "PK": pk,
@@ -2835,25 +2975,25 @@ class DynamoDBTrackingStore(AbstractStore):
                 "timestamp": metric.timestamp,
                 "step": metric.step,
             }
+            if value_special is not None:
+                hist_item["value_special"] = value_special
             metric_history_ttl = self._config.get_metric_history_ttl_seconds()
             if metric_history_ttl is not None:
                 hist_item["ttl"] = int(time.time()) + metric_history_ttl
             items.append(hist_item)
 
-            # RANK item for metric (inverted value for descending sort)
-            max_val = 9999999999.9999
-            inv = max_val - float(metric.value)
-            inv_str = f"{inv:020.4f}"
-            rank_sk = f"{SK_RANK_PREFIX}m#{metric.key}#{inv_str}#{run_id}"
-            items.append(
-                {
-                    "PK": pk,
-                    "SK": rank_sk,
-                    "key": metric.key,
-                    "value": ddb_value,
-                    "run_id": run_id,
-                }
-            )
+            # RANK item for metric
+            rank_sk = _metric_rank_sk(metric.key, metric.value, run_id)
+            rank_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": rank_sk,
+                "key": metric.key,
+                "value": ddb_value,
+                "run_id": run_id,
+            }
+            if value_special is not None:
+                rank_item["value_special"] = value_special
+            items.append(rank_item)
 
         if items:
             deduped: dict[tuple[str, str], dict[str, Any]] = {}
@@ -3012,7 +3152,7 @@ class DynamoDBTrackingStore(AbstractStore):
         metrics = [
             Metric(
                 key=item["key"],
-                value=float(item["value"]),
+                value=_metric_from_ddb(item),
                 timestamp=int(item.get("timestamp", 0)),
                 step=int(item.get("step", 0)),
             )
@@ -3040,7 +3180,7 @@ class DynamoDBTrackingStore(AbstractStore):
             [
                 Metric(
                     key=item["key"],
-                    value=float(item["value"]),
+                    value=_metric_from_ddb(item),
                     timestamp=int(item.get("timestamp", 0)),
                     step=int(item.get("step", 0)),
                 )

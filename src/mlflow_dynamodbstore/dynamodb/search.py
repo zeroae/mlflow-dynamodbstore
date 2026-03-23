@@ -782,7 +782,7 @@ def _execute_rank(
     pk: str,
 ) -> list[dict[str, Any]]:
     """Execute a rank-based query strategy."""
-    from mlflow_dynamodbstore.dynamodb.schema import SK_RANK_PREFIX
+    from mlflow_dynamodbstore.dynamodb.schema import SK_RANK_PREFIX, SK_RUN_PREFIX
 
     # Query RANK items: RANK#m#<key># for metrics, RANK#p#<key># for params
     # Try metrics first, then params
@@ -800,7 +800,19 @@ def _execute_rank(
 
     # Extract run_ids from RANK items (preserving order)
     run_ids = [item["run_id"] for item in rank_items if "run_id" in item]
-    return _fetch_meta_items(table, pk, run_ids)
+    ranked_items = _fetch_meta_items(table, pk, run_ids)
+
+    # Append runs that have no RANK item for this metric/param (None values).
+    # These sort last in ASC, first in DESC — matching SQLAlchemy behavior.
+    ranked_set = set(run_ids)
+    all_items = table.query(pk=pk, sk_prefix=SK_RUN_PREFIX)
+    unranked = [item for item in all_items if item.get("run_id") not in ranked_set]
+    if plan.scan_forward:
+        # scan_forward=True in RANK means DESC metric order → unranked first
+        return unranked + ranked_items
+    else:
+        # scan_forward=False in RANK means ASC metric order → unranked last
+        return ranked_items + unranked
 
 
 def _execute_dlink(

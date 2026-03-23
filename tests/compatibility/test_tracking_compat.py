@@ -446,7 +446,7 @@ _xfail_search_runs_order = pytest.mark.xfail(
     reason="search_runs: ordering by start_time/attributes incomplete"
 )
 # test_order_by_attributes — DONE (LSI2 sentinel + attribute field_type)
-test_order_by_metric_tag_param = _xfail_search_runs_order(test_order_by_metric_tag_param)
+# test_order_by_metric_tag_param — DONE (special float storage + secondary sort)
 # test_search_with_deterministic_max_results — DONE (overflow cache)
 # test_search_runs_start_time_alias — DONE (created alias)
 
@@ -486,5 +486,5 @@ test_log_metric_concurrent_logging_succeeds = pytest.mark.moto_server(
 
 # -- C9. Sessions — DONE (first-trace filter) --
 
-# --- D. Permanent xfails (2 tests) ---
+# --- D. Permanent xfails (1 test) ---
 # search_logged_models order_by — DONE (Python-side sort with nulls last)
