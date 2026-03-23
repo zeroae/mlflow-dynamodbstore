@@ -62,6 +62,7 @@ from mlflow.entities.logged_model_status import LoggedModelStatus
 from mlflow.entities.trace_location import MlflowExperimentLocation
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
+    INTERNAL_ERROR,
     INVALID_PARAMETER_VALUE,
     INVALID_STATE,
     RESOURCE_ALREADY_EXISTS,
@@ -2775,8 +2776,27 @@ class DynamoDBTrackingStore(AbstractStore):
                     INVALID_PARAMETER_VALUE,
                 )
 
-        items: list[dict[str, Any]] = []
+        try:
+            self._log_metrics(experiment_id, run_id, pk, metrics)
+            self._log_params(experiment_id, run_id, pk, params)
+            self._set_tags(experiment_id, run_id, tags)
+        except MlflowException:
+            raise
+        except Exception as e:
+            raise MlflowException(e, INTERNAL_ERROR) from e
 
+    def _log_metrics(
+        self,
+        experiment_id: str,
+        run_id: str,
+        pk: str,
+        metrics: list[Metric],
+    ) -> None:
+        """Write metric latest, history, and RANK items to DynamoDB."""
+        if not metrics:
+            return
+
+        items: list[dict[str, Any]] = []
         for metric in metrics:
             # Latest metric item — only update if (step, timestamp, value)
             # tuple is greater than existing, matching MLflow's semantics.
@@ -2833,6 +2853,40 @@ class DynamoDBTrackingStore(AbstractStore):
                 }
             )
 
+        if items:
+            deduped: dict[tuple[str, str], dict[str, Any]] = {}
+            for item in items:
+                deduped[(item["PK"], item["SK"])] = item
+            self._table.batch_write(list(deduped.values()))
+
+        # Route metrics with model_id to logged model metric storage
+        for metric in metrics:
+            model_id = getattr(metric, "model_id", None)
+            if model_id:
+                self._log_logged_model_metric(
+                    experiment_id=experiment_id,
+                    model_id=model_id,
+                    metric_name=metric.key,
+                    metric_value=float(metric.value),
+                    metric_timestamp_ms=metric.timestamp,
+                    metric_step=metric.step,
+                    run_id=run_id,
+                    dataset_name=getattr(metric, "dataset_name", None),
+                    dataset_digest=getattr(metric, "dataset_digest", None),
+                )
+
+    def _log_params(
+        self,
+        experiment_id: str,
+        run_id: str,
+        pk: str,
+        params: list[Param],
+    ) -> None:
+        """Write param and RANK items to DynamoDB."""
+        if not params:
+            return
+
+        items: list[dict[str, Any]] = []
         for param in params:
             param_sk = f"{SK_RUN_PREFIX}{run_id}{SK_PARAM_PREFIX}{param.key}"
             items.append(
@@ -2865,12 +2919,8 @@ class DynamoDBTrackingStore(AbstractStore):
                 }
             )
 
-        # Write all items in batch (deduplicate by PK+SK, last wins)
         if items:
-            deduped: dict[tuple[str, str], dict[str, Any]] = {}
-            for item in items:
-                deduped[(item["PK"], item["SK"])] = item
-            self._table.batch_write(list(deduped.values()))
+            self._table.batch_write(items)
 
         # Write FTS items for param values if configured
         if self._config.should_trigram("run_param_value"):
@@ -2889,23 +2939,13 @@ class DynamoDBTrackingStore(AbstractStore):
             if fts_param_items:
                 self._table.batch_write(fts_param_items)
 
-        # Route metrics with model_id to logged model metric storage
-        for metric in metrics:
-            model_id = getattr(metric, "model_id", None)
-            if model_id:
-                self._log_logged_model_metric(
-                    experiment_id=experiment_id,
-                    model_id=model_id,
-                    metric_name=metric.key,
-                    metric_value=float(metric.value),
-                    metric_timestamp_ms=metric.timestamp,
-                    metric_step=metric.step,
-                    run_id=run_id,
-                    dataset_name=getattr(metric, "dataset_name", None),
-                    dataset_digest=getattr(metric, "dataset_digest", None),
-                )
-
-        # Write tags individually (uses put_item)
+    def _set_tags(
+        self,
+        experiment_id: str,
+        run_id: str,
+        tags: list[RunTag],
+    ) -> None:
+        """Write run tags to DynamoDB."""
         for tag in tags:
             self._write_run_tag(experiment_id, run_id, tag)
 
