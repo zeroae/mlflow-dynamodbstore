@@ -486,10 +486,5 @@ test_log_metric_concurrent_logging_succeeds = pytest.mark.moto_server(
 
 # -- C9. Sessions — DONE (first-trace filter) --
 
-# --- D. Permanent xfails (3 tests) ---
-
-# Deprecated V2 trace API
-test_legacy_start_and_end_trace_v2 = pytest.mark.xfail(
-    reason="Deprecated V2 trace API not implemented (permanent)"
-)(test_legacy_start_and_end_trace_v2)
+# --- D. Permanent xfails (2 tests) ---
 # search_logged_models order_by — DONE (Python-side sort with nulls last)

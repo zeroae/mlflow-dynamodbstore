@@ -59,7 +59,9 @@ from mlflow.entities import (
 )
 from mlflow.entities.dataset_summary import _DatasetSummary
 from mlflow.entities.logged_model_status import LoggedModelStatus
+from mlflow.entities.trace_info_v2 import TraceInfoV2
 from mlflow.entities.trace_location import MlflowExperimentLocation
+from mlflow.entities.trace_status import TraceStatus
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
     INTERNAL_ERROR,
@@ -3327,7 +3329,8 @@ class DynamoDBTrackingStore(AbstractStore):
         trace_name = trace_info.trace_metadata.get(
             TraceTagKey.TRACE_NAME, ""
         ) or trace_info.tags.get(TraceTagKey.TRACE_NAME, "")
-        execution_duration = trace_info.execution_duration or 0
+        execution_duration = trace_info.execution_duration
+        execution_duration_num = execution_duration if execution_duration is not None else 0
         request_time = trace_info.request_time
         state_str = str(trace_info.state)
 
@@ -3338,16 +3341,16 @@ class DynamoDBTrackingStore(AbstractStore):
             "trace_id": trace_id,
             "experiment_id": experiment_id,
             "request_time": request_time,
-            "execution_duration": execution_duration,
+            "execution_duration": execution_duration_num,
             "state": state_str,
             "tags": {},
             "feedbacks": {},
             "expectations": {},
             # LSI attributes (must be strings, zero-padded for sort order)
             LSI1_SK: f"{request_time:020d}",
-            LSI2_SK: request_time + execution_duration,
+            LSI2_SK: request_time + execution_duration_num,
             LSI3_SK: f"{state_str}#{request_time:020d}",
-            LSI5_SK: f"{execution_duration:020d}",
+            LSI5_SK: f"{execution_duration_num:020d}",
             # GSI1: reverse lookup trace_id -> experiment_id
             GSI1_PK: f"{GSI1_TRACE_PREFIX}{trace_id}",
             GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
@@ -3441,6 +3444,83 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return trace_info
 
+    def deprecated_start_trace_v2(
+        self,
+        experiment_id: str,
+        timestamp_ms: int,
+        request_metadata: dict[str, str],
+        tags: dict[str, str],
+    ) -> TraceInfoV2:
+        """DEPRECATED V2 API: create a trace and return TraceInfoV2."""
+        from mlflow.tracing.utils import generate_request_id_v2
+
+        request_id = generate_request_id_v2()
+        trace_info = TraceInfo(
+            trace_id=request_id,
+            trace_location=TraceLocation.from_experiment_id(experiment_id),
+            request_time=timestamp_ms,
+            execution_duration=None,
+            state=TraceState.IN_PROGRESS,
+            trace_metadata=request_metadata.copy(),
+            tags=tags.copy(),
+        )
+        trace_info = self.start_trace(trace_info)
+        return TraceInfoV2.from_v3(trace_info)
+
+    def deprecated_end_trace_v2(
+        self,
+        request_id: str,
+        timestamp_ms: int,
+        status: TraceStatus,
+        request_metadata: dict[str, str],
+        tags: dict[str, str],
+    ) -> TraceInfoV2:
+        """DEPRECATED V2 API: finalize a trace and return TraceInfoV2."""
+
+        experiment_id = self._resolve_trace_experiment(request_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{request_id}"
+
+        meta = self._table.get_item(pk=pk, sk=sk)
+        if meta is None:
+            raise MlflowException(
+                f"Trace with ID {request_id} is not found.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        request_time = int(meta["request_time"])
+        execution_time_ms = timestamp_ms - request_time
+        state_str = str(status.to_state())
+
+        # Update trace META with finalized state
+        updates: dict[str, Any] = {
+            "execution_duration": execution_time_ms,
+            "state": state_str,
+            LSI2_SK: request_time + execution_time_ms,
+            LSI3_SK: f"{state_str}#{request_time:020d}",
+            LSI5_SK: f"{execution_time_ms:020d}",
+        }
+        self._table.update_item(pk=pk, sk=sk, updates=updates)
+
+        # Merge request metadata
+        ttl = self._get_trace_ttl()
+        for k, v in request_metadata.items():
+            rmeta_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": f"{SK_TRACE_PREFIX}{request_id}#RMETA#{k}",
+                "key": k,
+                "value": v,
+            }
+            if ttl is not None:
+                rmeta_item["ttl"] = ttl
+            self._table.put_item(rmeta_item)
+
+        # Merge tags
+        for k, v in tags.items():
+            self.set_trace_tag(request_id, k, v)
+
+        return TraceInfoV2.from_v3(self.get_trace_info(request_id))
+
     def get_trace_info(self, trace_id: str) -> TraceInfo:
         """Fetch a trace by ID, reconstructing TraceInfo from DynamoDB items."""
         experiment_id = self._resolve_trace_experiment(trace_id)
@@ -3480,7 +3560,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 mlflow_experiment=MlflowExperimentLocation(experiment_id=experiment_id),
             ),
             request_time=int(meta["request_time"]),
-            execution_duration=int(meta.get("execution_duration", 0)),
+            execution_duration=self._read_execution_duration(meta, state),
             state=state,
             trace_metadata=trace_metadata,
             tags=tags,
@@ -4546,6 +4626,17 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return [s["Id"] for s in summaries if "Id" in s]
 
+    @staticmethod
+    def _read_execution_duration(meta: dict[str, Any], state: TraceState) -> int | None:
+        """Return execution_duration, or None for in-progress traces with no duration."""
+        raw = meta.get("execution_duration")
+        if raw is None:
+            return None if state == TraceState.IN_PROGRESS else 0
+        val = int(raw)
+        if val == 0 and state == TraceState.IN_PROGRESS:
+            return None
+        return val
+
     def _build_trace_info(
         self,
         experiment_id: str,
@@ -4581,7 +4672,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 mlflow_experiment=MlflowExperimentLocation(experiment_id=experiment_id),
             ),
             request_time=int(meta["request_time"]),
-            execution_duration=int(meta.get("execution_duration", 0)),
+            execution_duration=self._read_execution_duration(meta, state),
             state=state,
             trace_metadata=trace_metadata,
             tags=tags,
