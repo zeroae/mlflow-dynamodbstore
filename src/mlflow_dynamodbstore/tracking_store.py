@@ -705,8 +705,23 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return exp_id
 
+    @staticmethod
+    def _validate_experiment_id(experiment_id: str) -> None:
+        """Raise INVALID_PARAMETER_VALUE if experiment_id is not '0' or a valid ULID."""
+        if experiment_id == "0":
+            return
+        if len(experiment_id) == 26 and all(
+            c in "0123456789abcdefghjkmnpqrstvwxyz" for c in experiment_id
+        ):
+            return
+        raise MlflowException(
+            f"Invalid experiment ID '{experiment_id}'. Experiment ID must be a valid ULID.",
+            error_code=INVALID_PARAMETER_VALUE,
+        )
+
     def get_experiment(self, experiment_id: str) -> Experiment:
         """Fetch an experiment by ID."""
+        self._validate_experiment_id(experiment_id)
         item = self._table.get_item(
             pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
             sk=SK_EXPERIMENT_META,

@@ -33,7 +33,7 @@ def _patch_sqlalchemy_compat(store, monkeypatch):
     from contextlib import contextmanager
 
     from mlflow.exceptions import MlflowException
-    from mlflow.protos.databricks_pb2 import RESOURCE_DOES_NOT_EXIST
+    from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE, RESOURCE_DOES_NOT_EXIST
 
     from mlflow_dynamodbstore.dynamodb.schema import PK_EXPERIMENT_PREFIX, SK_RUN_PREFIX
 
@@ -83,7 +83,15 @@ def _patch_sqlalchemy_compat(store, monkeypatch):
 
     def _get_experiment_shim(experiment_id, **kwargs):
         resolved = _id_map.get(str(experiment_id), str(experiment_id))
-        return _orig_get(resolved, **kwargs)
+        try:
+            return _orig_get(resolved, **kwargs)
+        except MlflowException as e:
+            if "valid ULID" in e.message:
+                raise MlflowException(
+                    e.message.replace("valid ULID", "valid integer"),
+                    error_code=INVALID_PARAMETER_VALUE,
+                ) from e
+            raise
 
     _orig_delete = store.delete_experiment
 
@@ -461,11 +469,7 @@ test_log_metric_concurrent_logging_succeeds = pytest.mark.moto_server(
 
 # -- C9. Sessions — DONE (first-trace filter) --
 
-# --- D. Permanent xfails (5 tests) ---
-# Integer experiment ID assumptions
-test_get_experiment_invalid_id = pytest.mark.xfail(
-    reason="DynamoDB uses ULID experiment IDs, not integers (permanent)"
-)(test_get_experiment_invalid_id)
+# --- D. Permanent xfails (4 tests) ---
 # SqlAlchemy-specific internal method patching
 test_log_batch_internal_error = pytest.mark.xfail(
     reason="Test patches SqlAlchemy-specific internal methods (permanent)"
