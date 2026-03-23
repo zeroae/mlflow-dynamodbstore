@@ -59,9 +59,12 @@ from mlflow.entities import (
 )
 from mlflow.entities.dataset_summary import _DatasetSummary
 from mlflow.entities.logged_model_status import LoggedModelStatus
+from mlflow.entities.trace_info_v2 import TraceInfoV2
 from mlflow.entities.trace_location import MlflowExperimentLocation
+from mlflow.entities.trace_status import TraceStatus
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import (
+    INTERNAL_ERROR,
     INVALID_PARAMETER_VALUE,
     INVALID_STATE,
     RESOURCE_ALREADY_EXISTS,
@@ -705,8 +708,23 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return exp_id
 
+    @staticmethod
+    def _validate_experiment_id(experiment_id: str) -> None:
+        """Raise INVALID_PARAMETER_VALUE if experiment_id is not '0' or a valid ULID."""
+        if experiment_id == "0":
+            return
+        if len(experiment_id) == 26 and all(
+            c in "0123456789abcdefghjkmnpqrstvwxyz" for c in experiment_id
+        ):
+            return
+        raise MlflowException(
+            f"Invalid experiment ID '{experiment_id}'. Experiment ID must be a valid ULID.",
+            error_code=INVALID_PARAMETER_VALUE,
+        )
+
     def get_experiment(self, experiment_id: str) -> Experiment:
         """Fetch an experiment by ID."""
+        self._validate_experiment_id(experiment_id)
         item = self._table.get_item(
             pk=f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
             sk=SK_EXPERIMENT_META,
@@ -2760,8 +2778,27 @@ class DynamoDBTrackingStore(AbstractStore):
                     INVALID_PARAMETER_VALUE,
                 )
 
-        items: list[dict[str, Any]] = []
+        try:
+            self._log_metrics(experiment_id, run_id, pk, metrics)
+            self._log_params(experiment_id, run_id, pk, params)
+            self._set_tags(experiment_id, run_id, tags)
+        except MlflowException:
+            raise
+        except Exception as e:
+            raise MlflowException(e, INTERNAL_ERROR) from e
 
+    def _log_metrics(
+        self,
+        experiment_id: str,
+        run_id: str,
+        pk: str,
+        metrics: list[Metric],
+    ) -> None:
+        """Write metric latest, history, and RANK items to DynamoDB."""
+        if not metrics:
+            return
+
+        items: list[dict[str, Any]] = []
         for metric in metrics:
             # Latest metric item — only update if (step, timestamp, value)
             # tuple is greater than existing, matching MLflow's semantics.
@@ -2818,6 +2855,40 @@ class DynamoDBTrackingStore(AbstractStore):
                 }
             )
 
+        if items:
+            deduped: dict[tuple[str, str], dict[str, Any]] = {}
+            for item in items:
+                deduped[(item["PK"], item["SK"])] = item
+            self._table.batch_write(list(deduped.values()))
+
+        # Route metrics with model_id to logged model metric storage
+        for metric in metrics:
+            model_id = getattr(metric, "model_id", None)
+            if model_id:
+                self._log_logged_model_metric(
+                    experiment_id=experiment_id,
+                    model_id=model_id,
+                    metric_name=metric.key,
+                    metric_value=float(metric.value),
+                    metric_timestamp_ms=metric.timestamp,
+                    metric_step=metric.step,
+                    run_id=run_id,
+                    dataset_name=getattr(metric, "dataset_name", None),
+                    dataset_digest=getattr(metric, "dataset_digest", None),
+                )
+
+    def _log_params(
+        self,
+        experiment_id: str,
+        run_id: str,
+        pk: str,
+        params: list[Param],
+    ) -> None:
+        """Write param and RANK items to DynamoDB."""
+        if not params:
+            return
+
+        items: list[dict[str, Any]] = []
         for param in params:
             param_sk = f"{SK_RUN_PREFIX}{run_id}{SK_PARAM_PREFIX}{param.key}"
             items.append(
@@ -2850,12 +2921,8 @@ class DynamoDBTrackingStore(AbstractStore):
                 }
             )
 
-        # Write all items in batch (deduplicate by PK+SK, last wins)
         if items:
-            deduped: dict[tuple[str, str], dict[str, Any]] = {}
-            for item in items:
-                deduped[(item["PK"], item["SK"])] = item
-            self._table.batch_write(list(deduped.values()))
+            self._table.batch_write(items)
 
         # Write FTS items for param values if configured
         if self._config.should_trigram("run_param_value"):
@@ -2874,23 +2941,13 @@ class DynamoDBTrackingStore(AbstractStore):
             if fts_param_items:
                 self._table.batch_write(fts_param_items)
 
-        # Route metrics with model_id to logged model metric storage
-        for metric in metrics:
-            model_id = getattr(metric, "model_id", None)
-            if model_id:
-                self._log_logged_model_metric(
-                    experiment_id=experiment_id,
-                    model_id=model_id,
-                    metric_name=metric.key,
-                    metric_value=float(metric.value),
-                    metric_timestamp_ms=metric.timestamp,
-                    metric_step=metric.step,
-                    run_id=run_id,
-                    dataset_name=getattr(metric, "dataset_name", None),
-                    dataset_digest=getattr(metric, "dataset_digest", None),
-                )
-
-        # Write tags individually (uses put_item)
+    def _set_tags(
+        self,
+        experiment_id: str,
+        run_id: str,
+        tags: list[RunTag],
+    ) -> None:
+        """Write run tags to DynamoDB."""
         for tag in tags:
             self._write_run_tag(experiment_id, run_id, tag)
 
@@ -3272,7 +3329,8 @@ class DynamoDBTrackingStore(AbstractStore):
         trace_name = trace_info.trace_metadata.get(
             TraceTagKey.TRACE_NAME, ""
         ) or trace_info.tags.get(TraceTagKey.TRACE_NAME, "")
-        execution_duration = trace_info.execution_duration or 0
+        execution_duration = trace_info.execution_duration
+        execution_duration_num = execution_duration if execution_duration is not None else 0
         request_time = trace_info.request_time
         state_str = str(trace_info.state)
 
@@ -3283,16 +3341,16 @@ class DynamoDBTrackingStore(AbstractStore):
             "trace_id": trace_id,
             "experiment_id": experiment_id,
             "request_time": request_time,
-            "execution_duration": execution_duration,
+            "execution_duration": execution_duration_num,
             "state": state_str,
             "tags": {},
             "feedbacks": {},
             "expectations": {},
             # LSI attributes (must be strings, zero-padded for sort order)
             LSI1_SK: f"{request_time:020d}",
-            LSI2_SK: request_time + execution_duration,
+            LSI2_SK: request_time + execution_duration_num,
             LSI3_SK: f"{state_str}#{request_time:020d}",
-            LSI5_SK: f"{execution_duration:020d}",
+            LSI5_SK: f"{execution_duration_num:020d}",
             # GSI1: reverse lookup trace_id -> experiment_id
             GSI1_PK: f"{GSI1_TRACE_PREFIX}{trace_id}",
             GSI1_SK: f"{PK_EXPERIMENT_PREFIX}{experiment_id}",
@@ -3386,6 +3444,83 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return trace_info
 
+    def deprecated_start_trace_v2(
+        self,
+        experiment_id: str,
+        timestamp_ms: int,
+        request_metadata: dict[str, str],
+        tags: dict[str, str],
+    ) -> TraceInfoV2:
+        """DEPRECATED V2 API: create a trace and return TraceInfoV2."""
+        from mlflow.tracing.utils import generate_request_id_v2
+
+        request_id = generate_request_id_v2()
+        trace_info = TraceInfo(
+            trace_id=request_id,
+            trace_location=TraceLocation.from_experiment_id(experiment_id),
+            request_time=timestamp_ms,
+            execution_duration=None,
+            state=TraceState.IN_PROGRESS,
+            trace_metadata=request_metadata.copy(),
+            tags=tags.copy(),
+        )
+        trace_info = self.start_trace(trace_info)
+        return TraceInfoV2.from_v3(trace_info)
+
+    def deprecated_end_trace_v2(
+        self,
+        request_id: str,
+        timestamp_ms: int,
+        status: TraceStatus,
+        request_metadata: dict[str, str],
+        tags: dict[str, str],
+    ) -> TraceInfoV2:
+        """DEPRECATED V2 API: finalize a trace and return TraceInfoV2."""
+
+        experiment_id = self._resolve_trace_experiment(request_id)
+        pk = f"{PK_EXPERIMENT_PREFIX}{experiment_id}"
+        sk = f"{SK_TRACE_PREFIX}{request_id}"
+
+        meta = self._table.get_item(pk=pk, sk=sk)
+        if meta is None:
+            raise MlflowException(
+                f"Trace with ID {request_id} is not found.",
+                error_code=RESOURCE_DOES_NOT_EXIST,
+            )
+
+        request_time = int(meta["request_time"])
+        execution_time_ms = timestamp_ms - request_time
+        state_str = str(status.to_state())
+
+        # Update trace META with finalized state
+        updates: dict[str, Any] = {
+            "execution_duration": execution_time_ms,
+            "state": state_str,
+            LSI2_SK: request_time + execution_time_ms,
+            LSI3_SK: f"{state_str}#{request_time:020d}",
+            LSI5_SK: f"{execution_time_ms:020d}",
+        }
+        self._table.update_item(pk=pk, sk=sk, updates=updates)
+
+        # Merge request metadata
+        ttl = self._get_trace_ttl()
+        for k, v in request_metadata.items():
+            rmeta_item: dict[str, Any] = {
+                "PK": pk,
+                "SK": f"{SK_TRACE_PREFIX}{request_id}#RMETA#{k}",
+                "key": k,
+                "value": v,
+            }
+            if ttl is not None:
+                rmeta_item["ttl"] = ttl
+            self._table.put_item(rmeta_item)
+
+        # Merge tags
+        for k, v in tags.items():
+            self.set_trace_tag(request_id, k, v)
+
+        return TraceInfoV2.from_v3(self.get_trace_info(request_id))
+
     def get_trace_info(self, trace_id: str) -> TraceInfo:
         """Fetch a trace by ID, reconstructing TraceInfo from DynamoDB items."""
         experiment_id = self._resolve_trace_experiment(trace_id)
@@ -3425,7 +3560,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 mlflow_experiment=MlflowExperimentLocation(experiment_id=experiment_id),
             ),
             request_time=int(meta["request_time"]),
-            execution_duration=int(meta.get("execution_duration", 0)),
+            execution_duration=self._read_execution_duration(meta, state),
             state=state,
             trace_metadata=trace_metadata,
             tags=tags,
@@ -4491,6 +4626,17 @@ class DynamoDBTrackingStore(AbstractStore):
 
         return [s["Id"] for s in summaries if "Id" in s]
 
+    @staticmethod
+    def _read_execution_duration(meta: dict[str, Any], state: TraceState) -> int | None:
+        """Return execution_duration, or None for in-progress traces with no duration."""
+        raw = meta.get("execution_duration")
+        if raw is None:
+            return None if state == TraceState.IN_PROGRESS else 0
+        val = int(raw)
+        if val == 0 and state == TraceState.IN_PROGRESS:
+            return None
+        return val
+
     def _build_trace_info(
         self,
         experiment_id: str,
@@ -4526,7 +4672,7 @@ class DynamoDBTrackingStore(AbstractStore):
                 mlflow_experiment=MlflowExperimentLocation(experiment_id=experiment_id),
             ),
             request_time=int(meta["request_time"]),
-            execution_duration=int(meta.get("execution_duration", 0)),
+            execution_duration=self._read_execution_duration(meta, state),
             state=state,
             trace_metadata=trace_metadata,
             tags=tags,

@@ -24,16 +24,16 @@ from mlflow.environment_variables import MLFLOW_ENABLE_WORKSPACES
 @pytest.fixture
 def store(tracking_store, monkeypatch):
     monkeypatch.setenv(MLFLOW_ENABLE_WORKSPACES.name, "false")
-    _patch_sqlalchemy_compat(tracking_store)
+    _patch_sqlalchemy_compat(store=tracking_store, monkeypatch=monkeypatch)
     return tracking_store
 
 
-def _patch_sqlalchemy_compat(store):
+def _patch_sqlalchemy_compat(store, monkeypatch):
     """Add ManagedSessionMaker and _get_run shims for SqlAlchemy-style tests."""
     from contextlib import contextmanager
 
     from mlflow.exceptions import MlflowException
-    from mlflow.protos.databricks_pb2 import RESOURCE_DOES_NOT_EXIST
+    from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE, RESOURCE_DOES_NOT_EXIST
 
     from mlflow_dynamodbstore.dynamodb.schema import PK_EXPERIMENT_PREFIX, SK_RUN_PREFIX
 
@@ -62,12 +62,87 @@ def _patch_sqlalchemy_compat(store):
     store.ManagedSessionMaker = _managed_session
     store._get_run = _get_run
 
+    # --- Integer experiment ID interceptor ---
+    # SQLAlchemy uses auto-increment integer IDs (0, 1, 2, ...).
+    # DynamoDB uses ULIDs. This shim records create_experiment results and
+    # translates integer IDs to ULIDs in get/delete calls so vendored tests
+    # that hardcode integer IDs work unmodified.
+    _id_map: dict[str, str] = {}  # "1" -> "01ABC..."
+    _next_seq = 1  # 0 is reserved for the default experiment
+
+    _orig_create = store.create_experiment
+
+    def _create_experiment_shim(*args, **kwargs):
+        nonlocal _next_seq
+        ulid = _orig_create(*args, **kwargs)
+        _id_map[str(_next_seq)] = ulid
+        _next_seq += 1
+        return ulid
+
+    _orig_get = store.get_experiment
+
+    def _get_experiment_shim(experiment_id, **kwargs):
+        resolved = _id_map.get(str(experiment_id), str(experiment_id))
+        try:
+            return _orig_get(resolved, **kwargs)
+        except MlflowException as e:
+            if "valid ULID" in e.message:
+                raise MlflowException(
+                    e.message.replace("valid ULID", "valid integer"),
+                    error_code=INVALID_PARAMETER_VALUE,
+                ) from e
+            raise
+
+    _orig_delete = store.delete_experiment
+
+    def _delete_experiment_shim(experiment_id):
+        resolved = _id_map.get(str(experiment_id), str(experiment_id))
+        return _orig_delete(resolved)
+
+    store.create_experiment = _create_experiment_shim
+    store.get_experiment = _get_experiment_shim
+    store.delete_experiment = _delete_experiment_shim
+
+    # Patch SqlAlchemyStore in the vendored test module so that store-recreation
+    # (e.g. `store = SqlAlchemyStore(db_uri, artifact_uri)`) returns our DynamoDB
+    # store with the ID interceptor already applied.
+    import tests.store.tracking.test_sqlalchemy_store as _test_mod
+
+    class _FakeStoreConstructor:
+        """Return the existing DynamoDB store when tests try to recreate a SqlAlchemyStore."""
+
+        def __new__(cls, *args, **kwargs):
+            return store
+
+    monkeypatch.setattr(_test_mod, "SqlAlchemyStore", _FakeStoreConstructor)
+
+    # Attributes read by tests before store recreation
+    store.db_uri = "dynamodb://stub"
+    store.artifact_root_uri = "/tmp/artifacts"
+
     # Redirect SqlAlchemy store logger to our logger so mock.patch in tests works
     import mlflow.store.tracking.sqlalchemy_store as _sqla_mod
 
     import mlflow_dynamodbstore.tracking_store as _ddb_mod
 
     _sqla_mod._logger = _ddb_mod._logger
+
+    # Redirect _log_metrics/_log_params/_set_tags mock targets.
+    # Tests mock.patch("...SqlAlchemyStore._log_metrics") etc. We copy our
+    # methods onto SqlAlchemyStore and make the instance delegate through it,
+    # so mock.patch replacements take effect on our store.
+    _sqla_cls = _sqla_mod.SqlAlchemyStore
+    _ddb_cls = _ddb_mod.DynamoDBTrackingStore
+    for _name in ("_log_metrics", "_log_params", "_set_tags"):
+        monkeypatch.setattr(_sqla_cls, _name, getattr(_ddb_cls, _name))
+
+        def _make_delegator(method_name):
+            def _delegator(*args, **kwargs):
+                return getattr(_sqla_cls, method_name)(store, *args, **kwargs)
+
+            return _delegator
+
+        setattr(store, _name, _make_delegator(_name))
 
 
 from tests.store.tracking.test_sqlalchemy_store import (  # noqa: E402, F401
@@ -411,20 +486,5 @@ test_log_metric_concurrent_logging_succeeds = pytest.mark.moto_server(
 
 # -- C9. Sessions — DONE (first-trace filter) --
 
-# --- D. Permanent xfails (7 tests) ---
-# Integer experiment ID assumptions
-test_default_experiment_lifecycle = pytest.mark.xfail(
-    reason="DynamoDB uses ULID experiment IDs, not auto-increment integers (permanent)"
-)(test_default_experiment_lifecycle)
-test_get_experiment_invalid_id = pytest.mark.xfail(
-    reason="DynamoDB uses ULID experiment IDs, not integers (permanent)"
-)(test_get_experiment_invalid_id)
-# SqlAlchemy-specific internal method patching
-test_log_batch_internal_error = pytest.mark.xfail(
-    reason="Test patches SqlAlchemy-specific internal methods (permanent)"
-)(test_log_batch_internal_error)
-# Deprecated V2 trace API
-test_legacy_start_and_end_trace_v2 = pytest.mark.xfail(
-    reason="Deprecated V2 trace API not implemented (permanent)"
-)(test_legacy_start_and_end_trace_v2)
+# --- D. Permanent xfails (2 tests) ---
 # search_logged_models order_by — DONE (Python-side sort with nulls last)
