@@ -127,6 +127,23 @@ def _patch_sqlalchemy_compat(store, monkeypatch):
 
     _sqla_mod._logger = _ddb_mod._logger
 
+    # Redirect _log_metrics/_log_params/_set_tags mock targets.
+    # Tests mock.patch("...SqlAlchemyStore._log_metrics") etc. We copy our
+    # methods onto SqlAlchemyStore and make the instance delegate through it,
+    # so mock.patch replacements take effect on our store.
+    _sqla_cls = _sqla_mod.SqlAlchemyStore
+    _ddb_cls = _ddb_mod.DynamoDBTrackingStore
+    for _name in ("_log_metrics", "_log_params", "_set_tags"):
+        monkeypatch.setattr(_sqla_cls, _name, getattr(_ddb_cls, _name))
+
+        def _make_delegator(method_name):
+            def _delegator(*args, **kwargs):
+                return getattr(_sqla_cls, method_name)(store, *args, **kwargs)
+
+            return _delegator
+
+        setattr(store, _name, _make_delegator(_name))
+
 
 from tests.store.tracking.test_sqlalchemy_store import (  # noqa: E402, F401
     # --- Pure unit tests (no store fixture needed) ---
@@ -237,6 +254,7 @@ from tests.store.tracking.test_sqlalchemy_store import (  # noqa: E402, F401
     test_log_batch_allows_tag_overwrite_single_req,
     test_log_batch_duplicate_metrics_across_key_batches,
     test_log_batch_duplicate_metrics_mixed_with_new_across_key_batches,
+    test_log_batch_internal_error,
     test_log_batch_limits,
     test_log_batch_logged_model,
     test_log_batch_nonexistent_run,
@@ -469,43 +487,6 @@ test_log_metric_concurrent_logging_succeeds = pytest.mark.moto_server(
 # -- C9. Sessions — DONE (first-trace filter) --
 
 # --- D. Permanent xfails (3 tests) ---
-
-
-# Override test_log_batch_internal_error: same test concept, but patches
-# DynamoDBTrackingStore._log_metrics/_log_params/_set_tags instead of
-# SqlAlchemyStore's internal methods.
-def test_log_batch_internal_error(store):
-    from unittest import mock
-
-    from mlflow.entities import Metric, Param, RunTag
-    from mlflow.exceptions import MlflowException
-
-    from tests.store.tracking.test_sqlalchemy_store import _run_factory
-
-    run = _run_factory(store)
-
-    def _raise_exception_fn(*args, **kwargs):
-        raise Exception("Some internal error")
-
-    package = "mlflow_dynamodbstore.tracking_store.DynamoDBTrackingStore"
-    with (
-        mock.patch(package + "._log_metrics") as metric_mock,
-        mock.patch(package + "._log_params") as param_mock,
-        mock.patch(package + "._set_tags") as tags_mock,
-    ):
-        metric_mock.side_effect = _raise_exception_fn
-        param_mock.side_effect = _raise_exception_fn
-        tags_mock.side_effect = _raise_exception_fn
-        for kwargs in [
-            {"metrics": [Metric("a", 3, 1, 0)]},
-            {"params": [Param("b", "c")]},
-            {"tags": [RunTag("c", "d")]},
-        ]:
-            log_batch_kwargs = {"metrics": [], "params": [], "tags": []}
-            log_batch_kwargs.update(kwargs)
-            with pytest.raises(MlflowException, match=r"Some internal error"):
-                store.log_batch(run.info.run_id, **log_batch_kwargs)
-
 
 # Deprecated V2 trace API
 test_legacy_start_and_end_trace_v2 = pytest.mark.xfail(
