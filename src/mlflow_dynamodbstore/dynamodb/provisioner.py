@@ -372,10 +372,25 @@ def _stack_exists(cfn: Any, stack_name: str) -> bool:
     return status in ("CREATE_COMPLETE", "UPDATE_COMPLETE")
 
 
+def get_stack_outputs(
+    stack_name: str,
+    region: str | None = None,
+    endpoint_url: str | None = None,
+) -> dict[str, str]:
+    """Read CloudFormation stack outputs as a dict."""
+    cfn = boto3.client("cloudformation", **_boto_kwargs(region, endpoint_url))
+    response = cfn.describe_stacks(StackName=stack_name)
+    outputs = response["Stacks"][0].get("Outputs", [])
+    return {o["OutputKey"]: o["OutputValue"] for o in outputs}
+
+
 def ensure_stack_exists(
     table_name: str,
     region: str | None = None,
     endpoint_url: str | None = None,
+    bucket_name: str | None = None,
+    iam_format: str = "{}",
+    permission_boundary: str | None = None,
 ) -> None:
     """Ensure the CloudFormation stack and DynamoDB table exist.
 
@@ -386,13 +401,24 @@ def ensure_stack_exists(
     """
     stack_name = table_name
 
+    if bucket_name is None:
+        sts = boto3.client("sts", **_boto_kwargs(region, endpoint_url))
+        account_id = sts.get_caller_identity()["Account"]
+        bucket_name = f"{table_name}-artifacts-{account_id}"
+
     cfn = boto3.client("cloudformation", **_boto_kwargs(region, endpoint_url))
 
     if not _stack_exists(cfn, stack_name):
-        template = _build_template(table_name)
+        template = _build_template(
+            table_name,
+            bucket_name=bucket_name,
+            iam_format=iam_format,
+            permission_boundary=permission_boundary,
+        )
         cfn.create_stack(
             StackName=stack_name,
             TemplateBody=json.dumps(template),
+            Capabilities=["CAPABILITY_NAMED_IAM"],
         )
         cfn.get_waiter("stack_create_complete").wait(StackName=stack_name)
 
@@ -422,11 +448,21 @@ def destroy_stack(
     cfn.describe_stacks(StackName=table_name)
 
     if retain:
-        # Update the stack to set DeletionPolicy=Retain on the table, then delete
-        retain_template = _build_template(table_name, retain_table=True)
+        # Read existing bucket name from stack outputs before rebuilding template
+        outputs = get_stack_outputs(table_name, region, endpoint_url)
+        existing_bucket_name = outputs.get("ArtifactBucketName")
+
+        # Update the stack to set DeletionPolicy=Retain on table and bucket, then delete
+        retain_template = _build_template(
+            table_name,
+            retain_table=True,
+            retain_bucket=True,
+            bucket_name=existing_bucket_name,
+        )
         cfn.update_stack(
             StackName=table_name,
             TemplateBody=json.dumps(retain_template),
+            Capabilities=["CAPABILITY_NAMED_IAM"],
         )
         cfn.get_waiter("stack_update_complete").wait(StackName=table_name)
 
