@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import TypedDict
 from urllib.parse import parse_qs
 
 DEFAULT_TABLE_NAME = "mlflow"
@@ -19,21 +20,50 @@ class DynamoDBUriComponents:
     region: str | None = None
     endpoint_url: str | None = None
     deploy: bool = True
+    bucket: str | None = None
+    iam_format: str = "{}"
+    permission_boundary: str | None = None
 
 
-def _parse_query_params(raw: str) -> tuple[str, bool]:
-    """Split a string from its query params and extract deploy flag.
+class _QueryParams(TypedDict):
+    deploy: bool
+    bucket: str | None
+    iam_format: str
+    permission_boundary: str | None
+
+
+def _parse_query_params(raw: str) -> tuple[str, _QueryParams]:
+    """Split a string from its query params and extract all known params.
 
     Returns:
-        Tuple of (value, deploy).
+        Tuple of (value, params_dict) where params_dict contains:
+            deploy (bool), bucket (str|None), iam_format (str),
+            permission_boundary (str|None).
     """
+    defaults: _QueryParams = {
+        "deploy": True,
+        "bucket": None,
+        "iam_format": "{}",
+        "permission_boundary": None,
+    }
     if "?" in raw:
         value, query_string = raw.split("?", 1)
         params = parse_qs(query_string)
         deploy_values = params.get("deploy", ["true"])
         deploy = deploy_values[0].lower() != "false"
-        return value, deploy
-    return raw, True
+        bucket_values = params.get("bucket", [None])
+        bucket = bucket_values[0]
+        iam_format_values = params.get("iam_format", ["{}"])
+        iam_format = iam_format_values[0]
+        permission_boundary_values = params.get("permission_boundary", [None])
+        permission_boundary = permission_boundary_values[0]
+        return value, {
+            "deploy": deploy,
+            "bucket": bucket,
+            "iam_format": iam_format,
+            "permission_boundary": permission_boundary,
+        }
+    return raw, defaults
 
 
 def parse_dynamodb_uri(uri: str) -> DynamoDBUriComponents:
@@ -49,7 +79,10 @@ def parse_dynamodb_uri(uri: str) -> DynamoDBUriComponents:
         dynamodb://http://host:port            — explicit endpoint, default table
 
     Query params:
-        deploy=true|false  — whether to auto-deploy CloudFormation stack (default: true)
+        deploy=true|false         — whether to auto-deploy CloudFormation stack (default: true)
+        bucket=<name>             — S3 bucket for artifact overflow (default: None)
+        iam_format=<fmt>          — IAM role name format string (default: "{}")
+        permission_boundary=<arn> — IAM permission boundary policy name (default: None)
 
     Args:
         uri: The DynamoDB URI to parse.
@@ -74,34 +107,34 @@ def parse_dynamodb_uri(uri: str) -> DynamoDBUriComponents:
         last_slash = rest.rfind("/")
         # No path after endpoint: dynamodb://http://host:port
         if last_slash == rest.index("//") + 1:
-            endpoint_url, deploy = _parse_query_params(rest)
-            return DynamoDBUriComponents(endpoint_url=endpoint_url, deploy=deploy)
+            endpoint_url, qp = _parse_query_params(rest)
+            return DynamoDBUriComponents(endpoint_url=endpoint_url, **qp)
         endpoint_url = rest[:last_slash]
         raw_table_name = rest[last_slash + 1 :]
-        table_name, deploy = _parse_query_params(raw_table_name)
+        table_name, qp = _parse_query_params(raw_table_name)
         return DynamoDBUriComponents(
             table_name=table_name or DEFAULT_TABLE_NAME,
             endpoint_url=endpoint_url,
-            deploy=deploy,
+            **qp,
         )
 
     # Split on first /
     if "/" in rest:
         host, raw_table_name = rest.split("/", 1)
-        table_name, deploy = _parse_query_params(raw_table_name)
+        table_name, qp = _parse_query_params(raw_table_name)
         table_name = table_name or DEFAULT_TABLE_NAME
     else:
-        host, deploy = _parse_query_params(rest)
+        host, qp = _parse_query_params(rest)
         table_name = DEFAULT_TABLE_NAME
 
     # Check if host looks like a region (e.g., us-east-1)
     if _REGION_RE.match(host):
-        return DynamoDBUriComponents(table_name=table_name, region=host, deploy=deploy)
+        return DynamoDBUriComponents(table_name=table_name, region=host, **qp)
 
     # host:port or localhost
     endpoint_url = f"http://{host}"
     return DynamoDBUriComponents(
         table_name=table_name,
         endpoint_url=endpoint_url,
-        deploy=deploy,
+        **qp,
     )
