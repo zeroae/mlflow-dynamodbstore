@@ -4,6 +4,7 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
+import boto3
 import pytest
 from moto import mock_aws
 
@@ -143,12 +144,36 @@ def mock_dynamodb(_moto_server_endpoint):
             yield
 
 
+def _setup_stack_moto(table_name: str, region: str = "us-east-1") -> None:
+    """Create a CloudFormation stack under moto without Lambda custom resource.
+
+    Uses retain_bucket=True to skip BucketCleanupCustomResource, which hangs
+    in moto because it tries to invoke the Lambda and wait for a callback.
+    """
+    import json
+
+    from mlflow_dynamodbstore.dynamodb.provisioner import _build_template, _seed_initial_data
+
+    template = _build_template(
+        table_name, bucket_name=f"{table_name}-artifacts", retain_bucket=True
+    )
+    cfn = boto3.client("cloudformation", region_name=region)
+    cfn.create_stack(
+        StackName=table_name,
+        TemplateBody=json.dumps(template),
+        Capabilities=["CAPABILITY_NAMED_IAM"],
+    )
+    cfn.get_waiter("stack_create_complete").wait(StackName=table_name)
+    _seed_initial_data(table_name, region=region)
+
+
 @pytest.fixture
 def tracking_store(_moto_server_endpoint, mock_dynamodb):
     if _moto_server_endpoint:
         uri = f"dynamodb://{_moto_server_endpoint}/test-table"
     else:
-        uri = "dynamodb://us-east-1/test-table"
+        uri = "dynamodb://us-east-1/test-table?deploy=false"
+        _setup_stack_moto("test-table")
     return DynamoDBTrackingStore(
         store_uri=uri,
         artifact_uri="/tmp/artifacts",
@@ -157,15 +182,17 @@ def tracking_store(_moto_server_endpoint, mock_dynamodb):
 
 @pytest.fixture
 def registry_store(mock_dynamodb):
+    _setup_stack_moto("test-table")
     return DynamoDBRegistryStore(
-        store_uri="dynamodb://us-east-1/test-table",
+        store_uri="dynamodb://us-east-1/test-table?deploy=false",
     )
 
 
 @pytest.fixture
 def workspace_store(mock_dynamodb):
+    _setup_stack_moto("test-table")
     return DynamoDBWorkspaceStore(
-        store_uri="dynamodb://us-east-1/test-table",
+        store_uri="dynamodb://us-east-1/test-table?deploy=false",
     )
 
 
