@@ -662,12 +662,39 @@ class DynamoDBTrackingStore(AbstractStore):
     ) -> None:
         uri = parse_dynamodb_uri(store_uri)
         if uri.deploy:
-            ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
+            ensure_stack_exists(
+                uri.table_name,
+                uri.region,
+                uri.endpoint_url,
+                bucket_name=uri.bucket,
+                iam_format=uri.iam_format,
+                permission_boundary=uri.permission_boundary,
+            )
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
         self._uri = uri
-        self._cache = ResolutionCache(workspace=lambda: self._workspace)
-        self._artifact_uri = artifact_uri or "./mlartifacts"
+
+        # Auto-discover artifact bucket
+        self._overflow_bucket: str | None = None
+        if uri.bucket:
+            self._overflow_bucket = uri.bucket
+        else:
+            try:
+                from mlflow_dynamodbstore.dynamodb.provisioner import get_stack_outputs
+
+                outputs = get_stack_outputs(uri.table_name, uri.region, uri.endpoint_url)
+                self._overflow_bucket = outputs.get("ArtifactBucketName")
+            except Exception:
+                pass
+
+        if artifact_uri:
+            self._artifact_uri = artifact_uri
+        elif self._overflow_bucket:
+            self._artifact_uri = f"s3://{self._overflow_bucket}"
+        else:
+            self._artifact_uri = "./mlartifacts"
         self.artifact_root_uri = self._artifact_uri
+
+        self._cache = ResolutionCache(workspace=lambda: self._workspace)
         self._config = ConfigReader(self._table)
         self._config.reconcile()
         super().__init__()
@@ -1624,6 +1651,14 @@ class DynamoDBTrackingStore(AbstractStore):
             sk_prefix=f"{run_prefix}{SK_OUTPUT_PREFIX}",
         )
 
+        if self._overflow_bucket and dataset_items:
+            from mlflow_dynamodbstore.dynamodb.overflow import resolve_item_overflows
+
+            dataset_items = [
+                resolve_item_overflows(d, self._uri.region, self._uri.endpoint_url)
+                for d in dataset_items
+            ]
+
         return _item_to_run(
             item,
             tag_items,
@@ -2400,6 +2435,13 @@ class DynamoDBTrackingStore(AbstractStore):
                 input_items.append(it)
         dataset_items = self._table.query(pk=pk, sk_prefix=SK_DATASET_PREFIX) if input_items else []
         output_items = self._table.query(pk=pk, sk_prefix=f"{run_prefix}{SK_OUTPUT_PREFIX}")
+        if self._overflow_bucket and dataset_items:
+            from mlflow_dynamodbstore.dynamodb.overflow import resolve_item_overflows
+
+            dataset_items = [
+                resolve_item_overflows(d, self._uri.region, self._uri.endpoint_url)
+                for d in dataset_items
+            ]
         return _item_to_run(
             item,
             tag_items,
@@ -3265,18 +3307,26 @@ class DynamoDBTrackingStore(AbstractStore):
             ds_uuid = generate_ulid()
 
             # Dataset item: PK=EXP#<exp_id>, SK=D#<name>#<digest>
-            items.append(
-                {
-                    "PK": pk,
-                    "SK": f"{SK_DATASET_PREFIX}{ds.name}#{ds.digest}",
-                    "name": ds.name,
-                    "digest": ds.digest,
-                    "source_type": ds.source_type,
-                    "source": ds.source,
-                    "schema": ds.schema,
-                    "profile": ds.profile,
-                }
-            )
+            dataset_item = {
+                "PK": pk,
+                "SK": f"{SK_DATASET_PREFIX}{ds.name}#{ds.digest}",
+                "name": ds.name,
+                "digest": ds.digest,
+                "source_type": ds.source_type,
+                "source": ds.source,
+                "schema": ds.schema,
+                "profile": ds.profile,
+            }
+            if self._overflow_bucket:
+                from mlflow_dynamodbstore.dynamodb.overflow import prepare_item_for_write
+
+                dataset_item = prepare_item_for_write(
+                    dataset_item,
+                    self._overflow_bucket,
+                    self._uri.region,
+                    self._uri.endpoint_url,
+                )
+            items.append(dataset_item)
 
             # Input link item: PK=EXP#<exp_id>, SK=R#<run_id>#INPUT#<ds_uuid>
             items.append(

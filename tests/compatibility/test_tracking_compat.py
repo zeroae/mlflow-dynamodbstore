@@ -456,11 +456,9 @@ _xfail_search_runs_order = pytest.mark.xfail(
 
 # --- A6. Search runs: pagination — DONE (overflow cache) ---
 
-# --- A7. Search runs: dataset inputs — idempotent DONE, large inputs permanent ---
+# --- A7. Search runs: dataset inputs — idempotent DONE, large inputs DONE (S3 overflow) ---
 # test_log_input_multiple_times_does_not_overwrite_tags_or_dataset — DONE (idempotent check)
-test_log_inputs_with_large_inputs_limit_check = pytest.mark.xfail(
-    reason="DynamoDB 400KB item size limit vs MLflow's 1MB schema / 16MB profile limits"
-)(test_log_inputs_with_large_inputs_limit_check)
+# test_log_inputs_with_large_inputs_limit_check — DONE (S3 overflow for schema/profile)
 
 # --- B. Metric history schema (2 tests) ---
 # --- B. Metric history — DONE ---
@@ -486,5 +484,5 @@ test_log_metric_concurrent_logging_succeeds = pytest.mark.moto_server(
 
 # -- C9. Sessions — DONE (first-trace filter) --
 
-# --- D. Permanent xfails (1 test) ---
+# --- D. Permanent xfails (0 tests) ---
 # search_logged_models order_by — DONE (Python-side sort with nulls last)

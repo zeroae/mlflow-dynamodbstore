@@ -17,7 +17,11 @@ def destroy(ctx: CliContext, confirmed: bool, retain: bool) -> None:
     if not confirmed:
         click.confirm(
             f"Destroy stack '{ctx.name}'? This will delete the CloudFormation stack"
-            + (" (table will be retained)" if retain else " and the DynamoDB table"),
+            + (
+                " (table and bucket will be retained)"
+                if retain
+                else " and all resources (table + bucket)"
+            ),
             abort=True,
         )
     destroy_stack(ctx.name, ctx.region, ctx.endpoint_url, retain=retain)

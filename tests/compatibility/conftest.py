@@ -3,7 +3,9 @@
 import sys
 from collections import namedtuple
 from pathlib import Path
+from typing import Any
 
+import boto3
 import pytest
 from moto import mock_aws
 
@@ -143,12 +145,41 @@ def mock_dynamodb(_moto_server_endpoint):
             yield
 
 
+def _setup_stack_moto(
+    table_name: str,
+    region: str = "us-east-1",
+    endpoint_url: str | None = None,
+) -> None:
+    """Create a CloudFormation stack under moto without S3/Lambda resources.
+
+    Uses bucket_name=None to skip all S3 resources (bucket, IAM role, Lambda,
+    custom resource) which hang or fail under moto.
+    """
+    import json
+
+    from mlflow_dynamodbstore.dynamodb.provisioner import _build_template, _seed_initial_data
+
+    template = _build_template(table_name)
+    kwargs: dict[str, Any] = {"region_name": region}
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    cfn = boto3.client("cloudformation", **kwargs)
+    cfn.create_stack(
+        StackName=table_name,
+        TemplateBody=json.dumps(template),
+    )
+    cfn.get_waiter("stack_create_complete").wait(StackName=table_name)
+    _seed_initial_data(table_name, region=region, endpoint_url=endpoint_url)
+
+
 @pytest.fixture
 def tracking_store(_moto_server_endpoint, mock_dynamodb):
     if _moto_server_endpoint:
-        uri = f"dynamodb://{_moto_server_endpoint}/test-table"
+        _setup_stack_moto("test-table", endpoint_url=f"http://{_moto_server_endpoint}")
+        uri = f"dynamodb://{_moto_server_endpoint}/test-table?deploy=false"
     else:
-        uri = "dynamodb://us-east-1/test-table"
+        _setup_stack_moto("test-table")
+        uri = "dynamodb://us-east-1/test-table?deploy=false"
     return DynamoDBTrackingStore(
         store_uri=uri,
         artifact_uri="/tmp/artifacts",
@@ -157,15 +188,17 @@ def tracking_store(_moto_server_endpoint, mock_dynamodb):
 
 @pytest.fixture
 def registry_store(mock_dynamodb):
+    _setup_stack_moto("test-table")
     return DynamoDBRegistryStore(
-        store_uri="dynamodb://us-east-1/test-table",
+        store_uri="dynamodb://us-east-1/test-table?deploy=false",
     )
 
 
 @pytest.fixture
 def workspace_store(mock_dynamodb):
+    _setup_stack_moto("test-table")
     return DynamoDBWorkspaceStore(
-        store_uri="dynamodb://us-east-1/test-table",
+        store_uri="dynamodb://us-east-1/test-table?deploy=false",
     )
 
 

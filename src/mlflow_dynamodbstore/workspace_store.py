@@ -49,7 +49,14 @@ class DynamoDBWorkspaceStore(AbstractStore):
             raise TypeError("DynamoDBWorkspaceStore requires 'workspace_uri' argument")
         uri = parse_dynamodb_uri(resolved_uri)
         if uri.deploy:
-            ensure_stack_exists(uri.table_name, uri.region, uri.endpoint_url)
+            ensure_stack_exists(
+                uri.table_name,
+                uri.region,
+                uri.endpoint_url,
+                bucket_name=uri.bucket,
+                iam_format=uri.iam_format,
+                permission_boundary=uri.permission_boundary,
+            )
         self._table = DynamoDBTable(uri.table_name, uri.region, uri.endpoint_url)
         # Ensure the default workspace exists on startup
         self._ensure_default_workspace()

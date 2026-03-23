@@ -9,8 +9,181 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
+_BUCKET_CLEANUP_CODE = """\
+import json
+import urllib.request
+import boto3
 
-def _build_template(table_name: str, retain_table: bool = False) -> dict[str, Any]:
+def handler(event, context):
+    response_url = event["ResponseURL"]
+    try:
+        if event["RequestType"] == "Delete":
+            bucket = event["ResourceProperties"]["BucketName"]
+            s3 = boto3.resource("s3")
+            b = s3.Bucket(bucket)
+            b.object_versions.all().delete()
+            b.objects.all().delete()
+        _send(response_url, event, "SUCCESS")
+    except Exception as e:
+        _send(response_url, event, "FAILED", str(e))
+
+def _send(url, event, status, reason=""):
+    body = json.dumps({
+        "Status": status,
+        "Reason": reason,
+        "PhysicalResourceId": event.get("PhysicalResourceId", event["LogicalResourceId"]),
+        "StackId": event["StackId"],
+        "RequestId": event["RequestId"],
+        "LogicalResourceId": event["LogicalResourceId"],
+    }).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": ""})
+    req.add_header("Content-Length", str(len(body)))
+    urllib.request.urlopen(req)
+"""
+
+
+def _add_s3_resources(
+    template: dict[str, Any],
+    bucket_name: str,
+    retain_bucket: bool,
+    iam_format: str,
+    permission_boundary: str | None,
+) -> None:
+    """Add S3 bucket, Lambda cleanup function, IAM role, and custom resource."""
+    resources = template["Resources"]
+
+    # S3 Bucket
+    bucket_resource: dict[str, Any] = {
+        "Type": "AWS::S3::Bucket",
+        "Properties": {
+            "BucketName": bucket_name,
+            "BucketEncryption": {
+                "ServerSideEncryptionConfiguration": [
+                    {
+                        "ServerSideEncryptionByDefault": {
+                            "SSEAlgorithm": "AES256",
+                        },
+                    },
+                ],
+            },
+            "PublicAccessBlockConfiguration": {
+                "BlockPublicAcls": True,
+                "BlockPublicPolicy": True,
+                "IgnorePublicAcls": True,
+                "RestrictPublicBuckets": True,
+            },
+        },
+    }
+    if retain_bucket:
+        bucket_resource["DeletionPolicy"] = "Retain"
+    else:
+        bucket_resource["DeletionPolicy"] = "Delete"
+    resources["ArtifactBucket"] = bucket_resource
+
+    # IAM Role for Lambda cleanup
+    role_name_sub = iam_format.format("${AWS::StackName}-BucketCleanup")
+    policy_name_sub = iam_format.format("${AWS::StackName}-BucketCleanupPolicy")
+
+    role_props: dict[str, Any] = {
+        "RoleName": {"Fn::Sub": role_name_sub},
+        "AssumeRolePolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "lambda.amazonaws.com"},
+                    "Action": "sts:AssumeRole",
+                },
+            ],
+        },
+        "Policies": [
+            {
+                "PolicyName": {"Fn::Sub": policy_name_sub},
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "s3:ListBucket",
+                                "s3:DeleteObject",
+                                "s3:ListBucketVersions",
+                                "s3:DeleteObjectVersion",
+                            ],
+                            "Resource": [
+                                f"arn:aws:s3:::{bucket_name}",
+                                f"arn:aws:s3:::{bucket_name}/*",
+                            ],
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents",
+                            ],
+                            "Resource": {
+                                "Fn::Sub": (
+                                    "arn:aws:logs:${AWS::Region}:${AWS::AccountId}"
+                                    ":log-group:/aws/lambda/*"
+                                ),
+                            },
+                        },
+                    ],
+                },
+            },
+        ],
+    }
+
+    if permission_boundary:
+        role_props["PermissionsBoundary"] = {
+            "Fn::Sub": f"arn:aws:iam::${{AWS::AccountId}}:policy/{permission_boundary}",
+        }
+
+    resources["BucketCleanupRole"] = {
+        "Type": "AWS::IAM::Role",
+        "Properties": role_props,
+    }
+
+    # Lambda Function
+    resources["BucketCleanupFunction"] = {
+        "Type": "AWS::Lambda::Function",
+        "Properties": {
+            "FunctionName": {"Fn::Sub": "${AWS::StackName}-BucketCleanup"},
+            "Runtime": "python3.12",
+            "Handler": "index.handler",
+            "Timeout": 300,
+            "Role": {"Fn::GetAtt": ["BucketCleanupRole", "Arn"]},
+            "Code": {"ZipFile": _BUCKET_CLEANUP_CODE},
+        },
+    }
+
+    # Custom Resource (only when not retaining the bucket)
+    if not retain_bucket:
+        resources["BucketCleanupCustomResource"] = {
+            "Type": "Custom::BucketCleanup",
+            "DependsOn": ["ArtifactBucket"],
+            "Properties": {
+                "ServiceToken": {"Fn::GetAtt": ["BucketCleanupFunction", "Arn"]},
+                "BucketName": bucket_name,
+            },
+        }
+
+    # Outputs
+    template["Outputs"] = {
+        "ArtifactBucketName": {"Value": bucket_name},
+        "ArtifactBucketArn": {"Value": {"Fn::GetAtt": ["ArtifactBucket", "Arn"]}},
+    }
+
+
+def _build_template(
+    table_name: str,
+    retain_table: bool = False,
+    retain_bucket: bool = False,
+    bucket_name: str | None = None,
+    iam_format: str = "{}",
+    permission_boundary: str | None = None,
+) -> dict[str, Any]:
     """Build the CloudFormation template as a Python dict."""
     # All attribute definitions needed for keys
     attr_defs = [
@@ -80,13 +253,18 @@ def _build_template(table_name: str, retain_table: bool = False) -> dict[str, An
     if retain_table:
         mlflow_table_resource["DeletionPolicy"] = "Retain"
 
-    return {
+    template: dict[str, Any] = {
         "AWSTemplateFormatVersion": "2010-09-09",
         "Description": f"MLflow DynamoDB store table: {table_name}",
         "Resources": {
             "MlflowTable": mlflow_table_resource,
         },
     }
+
+    if bucket_name is not None:
+        _add_s3_resources(template, bucket_name, retain_bucket, iam_format, permission_boundary)
+
+    return template
 
 
 def _boto_kwargs(
@@ -194,10 +372,25 @@ def _stack_exists(cfn: Any, stack_name: str) -> bool:
     return status in ("CREATE_COMPLETE", "UPDATE_COMPLETE")
 
 
+def get_stack_outputs(
+    stack_name: str,
+    region: str | None = None,
+    endpoint_url: str | None = None,
+) -> dict[str, str]:
+    """Read CloudFormation stack outputs as a dict."""
+    cfn = boto3.client("cloudformation", **_boto_kwargs(region, endpoint_url))
+    response = cfn.describe_stacks(StackName=stack_name)
+    outputs = response["Stacks"][0].get("Outputs", [])
+    return {o["OutputKey"]: o["OutputValue"] for o in outputs}
+
+
 def ensure_stack_exists(
     table_name: str,
     region: str | None = None,
     endpoint_url: str | None = None,
+    bucket_name: str | None = None,
+    iam_format: str = "{}",
+    permission_boundary: str | None = None,
 ) -> None:
     """Ensure the CloudFormation stack and DynamoDB table exist.
 
@@ -208,13 +401,24 @@ def ensure_stack_exists(
     """
     stack_name = table_name
 
+    if bucket_name is None:
+        sts = boto3.client("sts", **_boto_kwargs(region, endpoint_url))
+        account_id = sts.get_caller_identity()["Account"]
+        bucket_name = f"{table_name}-artifacts-{account_id}"
+
     cfn = boto3.client("cloudformation", **_boto_kwargs(region, endpoint_url))
 
     if not _stack_exists(cfn, stack_name):
-        template = _build_template(table_name)
+        template = _build_template(
+            table_name,
+            bucket_name=bucket_name,
+            iam_format=iam_format,
+            permission_boundary=permission_boundary,
+        )
         cfn.create_stack(
             StackName=stack_name,
             TemplateBody=json.dumps(template),
+            Capabilities=["CAPABILITY_NAMED_IAM"],
         )
         cfn.get_waiter("stack_create_complete").wait(StackName=stack_name)
 
@@ -244,11 +448,21 @@ def destroy_stack(
     cfn.describe_stacks(StackName=table_name)
 
     if retain:
-        # Update the stack to set DeletionPolicy=Retain on the table, then delete
-        retain_template = _build_template(table_name, retain_table=True)
+        # Read existing bucket name from stack outputs before rebuilding template
+        outputs = get_stack_outputs(table_name, region, endpoint_url)
+        existing_bucket_name = outputs.get("ArtifactBucketName")
+
+        # Update the stack to set DeletionPolicy=Retain on table and bucket, then delete
+        retain_template = _build_template(
+            table_name,
+            retain_table=True,
+            retain_bucket=True,
+            bucket_name=existing_bucket_name,
+        )
         cfn.update_stack(
             StackName=table_name,
             TemplateBody=json.dumps(retain_template),
+            Capabilities=["CAPABILITY_NAMED_IAM"],
         )
         cfn.get_waiter("stack_update_complete").wait(StackName=table_name)
 
