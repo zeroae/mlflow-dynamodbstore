@@ -4394,19 +4394,17 @@ class DynamoDBTrackingStore(AbstractStore):
                         error_code=INVALID_PARAMETER_VALUE,
                     )
 
-        # span.content LIKE/ILIKE is handled by FTS, not span post-filter
+        # span.content LIKE/ILIKE uses FTS for candidate narrowing, then
+        # SPANS blob post-filter for exact phrase verification.
         def _is_content_fts(p: Any) -> bool:
             return p.field_type == "span" and p.key == "content" and p.op in ("LIKE", "ILIKE")
 
-        span_predicates = [
-            p for p in predicates if p.field_type == "span" and not _is_content_fts(p)
-        ]
-        non_span_predicates = [
-            p for p in predicates if p.field_type != "span" or _is_content_fts(p)
-        ]
+        span_predicates = [p for p in predicates if p.field_type == "span"]
+        # Include content predicates in planning for FTS strategy selection
+        plan_predicates = [p for p in predicates if p.field_type != "span" or _is_content_fts(p)]
 
-        # 2. Plan query using non-span predicates (includes span.content for FTS)
-        plan = plan_trace_query(non_span_predicates, order_by)
+        # 2. Plan query (content predicates trigger FTS, others use index)
+        plan = plan_trace_query(plan_predicates, order_by)
 
         # 3. For each experiment: execute query
         token_data = decode_page_token(page_token)
@@ -4431,7 +4429,7 @@ class DynamoDBTrackingStore(AbstractStore):
                     pk=pk,
                     max_results=remaining if not span_predicates else remaining * 3,
                     page_token=current_token,
-                    predicates=non_span_predicates,
+                    predicates=plan_predicates,
                 )
 
                 for item in items:
@@ -4477,7 +4475,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
                     if not all(
                         _apply_trace_post_filter(self._table, pk, xray_tid, meta, p)
-                        for p in non_span_predicates
+                        for p in plan_predicates
                     ):
                         continue
 
@@ -4724,8 +4722,8 @@ class DynamoDBTrackingStore(AbstractStore):
             elif pred.key == "name":
                 actual = sd.get("name", "")
             elif pred.key == "content":
-                # Content = serialized span: name + attributes + inputs + outputs
-                parts = [str(sd.get("name", ""))]
+                # Content = serialized span: name + type + attributes + inputs + outputs
+                parts = [str(sd.get("name", "")), str(sd.get("span_type", ""))]
                 if isinstance(attrs, dict):
                     for k, v in attrs.items():
                         parts.append(f"{k}: {v}")

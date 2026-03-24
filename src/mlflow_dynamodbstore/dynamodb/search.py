@@ -133,8 +133,8 @@ _ORDER_BY_LSI: dict[str, str] = {
     "duration": "lsi5",
 }
 
-# Regex to detect both-sides wildcard LIKE pattern: '%word%'
-_FTS_LIKE_RE = re.compile(r"^%[^%]+%$")
+# Regex to detect both-sides wildcard LIKE pattern: '%word%' or '%word%%' (escaped %)
+_FTS_LIKE_RE = re.compile(r"^%.+%$")
 
 
 # Normalize alternate field type identifiers to internal canonical form.
