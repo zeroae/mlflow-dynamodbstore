@@ -872,8 +872,14 @@ class DynamoDBTrackingStore(AbstractStore):
 
     @staticmethod
     def _validate_experiment_id(experiment_id: str) -> None:
-        """Raise INVALID_PARAMETER_VALUE if experiment_id is not '0' or a valid ULID."""
-        if experiment_id == "0":
+        """Raise INVALID_PARAMETER_VALUE if experiment_id is clearly invalid."""
+        if not experiment_id or not experiment_id.strip():
+            raise MlflowException(
+                f"Invalid experiment ID '{experiment_id}'. Experiment ID must not be empty.",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        # Accept: "0" (default), ULIDs (26 char base32), numeric strings (SQLAlchemy compat)
+        if experiment_id.isdigit():
             return
         if len(experiment_id) == 26 and all(
             c in "0123456789abcdefghjkmnpqrstvwxyz" for c in experiment_id
