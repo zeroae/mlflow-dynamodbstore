@@ -2234,6 +2234,134 @@ class TestLogSpansAsync:
         assert cached is not None
 
 
+class TestTraceTextSearch:
+    """Tests for trace.text / span.content full-text search via FTS index."""
+
+    @staticmethod
+    def _make_span(trace_id, span_id, name, span_type="FUNCTION", attributes=None, parent_id=None):
+        span = MagicMock()
+        span.trace_id = trace_id
+        span.name = name
+        span.span_type = span_type
+        span.span_id = span_id
+        span.start_time_ns = 0
+        span.end_time_ns = 1_000_000_000
+        span.status = MagicMock()
+        span.status.status_code = "OK"
+        span.to_dict.return_value = {
+            "name": name,
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "parent_span_id": parent_id,
+            "span_type": span_type,
+            "start_time_unix_nano": 0,
+            "end_time_unix_nano": 1_000_000_000,
+            "status": {"code": "OK", "message": ""},
+            "attributes": attributes or {},
+            "events": [],
+        }
+        return span
+
+    def test_search_by_span_name(self, tracking_store):
+        exp_id = tracking_store.create_experiment("text-search-exp")
+        trace_id = "tr-text-1"
+        ti = TraceInfo(
+            trace_id=trace_id,
+            trace_location=TraceLocation.from_experiment_id(exp_id),
+            request_time=1000,
+            state=TraceState.OK,
+        )
+        tracking_store.start_trace(ti)
+        tracking_store.log_spans(exp_id, [self._make_span(trace_id, "s1", "database_query")])
+
+        traces, _ = tracking_store.search_traces(
+            [exp_id], filter_string='trace.text LIKE "%database_query%"'
+        )
+        assert len(traces) == 1
+        assert traces[0].trace_id == trace_id
+
+    def test_search_by_span_type(self, tracking_store):
+        exp_id = tracking_store.create_experiment("text-search-type")
+        for i, stype in enumerate(["FUNCTION", "TOOL"], 1):
+            tid = f"tr-type-{i}"
+            ti = TraceInfo(
+                trace_id=tid,
+                trace_location=TraceLocation.from_experiment_id(exp_id),
+                request_time=1000 + i,
+                state=TraceState.OK,
+            )
+            tracking_store.start_trace(ti)
+            tracking_store.log_spans(exp_id, [self._make_span(tid, f"s{i}", "op", span_type=stype)])
+
+        traces, _ = tracking_store.search_traces([exp_id], filter_string='trace.text LIKE "%TOOL%"')
+        assert len(traces) == 1
+        assert traces[0].trace_id == "tr-type-2"
+
+    def test_search_by_attribute_value(self, tracking_store):
+        exp_id = tracking_store.create_experiment("text-search-attr")
+        trace_id = "tr-attr-1"
+        ti = TraceInfo(
+            trace_id=trace_id,
+            trace_location=TraceLocation.from_experiment_id(exp_id),
+            request_time=1000,
+            state=TraceState.OK,
+        )
+        tracking_store.start_trace(ti)
+        tracking_store.log_spans(
+            exp_id,
+            [
+                self._make_span(
+                    trace_id,
+                    "s1",
+                    "llm_call",
+                    attributes={"llm.inputs": "what's MLflow?"},
+                )
+            ],
+        )
+
+        traces, _ = tracking_store.search_traces(
+            [exp_id], filter_string='trace.text LIKE "%what\'s MLflow?%"'
+        )
+        assert len(traces) == 1
+        assert traces[0].trace_id == trace_id
+
+    def test_search_by_attribute_key(self, tracking_store):
+        exp_id = tracking_store.create_experiment("text-search-attrkey")
+        for i, attrs in enumerate([{"llm.inputs": "hello"}, {"response.usage": "123"}], 1):
+            tid = f"tr-attrkey-{i}"
+            ti = TraceInfo(
+                trace_id=tid,
+                trace_location=TraceLocation.from_experiment_id(exp_id),
+                request_time=1000 + i,
+                state=TraceState.OK,
+            )
+            tracking_store.start_trace(ti)
+            tracking_store.log_spans(
+                exp_id, [self._make_span(tid, f"s{i}", "op", attributes=attrs)]
+            )
+
+        traces, _ = tracking_store.search_traces([exp_id], filter_string='trace.text LIKE "%llm.%"')
+        assert len(traces) == 1
+        assert traces[0].trace_id == "tr-attrkey-1"
+
+    def test_search_no_match_returns_empty(self, tracking_store):
+        exp_id = tracking_store.create_experiment("text-search-empty")
+        trace_id = "tr-empty-1"
+        ti = TraceInfo(
+            trace_id=trace_id,
+            trace_location=TraceLocation.from_experiment_id(exp_id),
+            request_time=1000,
+            state=TraceState.OK,
+        )
+        tracking_store.start_trace(ti)
+        tracking_store.log_spans(exp_id, [self._make_span(trace_id, "s1", "simple_op")])
+
+        traces, _ = tracking_store.search_traces(
+            [exp_id], filter_string='trace.text LIKE "%nonexistent_keyword%"'
+        )
+        assert len(traces) == 0
+
+
 class TestPromptFilterSearch:
     """Tests for prompt filter search using denormalized StringSet."""
 

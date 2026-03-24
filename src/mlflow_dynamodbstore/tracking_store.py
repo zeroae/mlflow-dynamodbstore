@@ -3858,15 +3858,20 @@ class DynamoDBTrackingStore(AbstractStore):
                 if updates:
                     self._table.update_item(pk=pk, sk=sk, updates=updates)
 
-                # Write FTS items for span names
-                if span_names:
-                    span_names_text = " ".join(sorted(span_names))
+                # Write FTS items for span content
+                fts_parts: list[str] = sorted(span_names) + sorted(span_types)
+                for sd in span_dicts:
+                    for k, v in (sd.get("attributes") or {}).items():
+                        fts_parts.append(str(k))
+                        fts_parts.append(str(v))
+                fts_text = " ".join(fts_parts)
+                if fts_text.strip():
                     fts_items = fts_items_for_text(
                         pk=pk,
                         entity_type="T",
                         entity_id=trace_id,
                         field="spans",
-                        text=span_names_text,
+                        text=fts_text,
                     )
                     if ttl is not None:
                         for item in fts_items:
@@ -4308,15 +4313,20 @@ class DynamoDBTrackingStore(AbstractStore):
             if updates:
                 self._table.update_item(pk=pk, sk=sk, updates=updates)
 
-            # Write FTS items for span names
-            if span_names:
-                span_names_text = " ".join(sorted(span_names))
+            # Write FTS items for span content (names, types, attribute keys/values)
+            fts_parts: list[str] = sorted(span_names) + sorted(span_types)
+            for sd in merged.values():
+                for k, v in (sd.get("attributes") or {}).items():
+                    fts_parts.append(str(k))
+                    fts_parts.append(str(v))
+            fts_text = " ".join(fts_parts)
+            if fts_text.strip():
                 fts_items = fts_items_for_text(
                     pk=pk,
                     entity_type="T",
                     entity_id=trace_id,
                     field="spans",
-                    text=span_names_text,
+                    text=fts_text,
                 )
                 if ttl is not None:
                     for item in fts_items:
@@ -4383,10 +4393,19 @@ class DynamoDBTrackingStore(AbstractStore):
                         'Expected format: prompt = "name/version"',
                         error_code=INVALID_PARAMETER_VALUE,
                     )
-        span_predicates = [p for p in predicates if p.field_type == "span"]
-        non_span_predicates = [p for p in predicates if p.field_type != "span"]
 
-        # 2. Plan query using only non-span predicates
+        # span.content LIKE/ILIKE is handled by FTS, not span post-filter
+        def _is_content_fts(p: Any) -> bool:
+            return p.field_type == "span" and p.key == "content" and p.op in ("LIKE", "ILIKE")
+
+        span_predicates = [
+            p for p in predicates if p.field_type == "span" and not _is_content_fts(p)
+        ]
+        non_span_predicates = [
+            p for p in predicates if p.field_type != "span" or _is_content_fts(p)
+        ]
+
+        # 2. Plan query using non-span predicates (includes span.content for FTS)
         plan = plan_trace_query(non_span_predicates, order_by)
 
         # 3. For each experiment: execute query
