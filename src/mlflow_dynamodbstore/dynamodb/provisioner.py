@@ -36,7 +36,7 @@ def _send(url, event, status, reason=""):
         "RequestId": event["RequestId"],
         "LogicalResourceId": event["LogicalResourceId"],
     }).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": ""})
+    req = urllib.request.Request(url, data=body, method="PUT", headers={"Content-Type": ""})
     req.add_header("Content-Length", str(len(body)))
     urllib.request.urlopen(req)
 """

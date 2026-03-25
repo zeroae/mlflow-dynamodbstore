@@ -22,18 +22,24 @@ def _setup_stack_moto(
     template = _build_template(table_name)
     kwargs: dict[str, Any] = {"region_name": region}
     cfn = boto3.client("cloudformation", **kwargs)
-    cfn.create_stack(
-        StackName=table_name,
-        TemplateBody=json.dumps(template),
-    )
-    cfn.get_waiter("stack_create_complete").wait(StackName=table_name)
-    _seed_initial_data(table_name, region=region)
+    from botocore.exceptions import ClientError
+
+    try:
+        cfn.create_stack(
+            StackName=table_name,
+            TemplateBody=json.dumps(template),
+        )
+        cfn.get_waiter("stack_create_complete").wait(StackName=table_name)
+        _seed_initial_data(table_name, region=region)
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "AlreadyExistsException":
+            raise
 
     # Create S3 bucket directly (bypassing CloudFormation Lambda issue)
     s3 = boto3.client("s3", **kwargs)
     try:
         s3.create_bucket(Bucket=_MOTO_BUCKET)
-    except s3.exceptions.BucketAlreadyOwnedByYou:
+    except (s3.exceptions.BucketAlreadyOwnedByYou, ClientError):
         pass
 
 
