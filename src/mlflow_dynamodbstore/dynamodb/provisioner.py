@@ -404,11 +404,6 @@ def ensure_stack_exists(
     """
     stack_name = table_name
 
-    if bucket_name is None:
-        sts = boto3.client("sts", **_boto_kwargs(region, endpoint_url))
-        account_id = sts.get_caller_identity()["Account"]
-        bucket_name = f"{table_name}-artifacts-{account_id}"
-
     cfn = boto3.client("cloudformation", **_boto_kwargs(region, endpoint_url))
 
     if not _stack_exists(cfn, stack_name):

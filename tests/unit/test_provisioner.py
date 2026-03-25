@@ -85,3 +85,26 @@ def test_template_lambda_runtime():
     fn = t["Resources"]["BucketCleanupFunction"]["Properties"]
     assert fn["Runtime"] == "python3.12"
     assert fn["Timeout"] == 300
+
+
+def test_template_permission_boundary_full_arn():
+    """Full ARN permission boundary is used as-is, not wrapped in Fn::Sub."""
+    arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+    t = _build_template("tbl", bucket_name="b", permission_boundary=arn)
+    role = t["Resources"]["BucketCleanupRole"]["Properties"]
+    assert role["PermissionsBoundary"] == arn
+
+
+def test_template_permission_boundary_short_name_uses_fn_sub():
+    """Short policy name is wrapped in Fn::Sub with account ID."""
+    t = _build_template("tbl", bucket_name="b", permission_boundary="PowerUserAccess")
+    role = t["Resources"]["BucketCleanupRole"]["Properties"]
+    assert "Fn::Sub" in role["PermissionsBoundary"]
+    assert "PowerUserAccess" in role["PermissionsBoundary"]["Fn::Sub"]
+
+
+def test_template_lambda_cfn_response_uses_put():
+    """Lambda _send function must use PUT for CloudFormation pre-signed S3 URL."""
+    t = _build_template("tbl", bucket_name="b")
+    code = t["Resources"]["BucketCleanupFunction"]["Properties"]["Code"]["ZipFile"]
+    assert 'method="PUT"' in code
