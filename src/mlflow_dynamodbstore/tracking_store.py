@@ -872,8 +872,14 @@ class DynamoDBTrackingStore(AbstractStore):
 
     @staticmethod
     def _validate_experiment_id(experiment_id: str) -> None:
-        """Raise INVALID_PARAMETER_VALUE if experiment_id is not '0' or a valid ULID."""
-        if experiment_id == "0":
+        """Raise INVALID_PARAMETER_VALUE if experiment_id is clearly invalid."""
+        if not experiment_id or not experiment_id.strip():
+            raise MlflowException(
+                f"Invalid experiment ID '{experiment_id}'. Experiment ID must not be empty.",
+                error_code=INVALID_PARAMETER_VALUE,
+            )
+        # Accept: "0" (default), ULIDs (26 char base32), numeric strings (SQLAlchemy compat)
+        if experiment_id.isdigit():
             return
         if len(experiment_id) == 26 and all(
             c in "0123456789abcdefghjkmnpqrstvwxyz" for c in experiment_id
@@ -3858,15 +3864,20 @@ class DynamoDBTrackingStore(AbstractStore):
                 if updates:
                     self._table.update_item(pk=pk, sk=sk, updates=updates)
 
-                # Write FTS items for span names
-                if span_names:
-                    span_names_text = " ".join(sorted(span_names))
+                # Write FTS items for span content
+                fts_parts: list[str] = sorted(span_names) + sorted(span_types)
+                for sd in span_dicts:
+                    for k, v in (sd.get("attributes") or {}).items():
+                        fts_parts.append(str(k))
+                        fts_parts.append(str(v))
+                fts_text = " ".join(fts_parts)
+                if fts_text.strip():
                     fts_items = fts_items_for_text(
                         pk=pk,
                         entity_type="T",
                         entity_id=trace_id,
                         field="spans",
-                        text=span_names_text,
+                        text=fts_text,
                     )
                     if ttl is not None:
                         for item in fts_items:
@@ -4308,15 +4319,20 @@ class DynamoDBTrackingStore(AbstractStore):
             if updates:
                 self._table.update_item(pk=pk, sk=sk, updates=updates)
 
-            # Write FTS items for span names
-            if span_names:
-                span_names_text = " ".join(sorted(span_names))
+            # Write FTS items for span content (names, types, attribute keys/values)
+            fts_parts: list[str] = sorted(span_names) + sorted(span_types)
+            for sd in merged.values():
+                for k, v in (sd.get("attributes") or {}).items():
+                    fts_parts.append(str(k))
+                    fts_parts.append(str(v))
+            fts_text = " ".join(fts_parts)
+            if fts_text.strip():
                 fts_items = fts_items_for_text(
                     pk=pk,
                     entity_type="T",
                     entity_id=trace_id,
                     field="spans",
-                    text=span_names_text,
+                    text=fts_text,
                 )
                 if ttl is not None:
                     for item in fts_items:
@@ -4383,11 +4399,18 @@ class DynamoDBTrackingStore(AbstractStore):
                         'Expected format: prompt = "name/version"',
                         error_code=INVALID_PARAMETER_VALUE,
                     )
-        span_predicates = [p for p in predicates if p.field_type == "span"]
-        non_span_predicates = [p for p in predicates if p.field_type != "span"]
 
-        # 2. Plan query using only non-span predicates
-        plan = plan_trace_query(non_span_predicates, order_by)
+        # span.content LIKE/ILIKE uses FTS for candidate narrowing, then
+        # SPANS blob post-filter for exact phrase verification.
+        def _is_content_fts(p: Any) -> bool:
+            return p.field_type == "span" and p.key == "content" and p.op in ("LIKE", "ILIKE")
+
+        span_predicates = [p for p in predicates if p.field_type == "span"]
+        # Include content predicates in planning for FTS strategy selection
+        plan_predicates = [p for p in predicates if p.field_type != "span" or _is_content_fts(p)]
+
+        # 2. Plan query (content predicates trigger FTS, others use index)
+        plan = plan_trace_query(plan_predicates, order_by)
 
         # 3. For each experiment: execute query
         token_data = decode_page_token(page_token)
@@ -4412,7 +4435,7 @@ class DynamoDBTrackingStore(AbstractStore):
                     pk=pk,
                     max_results=remaining if not span_predicates else remaining * 3,
                     page_token=current_token,
-                    predicates=non_span_predicates,
+                    predicates=plan_predicates,
                 )
 
                 for item in items:
@@ -4458,7 +4481,7 @@ class DynamoDBTrackingStore(AbstractStore):
 
                     if not all(
                         _apply_trace_post_filter(self._table, pk, xray_tid, meta, p)
-                        for p in non_span_predicates
+                        for p in plan_predicates
                     ):
                         continue
 
@@ -4705,8 +4728,8 @@ class DynamoDBTrackingStore(AbstractStore):
             elif pred.key == "name":
                 actual = sd.get("name", "")
             elif pred.key == "content":
-                # Content = serialized span: name + attributes + inputs + outputs
-                parts = [str(sd.get("name", ""))]
+                # Content = serialized span: name + type + attributes + inputs + outputs
+                parts = [str(sd.get("name", "")), str(sd.get("span_type", ""))]
                 if isinstance(attrs, dict):
                     for k, v in attrs.items():
                         parts.append(f"{k}: {v}")

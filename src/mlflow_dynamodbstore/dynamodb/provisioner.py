@@ -36,7 +36,7 @@ def _send(url, event, status, reason=""):
         "RequestId": event["RequestId"],
         "LogicalResourceId": event["LogicalResourceId"],
     }).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": ""})
+    req = urllib.request.Request(url, data=body, method="PUT", headers={"Content-Type": ""})
     req.add_header("Content-Length", str(len(body)))
     urllib.request.urlopen(req)
 """
@@ -136,9 +136,12 @@ def _add_s3_resources(
     }
 
     if permission_boundary:
-        role_props["PermissionsBoundary"] = {
-            "Fn::Sub": f"arn:aws:iam::${{AWS::AccountId}}:policy/{permission_boundary}",
-        }
+        if permission_boundary.startswith("arn:"):
+            role_props["PermissionsBoundary"] = permission_boundary
+        else:
+            role_props["PermissionsBoundary"] = {
+                "Fn::Sub": f"arn:aws:iam::${{AWS::AccountId}}:policy/{permission_boundary}",
+            }
 
     resources["BucketCleanupRole"] = {
         "Type": "AWS::IAM::Role",

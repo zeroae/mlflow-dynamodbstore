@@ -12,5 +12,12 @@ from mlflow_dynamodbstore.dynamodb.provisioner import ensure_stack_exists
 @pass_context
 def deploy(ctx: CliContext) -> None:
     """Create the CloudFormation stack and seed initial data."""
-    ensure_stack_exists(ctx.name, ctx.region, ctx.endpoint_url)
+    ensure_stack_exists(
+        ctx.name,
+        ctx.region,
+        ctx.endpoint_url,
+        bucket_name=ctx.bucket,
+        iam_format=ctx.iam_format,
+        permission_boundary=ctx.permission_boundary,
+    )
     click.echo(f"Stack '{ctx.name}' deployed successfully.")

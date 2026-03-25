@@ -133,8 +133,8 @@ _ORDER_BY_LSI: dict[str, str] = {
     "duration": "lsi5",
 }
 
-# Regex to detect both-sides wildcard LIKE pattern: '%word%'
-_FTS_LIKE_RE = re.compile(r"^%[^%]+%$")
+# Regex to detect both-sides wildcard LIKE pattern: '%word%' or '%word%%' (escaped %)
+_FTS_LIKE_RE = re.compile(r"^%.+%$")
 
 
 # Normalize alternate field type identifiers to internal canonical form.
@@ -377,7 +377,7 @@ def plan_trace_query(
     # ------------------------------------------------------------------ #
     # Only use FTS for fields that are actually trigram-indexed.
     # Non-indexed fields (tags, metadata, name) fall through to post-filter.
-    trace_fts_fields = {"run_name"}  # fields with FTS trigram index
+    trace_fts_fields = {"run_name", "content"}  # fields with FTS trigram index
     for pred in predicates:
         if pred.op in ("LIKE", "ILIKE") and isinstance(pred.value, str):
             if _FTS_LIKE_RE.match(pred.value) and pred.key in trace_fts_fields:
@@ -1068,7 +1068,11 @@ def _apply_trace_post_filter(
         if set_attr:
             values = item.get(set_attr) or set()
             return _compare_set(values, pred.op, pred.value)
-        # Other span predicates (attributes, content) need SPANS blob — skip for now
+        # span.content is handled by FTS strategy, not post-filter.
+        # If we reach here, the content wasn't FTS-indexed — reject the item.
+        if pred.key == "content":
+            return False
+        # Other span predicates (attributes) need SPANS blob — skip for now
         return True
 
     return True  # Unknown type, don't filter

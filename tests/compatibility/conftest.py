@@ -145,6 +145,9 @@ def mock_dynamodb(_moto_server_endpoint):
             yield
 
 
+_MOTO_BUCKET = "test-table-artifacts"
+
+
 def _setup_stack_moto(
     table_name: str,
     region: str = "us-east-1",
@@ -153,7 +156,8 @@ def _setup_stack_moto(
     """Create a CloudFormation stack under moto without S3/Lambda resources.
 
     Uses bucket_name=None to skip all S3 resources (bucket, IAM role, Lambda,
-    custom resource) which hang or fail under moto.
+    custom resource) which hang or fail under moto. Creates the S3 bucket
+    directly via boto3 so the store can use it for overflow.
     """
     import json
 
@@ -164,22 +168,35 @@ def _setup_stack_moto(
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
     cfn = boto3.client("cloudformation", **kwargs)
-    cfn.create_stack(
-        StackName=table_name,
-        TemplateBody=json.dumps(template),
-    )
-    cfn.get_waiter("stack_create_complete").wait(StackName=table_name)
-    _seed_initial_data(table_name, region=region, endpoint_url=endpoint_url)
+    from botocore.exceptions import ClientError
+
+    try:
+        cfn.create_stack(
+            StackName=table_name,
+            TemplateBody=json.dumps(template),
+        )
+        cfn.get_waiter("stack_create_complete").wait(StackName=table_name)
+        _seed_initial_data(table_name, region=region, endpoint_url=endpoint_url)
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "AlreadyExistsException":
+            raise
+
+    # Create S3 bucket directly (bypassing CloudFormation Lambda issue)
+    s3 = boto3.client("s3", **kwargs)
+    try:
+        s3.create_bucket(Bucket=_MOTO_BUCKET)
+    except (s3.exceptions.BucketAlreadyOwnedByYou, ClientError):
+        pass
 
 
 @pytest.fixture
 def tracking_store(_moto_server_endpoint, mock_dynamodb):
     if _moto_server_endpoint:
         _setup_stack_moto("test-table", endpoint_url=f"http://{_moto_server_endpoint}")
-        uri = f"dynamodb://{_moto_server_endpoint}/test-table?deploy=false"
+        uri = f"dynamodb://{_moto_server_endpoint}/test-table?deploy=false&bucket={_MOTO_BUCKET}"
     else:
         _setup_stack_moto("test-table")
-        uri = "dynamodb://us-east-1/test-table?deploy=false"
+        uri = f"dynamodb://us-east-1/test-table?deploy=false&bucket={_MOTO_BUCKET}"
     return DynamoDBTrackingStore(
         store_uri=uri,
         artifact_uri="/tmp/artifacts",
